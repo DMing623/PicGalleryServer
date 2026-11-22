@@ -1,0 +1,31 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pgs
+      POSTGRES_PASSWORD: pgs-change-me
+      POSTGRES_DB: picgallery
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on: [db]
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://pgs:pgs-change-me@db:5432/picgallery
+      ADMIN_USER: admin
+      ADMIN_PASSWORD: change-this-password
+      SESSION_SECRET: change-me-to-a-long-random-string
+      THUMB_CONCURRENCY: "15"
+      # PUBLIC_BASE_URL: https://pics.example.com
+      # ALLOWED_MOUNT_ROOTS: /photos
+    volumes:
+      - ./data:/app/data
+      # 把 VPS 上已有的图片目录只读/读写挂进容器,再在后台「挂载服务器目录」:
+      # - /srv/photos:/photos
+volumes:
+  pgdata:

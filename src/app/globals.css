@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+/* 主题变量由 layout 注入的 <style id="pgs-theme"> 覆盖;此处为兜底(Claude 经典浅色) */
+:root {
+  --bg: #f0eee6; --bg2: #e6dfcf; --surface: #faf9f5; --fg: #3d3929; --muted: #83827d;
+  --accent: #d97757; --accent-fg: #ffffff; --border: #d9d4c5;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-line: var(--border);
+}
+
+html, body { min-height: 100%; }
+body {
+  color: var(--fg);
+  background: var(--bg);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+/* 背景:渐变 + 柔光色块,让毛玻璃有可折射的内容 */
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: -1;
+  background:
+    radial-gradient(60rem 40rem at 8% -10%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 60%),
+    radial-gradient(50rem 36rem at 105% 10%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 60%),
+    radial-gradient(48rem 40rem at 50% 115%, color-mix(in srgb, var(--fg) 8%, transparent), transparent 60%),
+    linear-gradient(160deg, var(--bg), var(--bg2));
+}
+
+/* 毛玻璃 */
+.glass {
+  background: color-mix(in srgb, var(--surface) 58%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  backdrop-filter: blur(18px) saturate(1.5);
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  box-shadow: 0 8px 32px -12px color-mix(in srgb, var(--fg) 25%, transparent), inset 0 1px 0 color-mix(in srgb, #fff 35%, transparent);
+}
+.glass-strong {
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  -webkit-backdrop-filter: blur(28px) saturate(1.6);
+  backdrop-filter: blur(28px) saturate(1.6);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+}
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: .4rem;
+  padding: .45rem .9rem; border-radius: .75rem; font-size: .875rem; line-height: 1.25rem;
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  transition: transform .12s ease, background .15s ease, opacity .15s;
+  cursor: pointer; white-space: nowrap;
+}
+.btn:hover { background: color-mix(in srgb, var(--surface) 90%, transparent); }
+.btn:active { transform: scale(.97); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+.btn-primary:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }
+.btn-danger { color: #c0392b; }
+.field {
+  width: 100%; padding: .5rem .75rem; border-radius: .75rem; font-size: .875rem;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+  outline: none; color: var(--fg);
+}
+.field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+select.field { appearance: auto; }
+.chip { display: inline-flex; align-items: center; padding: .1rem .5rem; border-radius: 999px; font-size: .72rem;
+  background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.muted { color: var(--muted); }
+.row-lazy { content-visibility: auto; contain-intrinsic-size: auto 220px; }
+
+/* ---------- 启动页动画 ---------- */
+@keyframes ring-a { from { transform: rotateX(70deg) rotateZ(0); } to { transform: rotateX(70deg) rotateZ(360deg); } }
+@keyframes ring-b { from { transform: rotateY(70deg) rotateZ(0); } to { transform: rotateY(70deg) rotateZ(-360deg); } }
+@keyframes ring-c { from { transform: rotateX(25deg) rotateY(25deg) rotateZ(0); } to { transform: rotateX(25deg) rotateY(25deg) rotateZ(360deg); } }
+@keyframes title-spin { 0% { transform: rotateY(-28deg) rotateX(8deg); } 50% { transform: rotateY(28deg) rotateX(-6deg); } 100% { transform: rotateY(-28deg) rotateX(8deg); } }
+@keyframes splash-progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+.ring { position: absolute; inset: 0; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--accent) 45%, transparent), inset 0 0 24px color-mix(in srgb, var(--accent) 25%, transparent); }
+.ring-a { animation: ring-a 7s linear infinite; }
+.ring-b { animation: ring-b 9s linear infinite; inset: 8%; }
+.ring-c { animation: ring-c 12s linear infinite; inset: 18%; border-style: dashed; }
+.title3d { transform-style: preserve-3d; animation: title-spin 6s ease-in-out infinite; }
+.title3d span.layer { position: absolute; left: 0; top: 0; width: 100%; text-align: center; white-space: nowrap; }
+.fade-in { animation: rise .35s ease both; }
+.tile { transition: transform .18s ease, box-shadow .18s ease; }
+.tile:hover { transform: translateY(-2px) scale(1.01); box-shadow: 0 10px 30px -10px color-mix(in srgb, var(--fg) 45%, transparent); }
