@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import {
   albumDetail, albumStatus, browseDirs, createManaged, deleteAlbum, listAlbums, mountDir, scanAlbum, scanStates, loadTree,
   unsortedCount, updateAlbum, visibleIds,

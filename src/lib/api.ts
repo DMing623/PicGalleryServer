@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 /** 浏览器端 API 客户端:自动解包 {ok,data} 信封,错误统一抛 ApiErr。 */
 
 export class ApiErr extends Error {

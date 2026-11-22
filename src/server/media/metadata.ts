@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { execFile } from "node:child_process";
 import exifr from "exifr";
 import { config } from "../config";

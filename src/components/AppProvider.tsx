@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";

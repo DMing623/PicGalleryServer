@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 /** 元数据展示标签。summary 中的每个字段都会显示,缺失则为 N/A。 */
 export const SUMMARY_GROUPS: Array<{ key: string; title: string; fields: Array<[string, string]> }> = [
   { key: "file", title: "文件", fields: [

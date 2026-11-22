@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 export function bytes(n: number | null | undefined): string {
   if (n === null || n === undefined) return "N/A";
   if (n < 1024) return `${n} B`;

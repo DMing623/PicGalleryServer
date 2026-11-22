@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";

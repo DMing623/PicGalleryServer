@@ -1,120 +1,73 @@
-PicGalleryServer 非商业许可证
-PicGalleryServer Non-Commercial License
+# PolyForm Noncommercial License 1.0.0
 
-SPDX-License-Identifier: LicenseRef-PicGalleryServer-NC
+<https://polyformproject.org/licenses/noncommercial/1.0.0>
 
-版权所有 (c) 2026 DMing623
-项目地址:https://github.com/DMing623/PicGalleryServer
+## Acceptance
 
-本项目为「开源但非商业」授权。任何人可自由使用、阅读、修改与再分发本项目,
-但必须遵守本许可证的全部条款。
+In order to get any license under these terms, you must agree to them as both strict obligations and conditions to all your licenses.
 
-═══════════════════════════════════════════════════════════════
-一、定义
-═══════════════════════════════════════════════════════════════
+## Copyright License
 
-1.「本项目」:指 PicGalleryServer 的源代码、构建产物、容器镜像、预编译二进制
-   及其文档。
+The licensor grants you a copyright license for the software to do everything you might do with the software that would otherwise infringe the licensor's copyright in it for any permitted purpose.  However, you may only distribute the software according to [Distribution License](#distribution-license) and make changes or new works based on the software according to [Changes and New Works License](#changes-and-new-works-license).
 
-2.「衍生作品」:指基于本项目或本项目任何部分,经修改、翻译、移植、重构、
-   重新编译或以其他方式产生的作品,无论是否以本项目命名。
+## Distribution License
 
-3.「商业使用」:指直接或间接以获取商业利益为目的的使用本项目或衍生作品,
-   或在商业性、生产性经营活动中使用本项目或衍生作品,包括但不限于:
-     (a) 出租、托管或以订阅/按量计费等方式对外提供本项目或衍生作品的服务;
-     (b) 将本项目或衍生作品作为付费产品的一部分出售、许可或交付给客户;
-     (c) 在商业项目中集成本项目或衍生作品,并因此产生直接或间接经济收益;
-     (d) 以本项目或衍生作品为基础提供有偿的技术支持、运维或定制开发;
-     (e) 其它以牟利为主要目的的使用方式。
+The licensor grants you an additional copyright license to distribute copies of the software.  Your license to distribute covers distributing the software with changes and new works permitted by [Changes and New Works License](#changes-and-new-works-license).
 
-═══════════════════════════════════════════════════════════════
-二、授予的许可
-═══════════════════════════════════════════════════════════════
+## Notices
 
-在完全遵守本许可证的前提下,著作权人授予您一项永久的、全球性的、
-免版税的、不可撤销的许可,允许您:
+You must ensure that anyone who gets a copy of any part of the software from you also gets a copy of these terms or the URL for them above, as well as copies of any plain-text lines beginning with `Required Notice:` that the licensor provided with the software.  For example:
 
-  1. 为任何非商业目的使用、复制、运行本项目;
-  2. 阅读、研究本项目的源代码;
-  3. 修改本项目,并根据本许可证制作衍生作品;
-  4. 在遵守本许可证第三、四条的条件下,再分发本项目或衍生作品;
-  5. 向本项目提交改进代码与补丁。
+> Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
 
-═══════════════════════════════════════════════════════════════
-三、非商业限制
-═══════════════════════════════════════════════════════════════
+## Changes and New Works License
 
-1. 您不得对本项目或任何衍生作品进行商业使用,亦不得将本项目或衍生作品
-   用于任何以获取商业利益为目的的经营活动。
+The licensor grants you an additional copyright license to make changes and new works based on the software for any permitted purpose.
 
-2. 下列使用视为非商业使用,无需另行授权:
-     (a) 个人学习、研究、实验与非盈利性使用;
-     (b) 教育、教学与学术研究用途;
-     (c) 非收费的公益、社团、开源社区或非营利组织活动;
-     (d) 向本项目提交贡献、发起拉取请求或发布衍生版本供非商业分发;
-     (e) 自行部署于个人设备或自有服务器,仅供本人或小范围非盈利分享使用。
+## Patent License
 
-3. 商业使用需另行获得著作权人的书面授权。
+The licensor grants you a patent license for the software that covers patent claims the licensor can license, or becomes able to license, that you would infringe by using the software.
 
-4. 下列行为不视为「商业使用」,但仍须遵守第四条署名要求:
-     (a) 企业在不涉及对外收费、不产生直接经济收益的内部场景中使用;
-     (b) 通过捐赠、赞助等自愿方式支持本项目;
-     (c) 为本项目或其衍生作品提供无偿的开源贡献。
+## Noncommercial Purposes
 
-═══════════════════════════════════════════════════════════════
-四、署名与来源声明义务(修改版必须提及本项目)
-═══════════════════════════════════════════════════════════════
+Any noncommercial purpose is a permitted purpose.
 
-1. 无论您是否修改了本项目,只要您再分发本项目或任何衍生作品(源码、
-   容器镜像、二进制文件、压缩包等任何形式),您都必须在作品的显著位置
-   (如 README 首屏、许可证文件顶部、镜像的 OCI 标签或 About 页面、
-   产品的关于页面等)保留以下声明:
+## Personal Uses
 
-     「本作品基于 PicGalleryServer 项目修改 / 衍生。
-       原项目:https://github.com/DMing623/PicGalleryServer
-       版权所有 (c) 2026 DMing623,按 PicGalleryServer 非商业许可证授权。」
+Personal use for research, experiment, and testing for the benefit of public knowledge, personal study, private entertainment, hobby projects, amateur pursuits, or religious observance, without any anticipated commercial application, is use for a permitted purpose.
 
-2. 若您修改了本项目,上述声明中「基于 PicGalleryServer 项目修改」字样
-   必须保留,不得删除、替换或以任何方式隐去本项目的来源信息。
+## Noncommercial Organizations
 
-3. 您还必须在分发物中完整附带本许可证的全文,并在文件或镜像的元数据中
-   标注本许可证标识:LicenseRef-PicGalleryServer-NC
+Use by any charitable organization, educational institution, public research organization, public safety or health organization, environmental protection organization, or government institution is use for a permitted purpose regardless of the source of funding or obligations resulting from the funding.
 
-4. 不得以任何方式暗示或声明,使得他人认为著作权人为您修改后的版本
-   提供背书、担保或认可。
+## Fair Use
 
-5. 您可以为本项目或衍生作品另加自己的版权声明与许可条款,但不得与本
-   许可证冲突,亦不得据此放宽本许可证对商业使用的限制。
+You may have "fair use" rights for the software under the law. These terms do not limit them.
 
-═══════════════════════════════════════════════════════════════
-五、终止
-═══════════════════════════════════════════════════════════════
+## No Other Rights
 
-如果您违反本许可证的任何条款,您基于本许可证获得的许可自违反之日起
-自动终止。若您是分发者,则应立即停止分发,并可要求已分发的衍生作品
-停止使用。
+These terms do not allow you to sublicense or transfer any of your licenses to anyone else, or prevent the licensor from granting licenses to anyone else.  These terms do not imply any other licenses.
 
-═══════════════════════════════════════════════════════════════
-六、免责声明
-═══════════════════════════════════════════════════════════════
+## Patent Defense
 
-本项目按「现状」提供,不作任何明示或默示的担保,包括但不限于对适销性、
-特定用途适用性、不侵权及不中断使用的担保。在法律允许的最大范围内,
-著作权人对因使用或不能使用本项目而产生的任何直接、间接、偶然、特殊或
-后果性损害不承担责任,无论该损害如何发生。
+If you make any written claim that the software infringes or contributes to infringement of any patent, your patent license for the software granted under these terms ends immediately. If your company makes such a claim, your patent license ends immediately for work on behalf of your company.
 
-═══════════════════════════════════════════════════════════════
-七、适用法律
-═══════════════════════════════════════════════════════════════
+## Violations
 
-本许可证的解释与争议解决适用中华人民共和国法律(不含冲突法规则)。
-因本许可证引起的争议,双方应友好协商解决;协商不成的,任何一方均可
-向著作权人所在地有管辖权的人民法院提起诉讼。
+The first time you are notified in writing that you have violated any of these terms, or done anything with the software not covered by your licenses, your licenses can nonetheless continue if you come into full compliance with these terms, and take practical steps to correct past violations, within 32 days of receiving notice.  Otherwise, all your licenses end immediately.
 
-═══════════════════════════════════════════════════════════════
+## No Liability
 
-简明摘要(以本许可证全文为准):
-  ✅ 可自由使用、学习、修改、再分发
-  ✅ 可提交贡献
-  ❌ 不可商用(收费托管、出售、集成盈利等均禁止)
-  📌 修改后再分发必须注明「基于 PicGalleryServer 修改」并附原项目链接
+***As far as the law allows, the software comes as is, without any warranty or condition, and the licensor will not be liable to you for any damages arising out of these terms or the use or nature of the software, under any kind of legal claim.***
+
+## Definitions
+
+The **licensor** is the individual or entity offering these terms, and the **software** is the software the licensor makes available under these terms.
+
+**You** refers to the individual or entity agreeing to these terms.
+
+**Your company** is any legal entity, sole proprietorship, or other kind of organization that you work for, plus all organizations that have control over, are under the control of, or are under common control with that organization.  **Control** means ownership of substantially all the assets of an entity, or the power to direct its management and policies by vote, contract, or otherwise.  Control can be direct or indirect.
+
+**Your licenses** are all the licenses granted to you for the software under these terms.
+
+**Use** means anything you do with the software requiring one of your licenses.

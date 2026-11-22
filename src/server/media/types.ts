@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 /** 媒体类型识别与文件名工具。 */
 
 export const IMAGE_EXT: Record<string, string> = {

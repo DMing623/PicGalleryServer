@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 */
 @import "tailwindcss";
 
 /* 主题变量由 layout 注入的 <style id="pgs-theme"> 覆盖;此处为兜底(Claude 经典浅色) */

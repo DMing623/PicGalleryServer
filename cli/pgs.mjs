@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 /**
  * PicGalleryServer 命令行管理工具(零依赖,需要 Node 18+)。
  * 认证: 管理员用户名 + 密码(HTTP Basic),可用环境变量或参数提供:

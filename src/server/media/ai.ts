@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 /** AI 生成图参数解析:Stable Diffusion WebUI / NovelAI / ComfyUI / InvokeAI。仅做字符串解析,无 IO。 */
 
 export interface AiMeta {

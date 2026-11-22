@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 import { useState } from "react";
 import { AI_FIELDS, SUMMARY_GROUPS, VIDEO_FIELDS } from "@/lib/meta-labels";

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 

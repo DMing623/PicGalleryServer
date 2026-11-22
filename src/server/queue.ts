@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 /**
  * 进程内任务队列:限制并发(THUMB_CONCURRENCY),防止批量导入时 CPU/内存被打满。
  * 状态挂在 globalThis,开发热重载下也只有一个队列。

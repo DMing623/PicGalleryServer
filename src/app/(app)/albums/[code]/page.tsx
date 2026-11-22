@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import AlbumsView from "@/components/AlbumsView";
 
 export default async function AlbumPage({ params }: { params: Promise<{ code: string }> }) {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { desc, eq, isNotNull, lt, and, sql } from "drizzle-orm";
 import { db } from "@/db";

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";

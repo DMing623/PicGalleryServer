@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import type { ReactNode } from "react";
 import { Suspense } from "react";
 import Shell from "@/components/Shell";

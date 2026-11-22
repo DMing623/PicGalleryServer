@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { dispatch } from "@/server/api";
 
 export const dynamic = "force-dynamic";

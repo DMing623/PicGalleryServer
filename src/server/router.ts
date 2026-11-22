@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { authenticate, can, type AuthUser, type Perm } from "./auth";
 import { E, fail, ok } from "./http";
 import { ensureReady } from "./ready";

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { authenticate } from "@/server/auth";
 import { serveMedia } from "@/server/files";
 import { fail } from "@/server/http";

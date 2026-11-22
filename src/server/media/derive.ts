@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";

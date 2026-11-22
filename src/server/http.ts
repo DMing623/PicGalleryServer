@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 /** 统一的错误类型与 JSON 响应封装。成功: {ok:true,data}; 失败: {ok:false,error:{code,message}} */
 
 export class ApiError extends Error {

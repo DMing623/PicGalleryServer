@@ -1,4 +1,5 @@
 "use client";
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";

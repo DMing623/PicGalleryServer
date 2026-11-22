@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { Suspense } from "react";
 import Gallery from "@/components/Gallery";
 

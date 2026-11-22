@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 /** 主题预设与 CSS 变量生成。服务端(layout)与客户端(设置页实时预览)共用。 */
 
 export interface Palette {

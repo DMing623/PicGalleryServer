@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     const { ensureReady } = await import("./server/ready");

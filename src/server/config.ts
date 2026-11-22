@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import path from "node:path";
 
 /** 环境变量统一解析入口。其它模块只允许从这里读取配置。 */

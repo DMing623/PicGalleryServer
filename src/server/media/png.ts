@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import fs from "node:fs/promises";
 import { gunzipSync, inflateSync } from "node:zlib";
 import sharp from "sharp";

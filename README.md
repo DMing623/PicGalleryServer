@@ -1,11 +1,11 @@
 # PicGalleryServer
 
 [![构建](https://github.com/DMing623/PicGalleryServer/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/DMing623/PicGalleryServer/actions/workflows/docker-publish.yml)
-[![许可证](https://img.shields.io/badge/License-Non--Commercial%20only-blue.svg)](./LICENSE)
+[![许可证](https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0-blue.svg)](./LICENSE)
 
 自托管的图片与视频相册服务。把照片和视频放在自己的服务器上,用漂亮的毛玻璃界面浏览、搜索、分享,并且原图受保护。
 
-> ⚠️ **许可证**:本项目采用「开源但非商业」授权 —— 可自由使用、学习与修改,**不可商用**;修改后再分发时必须注明「基于 PicGalleryServer 修改」并附原项目链接。完整条款见 [LICENSE](./LICENSE)。
+> ⚠️ **许可证**:本项目采用 **PolyForm Noncommercial License 1.0.0** —— 可自由使用、修改与再分发,但**仅限非商业用途**;修改后再分发必须保留本项目的归属声明(`Required Notice:`)与许可证副本。完整条款见 [LICENSE](./LICENSE)。
 
 ## ✨ 功能
 
@@ -128,25 +128,40 @@ npm start                # 端口由 .env 中的 PORT 决定,默认 3000
 
 ## 📜 许可证
 
-本项目采用 **PicGalleryServer 非商业许可证**(`LicenseRef-PicGalleryServer-NC`),完整条款见 [LICENSE](./LICENSE)。
+本项目采用 **[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)**(SPDX 标识:`PolyForm-Noncommercial-1.0.0`),这是一套由 PolyForm Project 发布的、面向软件的开源许可证。完整条款见 [LICENSE](./LICENSE),归属声明见 [NOTICE](./NOTICE)。
 
 | 你可以 | 你不可以 |
 |---|---|
-| ✅ 个人学习、研究与实验 | ❌ 任何商业使用(收费托管、出售、集成盈利等) |
-| ✅ 教育、教学与学术研究 | ❌ 将本项目或衍生作品作为付费产品的一部分交付 |
-| ✅ 非收费的公益、开源社区活动 | ❌ 以本项目为基础提供有偿的技术支持或定制开发 |
-| ✅ 修改本项目并制作衍生作品 | ❌ 删除或隐去本项目的来源声明 |
-| ✅ 向本项目提交贡献 | ❌ 暗示原作者为你的修改版本背书 |
+| ✅ 个人学习、研究、实验与业余项目 | ❌ 任何商业用途(收费托管、出售、集成盈利等) |
+| ✅ 教育机构、慈善组织、科研机构的非商业使用 | ❌ 将本项目作为付费产品的一部分交付 |
+| ✅ 修改本项目并制作衍生作品 | ❌ 删除或隐去 `Required Notice:` 归属声明 |
+| ✅ 向本项目提交贡献 | ❌ 分发时附带的许可证与声明不完整 |
 
-**署名要求**:若你修改了本项目并对外分发(源码、容器镜像、二进制等任何形式),必须在作品的显著位置保留以下声明:
+### 不可商用
 
-> 本作品基于 PicGalleryServer 项目修改 / 衍生。
-> 原项目:https://github.com/DMing623/PicGalleryServer
-> 版权所有 (c) 2026 DMing623,按 PicGalleryServer 非商业许可证授权。
+许可证的 **Noncommercial Purposes** 条款规定:「Any noncommercial purpose is a permitted purpose.」即**只有非商业目的**才属于授权范围。
 
-同时需完整附带 [LICENSE](./LICENSE) 全文,并在镜像元数据中标注 `LicenseRef-PicGalleryServer-NC`。
+- 允许:个人学习研究、非盈利的业余项目、公益与教育机构使用、开源贡献
+- 禁止:对外收费的托管或订阅服务、将本项目打包进付费产品、基于本项目提供有偿服务
+- 商业使用需另行获得著作权人的书面授权
 
-> 商业使用需另行获得著作权人的书面授权。
+### 修改后必须提到本项目
+
+许可证的 **Notices** 条款要求:任何获得本软件部分副本的人,都必须同时获得许可证副本(或官方 URL),以及所有以 `Required Notice:` 开头的纯文本行。
+
+因此,若你修改了本项目并对外分发(源码、容器镜像、二进制等任何形式),请务必保留:
+
+1. **[LICENSE](./LICENSE)** 全文(或官方 URL `https://polyformproject.org/licenses/noncommercial/1.0.0`);
+2. **[NOTICE](./NOTICE)** 文件,其中包含必须原样传递的声明行:
+
+   ```text
+   Required Notice: Copyright (c) 2026 DMing623 (https://github.com/DMing623/PicGalleryServer)
+   ```
+
+3. 各源文件顶部的 `SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0` 标识;
+4. 在 README 或产品说明中注明本项目来源:https://github.com/DMing623/PicGalleryServer
+
+> 许可证的 **Changes and New Works License** 条款允许你为任何许可用途制作修改与新作品;但附加的许可条款不得与本许可证冲突,也不能放宽其非商业限制。
 
 ## 📄 说明
 
