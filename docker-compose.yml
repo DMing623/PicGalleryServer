@@ -25,16 +25,26 @@ services:
       POSTGRES_DB: picgallery
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # 健康检查:让 app 等数据库真正可连接后再启动,避免启动瞬间的
+    # "the database system is starting up" 竞态错误
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgs -d picgallery"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
 
   app:
     # —— 使用 GitHub Actions 构建好的最新镜像(默认方式)——
     image: ghcr.io/dming623/picgalleryserver:latest
     # 每次启动都从仓库拉取最新镜像,保证与流水线构建结果一致
     pull_policy: always
-    # —— 本地自行构建(已注释;启用时需同时移除上面的 image 与 pull_policy)——
+    # —— 本地自行构建(已注释;启用时须同时移除上面的 image 与 pull_policy)——
     # build: .
     restart: unless-stopped
-    depends_on: [db]
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "3000:3000"
     environment:
