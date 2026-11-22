@@ -98,63 +98,8 @@ jobs:
 
   cleanup-old-versions:
     name: 清理旧镜像(仅保留最新两个)
-    runs-on: ubuntu-latest
     needs: build-and-push
-    timeout-minutes: 15
+    uses: ./.github/workflows/cleanup-image-versions.yml
     permissions:
       contents: read
       packages: write # 删除旧镜像版本需要
-
-    steps:
-      - name: 规范化镜像名称(GHCR 要求全小写)
-        id: image
-        run: echo "repo=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-
-      - name: 删除除最新两个版本之外的旧镜像
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OWNER: ${{ github.repository_owner }}
-          REPO: picgalleryserver
-        run: |
-          set -uo pipefail
-          # 个人账户与组织两种归属,依次尝试列出该容器包的版本
-          LIST=""
-          for API in "/users/${OWNER}/packages/container/${REPO}/versions" \
-                     "/orgs/${OWNER}/packages/container/${REPO}/versions"; do
-            LIST=$(gh api --paginate "${API}?per_page=100" \
-                    --jq '.[] | [.id, .created_at, (.metadata.container.tags // [] | join(","))] | @tsv' 2>/dev/null) && break
-          done
-          if [ -z "$LIST" ]; then
-            echo "::warning::未找到容器包 ${OWNER}/${REPO},跳过清理"
-            exit 0
-          fi
-          echo "清理前共 $(printf '%s\n' "$LIST" | wc -l | tr -d ' ') 个版本:"
-          printf '%s\n' "$LIST" | sed 's/^/  /'
-          # 按创建时间倒序,保留最新两个(最新 + 前一个)
-          KEEP_IDS=$(printf '%s\n' "$LIST" | sort -t"$(printf '\t')" -k2 -r | head -2 | cut -f1)
-          echo "保留版本 ID: $(echo "$KEEP_IDS" | tr '\n' ' ')"
-          printf '%s\n' "$LIST" | while IFS="$(printf '\t')" read -r ID CREATED TAGS; do
-            [ -z "${ID:-}" ] && continue
-            # 安全规则:带 latest 标签的版本永不删除(latest 永远指向最新构建)
-            if printf '%s\n' "$KEEP_IDS" | grep -qx "$ID" || printf '%s' "$TAGS" | grep -q "latest"; then
-              echo "  ✔ 保留 $ID  $CREATED  [$TAGS]"
-              continue
-            fi
-            echo "  ✖ 删除 $ID  $CREATED  [$TAGS]"
-            gh api -X DELETE "/users/${OWNER}/packages/container/${REPO}/versions/${ID}" 2>/dev/null \
-              || gh api -X DELETE "/orgs/${OWNER}/packages/container/${REPO}/versions/${ID}" 2>/dev/null \
-              || echo "    !! 删除失败: $ID"
-          done
-
-      - name: 列出清理后剩余的镜像版本
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          REPO="${{ steps.image.outputs.repo }}"
-          echo "仓库: $REPO"
-          gh api "/users/${{ github.actor }}/packages/container/${REPO}/versions?per_page=100" \
-            --jq '.[] | "  id=\(.id)  tags=\(.metadata.container.tags | join(","))  created=\(.created_at)"' \
-            || gh api "/orgs/${{ github.repository_owner }}/packages/container/${REPO}/versions?per_page=100" \
-            --jq '.[] | "  id=\(.id)  tags=\(.metadata.container.tags | join(","))  created=\(.created_at)"' \
-            || echo "（无法列出版本，清理步骤可能已按预期完成）"

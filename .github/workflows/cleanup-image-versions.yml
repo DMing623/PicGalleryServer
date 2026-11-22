@@ -1,0 +1,76 @@
+name: 清理旧镜像版本
+
+# 独立工作流:清理 GHCR 容器包中的历史版本。
+#
+# 保留规则:只保留【最新】与【前一个】两次构建的镜像,其余版本全部删除。
+# 注意:多架构镜像(linux/amd64 + linux/arm64)在 GHCR 中每次构建会产生多个 package version
+#       (带标签的主版本 + 各架构的无标签版本),因此按【构建】聚类后再保留最近两次构建,
+#       而不是简单按 version 数量截断。
+#
+# 触发方式:
+#   - workflow_dispatch:手动单独执行(无需重新构建镜像)
+#   - workflow_call:由 docker-publish.yml 在镜像构建成功后自动调用
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write # 删除旧镜像版本需要
+
+jobs:
+  cleanup:
+    name: 仅保留最新两个构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 列出容器包的全部版本
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: picgalleryserver
+        run: |
+          set -uo pipefail
+          rm -f /tmp/vers.jsonl
+          # 个人账户与组织两种归属,依次尝试
+          for API in "/users/${OWNER}/packages/container/${REPO}/versions" \
+                     "/orgs/${OWNER}/packages/container/${REPO}/versions"; do
+            if gh api --paginate "${API}?per_page=100" \
+                 --jq '.[] | {id, created_at, tags: (.metadata.container.tags // [])}' > /tmp/vers.jsonl 2>/dev/null; then
+              break
+            fi
+          done
+          if [ ! -s /tmp/vers.jsonl ]; then
+            echo "::warning::未找到容器包 ${OWNER}/${REPO},跳过清理"
+            exit 0
+          fi
+          echo "共列出 $(wc -l < /tmp/vers.jsonl | tr -d ' ') 个 version"
+
+      - name: 按构建聚类,保留最新两个构建并删除其余
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: picgalleryserver
+        run: python3 scripts/cleanup-image-versions.py /tmp/vers.jsonl
+
+      - name: 列出清理后剩余的镜像版本
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: picgalleryserver
+        run: |
+          for API in "/users/${OWNER}/packages/container/${REPO}/versions" \
+                     "/orgs/${OWNER}/packages/container/${REPO}/versions"; do
+            if gh api --paginate "${API}?per_page=100" \
+                 --jq '.[] | "  id=\(.id)  tags=\(.metadata.container.tags | join(","))  created=\(.created_at)"' 2>/dev/null; then
+              exit 0
+            fi
+          done
+          echo "（无法列出版本）"
