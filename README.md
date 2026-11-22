@@ -1,6 +1,11 @@
 # PicGalleryServer
 
+[![构建](https://github.com/DMing623/PicGalleryServer/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/DMing623/PicGalleryServer/actions/workflows/docker-publish.yml)
+[![许可证](https://img.shields.io/badge/License-Non--Commercial%20only-blue.svg)](./LICENSE)
+
 自托管的图片与视频相册服务。把照片和视频放在自己的服务器上,用漂亮的毛玻璃界面浏览、搜索、分享,并且原图受保护。
+
+> ⚠️ **许可证**:本项目采用「开源但非商业」授权 —— 可自由使用、学习与修改,**不可商用**;修改后再分发时必须注明「基于 PicGalleryServer 修改」并附原项目链接。完整条款见 [LICENSE](./LICENSE)。
 
 ## ✨ 功能
 
@@ -120,6 +125,28 @@ npm start                # 端口由 .env 中的 PORT 决定,默认 3000
   node cli/pgs.mjs key set --ttl 24h
   node cli/pgs.mjs help
   ```
+
+## 📜 许可证
+
+本项目采用 **PicGalleryServer 非商业许可证**(`LicenseRef-PicGalleryServer-NC`),完整条款见 [LICENSE](./LICENSE)。
+
+| 你可以 | 你不可以 |
+|---|---|
+| ✅ 个人学习、研究与实验 | ❌ 任何商业使用(收费托管、出售、集成盈利等) |
+| ✅ 教育、教学与学术研究 | ❌ 将本项目或衍生作品作为付费产品的一部分交付 |
+| ✅ 非收费的公益、开源社区活动 | ❌ 以本项目为基础提供有偿的技术支持或定制开发 |
+| ✅ 修改本项目并制作衍生作品 | ❌ 删除或隐去本项目的来源声明 |
+| ✅ 向本项目提交贡献 | ❌ 暗示原作者为你的修改版本背书 |
+
+**署名要求**:若你修改了本项目并对外分发(源码、容器镜像、二进制等任何形式),必须在作品的显著位置保留以下声明:
+
+> 本作品基于 PicGalleryServer 项目修改 / 衍生。
+> 原项目:https://github.com/DMing623/PicGalleryServer
+> 版权所有 (c) 2026 DMing623,按 PicGalleryServer 非商业许可证授权。
+
+同时需完整附带 [LICENSE](./LICENSE) 全文,并在镜像元数据中标注 `LicenseRef-PicGalleryServer-NC`。
+
+> 商业使用需另行获得著作权人的书面授权。
 
 ## 📄 说明
 

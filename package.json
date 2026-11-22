@@ -1,6 +1,14 @@
 {
-  "name": "nextjs-postgresql-template",
+  "name": "picgalleryserver",
+  "version": "1.0.0",
   "private": true,
+  "license": "LicenseRef-PicGalleryServer-NC",
+  "description": "自托管的图片与视频相册服务:嵌套相册、缩略图生成、EXIF/AI 绘图元数据解析、原文件密钥保护、多用户权限与完整 API",
+  "homepage": "https://github.com/DMing623/PicGalleryServer",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DMing623/PicGalleryServer.git"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
