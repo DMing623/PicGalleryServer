@@ -22,9 +22,9 @@ interface Status {
 
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="glass rounded-xl p-3">
+    <div className="glass min-w-0 rounded-xl p-3">
       <div className="muted text-xs">{label}</div>
-      <div className="mt-0.5 text-lg font-semibold">{value}</div>
+      <div className="mt-0.5 break-words text-lg font-semibold">{value}</div>
     </div>
   );
 }
@@ -48,7 +48,7 @@ export default function SystemTab() {
   if (!s) return <p className="muted text-sm">{msg || "加载中…"}</p>;
   const c = s.counts;
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="媒体总数" value={c.total} />
         <Stat label="图片 / 视频" value={`${c.images} / ${c.videos}`} />
@@ -85,7 +85,9 @@ export default function SystemTab() {
         <pre className="glass overflow-auto rounded-lg p-3 text-xs">{JSON.stringify(s.config, null, 2)}</pre>
       </section>
       {can("media.edit") && (
-        <div className="flex items-center gap-3">
+        /* 按钮允许换行:窄屏下两个按钮各占一行,提示信息独占一行,
+           避免 nowrap 的按钮与长文本撑破容器造成整页横向溢出 */
+        <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
           <button
             className="btn"
             onClick={async () => {
@@ -104,7 +106,7 @@ export default function SystemTab() {
           >
             ↻ 重新生成全部缩略图
           </button>
-          {msg && <span className="text-sm">{msg}</span>}
+          {msg && <span className="w-full min-w-0 break-words text-sm">{msg}</span>}
         </div>
       )}
     </div>

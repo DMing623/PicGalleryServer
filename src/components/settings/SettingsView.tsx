@@ -31,7 +31,7 @@ export default function SettingsView() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl px-3">
+    <div className="mx-auto min-w-0 max-w-5xl px-3">
       <h1 className="mb-2 text-lg font-semibold">设置</h1>
       <div className="mb-4 flex flex-wrap gap-1.5">
         {tabs.map((t) => (
@@ -40,7 +40,7 @@ export default function SettingsView() {
           </button>
         ))}
       </div>
-      <div className="fade-in" key={active}>
+      <div className="fade-in min-w-0" key={active}>
         {active === "appearance" && <AppearanceTab />}
         {active === "albums" && <AlbumManager />}
         {active === "keys" && <KeysTab />}

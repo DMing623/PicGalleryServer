@@ -49,6 +49,32 @@ function CopyLine({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** 复制按钮:点击后短暂显示对勾反馈 */
+function CopyChip({ value, className = "chip" }: { value: string; className?: string }) {
+  const [ok, setOk] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  return (
+    <button
+      type="button"
+      className={`${className} cursor-pointer`}
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(value);
+          setOk(true);
+          if (timer.current) clearTimeout(timer.current);
+          timer.current = setTimeout(() => setOk(false), 1500);
+        } catch {
+          /* 剪贴板不可用时静默失败 */
+        }
+      }}
+      title={ok ? "已复制" : "复制到剪贴板"}
+    >
+      {ok ? "✓ 已复制" : "复制"}
+    </button>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* 缩放舞台:滚轮缩放 / 双击(双击触屏)放大 / 鼠标拖动 / 触屏双指缩放 / 触屏滑动切换   */
 /* ------------------------------------------------------------------ */
@@ -533,7 +559,7 @@ export default function Viewer({
                   <InfoRow label="图片 ID">
                     <span className="flex items-center gap-2">
                       <code className="select-all break-all">{cur.id}</code>
-                      <button className="chip cursor-pointer" onClick={() => void navigator.clipboard?.writeText(cur.id).catch(() => undefined)}>复制</button>
+                      <CopyChip value={cur.id} />
                     </span>
                     <span className="muted mt-0.5 block text-[11px]">API 中的图片字符串 ID:/api/v1/media/{cur.id}、/f/{cur.id}</span>
                   </InfoRow>

@@ -194,6 +194,7 @@ export function KeysTab() {
   const [expires, setExpires] = useState("never");
   const [hours, setHours] = useState(72);
   const [created, setCreated] = useState("");
+  const [copied, setCopied] = useState(false);
   const [err, setErr] = useState("");
 
   const load = useCallback(() => api<{ keys: KeyRow[] }>("/keys").then((r) => setKeys(r.keys)).catch((e) => setErr(e.message)), []);
@@ -232,7 +233,20 @@ export function KeysTab() {
         {created && (
           <div className="mt-3 rounded-xl p-3 text-sm" style={{ background: "color-mix(in srgb, var(--accent) 14%, transparent)" }}>
             密钥(仅此一次显示,请妥善保存):<code className="select-all break-all font-semibold">{created}</code>
-            <button className="btn ml-2 !py-0.5 text-xs" onClick={() => navigator.clipboard.writeText(created)}>复制</button>
+            <button
+              className="btn ml-2 !py-0.5 text-xs"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(created);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1500);
+                } catch {
+                  /* 剪贴板不可用时静默失败 */
+                }
+              }}
+            >
+              {copied ? "✓ 已复制" : "复制"}
+            </button>
           </div>
         )}
       </section>

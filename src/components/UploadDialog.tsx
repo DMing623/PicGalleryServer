@@ -40,6 +40,8 @@ function sendOne(file: File, query: string, onPct: (p: number) => void): Promise
       }
     };
     xhr.onerror = () => resolve({ status: "error", error: "网络错误" });
+    xhr.onabort = () => resolve({ status: "error", error: "已取消" });
+    xhr.ontimeout = () => resolve({ status: "error", error: "上传超时" });
     const fd = new FormData();
     fd.append("file", file, file.name);
     xhr.send(fd);
@@ -182,7 +184,20 @@ export default function UploadDialog({ defaultAlbum, onClose }: { defaultAlbum: 
           }}
         >
           拖拽文件到这里,或点击选择
-          <input ref={input} type="file" multiple accept="image/*,video/*,.heic,.heif,.mkv,.avi" hidden onChange={(e) => e.target.files && add(e.target.files)} />
+          <input
+            ref={input}
+            type="file"
+            multiple
+            accept="image/*,video/*,.heic,.heif,.mkv,.avi"
+            hidden
+            /* 阻止冒泡到外层 div 的 onClick,否则会再次触发 input.click() 导致文件选择器重复弹出 */
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => {
+              e.target.files && add(e.target.files);
+              // 清空 value,保证再次选择同一批文件也能触发 change
+              e.target.value = "";
+            }}
+          />
         </div>
 
         {jobs.length > 0 && (

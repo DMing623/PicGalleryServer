@@ -85,6 +85,19 @@ export async function resolveTarget(p: { album?: string | null; dir?: string | n
   return { album: null, storage: st, dirKey: "albums/_inbox" };
 }
 
+/**
+ * 判断错误链里是否含 PostgreSQL 唯一约束冲突(23505)。
+ * Drizzle 会把底层错误包进 DrizzleQueryError,原始 code 在 cause 上,故需沿链查找。
+ */
+function isUniqueViolation(e: unknown): boolean {
+  let cur: unknown = e;
+  for (let i = 0; i < 6 && cur && typeof cur === "object"; i++) {
+    if ((cur as { code?: unknown }).code === "23505") return true;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 async function uniqueKey(storage: StorageCode, dirKey: string, name: string): Promise<string> {
   const ext = path.extname(name);
   const stem = name.slice(0, name.length - ext.length);
@@ -134,27 +147,51 @@ export async function ingestOne(
     }
 
     const name = safeName(file.name);
-    const key = await uniqueKey(target.storage, target.dirKey, name);
     const driver = await driverFor(target.storage);
-    const id = randomId(12);
-    await driver.put(key, file.tmp, kind.mime);
-    consumed = target.storage !== "s3";
-    if (target.storage === "s3") {
-      hintLocalCopy(id, file.tmp);
-      keepTmp = true; // 派生任务完成后会清理该临时副本
-    }
-
     const note = (opts.note ?? "").slice(0, 5000);
-    await db.insert(media).values({
-      id, albumId: target.album?.id ?? null, kind: kind.kind, filename: path.basename(key), mime: kind.mime, size: file.size,
-      hash: file.hash, sortAt: new Date(), storage: target.storage, storageKey: key, status: "pending", note,
-      searchText: `${path.basename(key)}\n${note}`.toLowerCase(), uploadedBy: opts.user.id,
-    });
-    invalidateAlbums();
-    enqueue(id, true);
-    return { filename: file.name, status: "created", id, link: `/f/${id}`, album: target.album?.code ?? null, storage: target.storage };
+
+    /**
+     * 先写数据库占位、再落盘。
+     * 数据库上的唯一索引 pgs_media_storage_uq(storage, storage_key) 会原子地"占住"文件名:
+     * 并发上传同名文件时,后到者拿到 23505 冲突,换名重试即可,
+     * 既不会互相覆盖已写入的原文件,也不会出现"一个成功一个失败"。
+     * (旧实现是先落盘再插库,并发同名时两个请求会算出同一个 key,
+     *  后者覆盖前者的文件,再在插库时撞唯一索引而失败。)
+     */
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const key = await uniqueKey(target.storage, target.dirKey, name);
+      const id = randomId(12);
+      try {
+        await db.insert(media).values({
+          id, albumId: target.album?.id ?? null, kind: kind.kind, filename: path.basename(key), mime: kind.mime, size: file.size,
+          hash: file.hash, sortAt: new Date(), storage: target.storage, storageKey: key, status: "pending", note,
+          searchText: `${path.basename(key)}\n${note}`.toLowerCase(), uploadedBy: opts.user.id,
+        });
+      } catch (e) {
+        // 唯一索引冲突:换一个新名字重试(此时临时文件尚未落盘,仍在)
+        if (isUniqueViolation(e) && attempt < 9) continue;
+        throw e;
+      }
+      // 占位成功 → 写入实际文件;失败则回滚占位记录
+      try {
+        await driver.put(key, file.tmp, kind.mime);
+      } catch (e) {
+        await db.delete(media).where(eq(media.id, id)).catch(() => undefined);
+        throw e;
+      }
+      consumed = target.storage !== "s3";
+      if (target.storage === "s3") {
+        hintLocalCopy(id, file.tmp);
+        keepTmp = true; // 派生任务完成后会清理该临时副本
+      }
+      invalidateAlbums();
+      enqueue(id, true);
+      return { filename: file.name, status: "created", id, link: `/f/${id}`, album: target.album?.code ?? null, storage: target.storage };
+    }
+    throw E.conflict("无法生成唯一文件名");
   } catch (e) {
-    return { ...result, error: String((e as Error).message ?? e) };
+    const msg = isUniqueViolation(e) ? "文件名冲突,请重试" : String((e as Error).message ?? e);
+    return { ...result, error: msg };
   } finally {
     if (!consumed && !keepTmp) await fs.unlink(file.tmp).catch(() => undefined);
   }
