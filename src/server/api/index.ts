@@ -3,6 +3,7 @@
 import "./auth";
 import "./albums";
 import "./media";
+import "./hd";
 import "./admin";
 
 export { dispatch } from "../router";

@@ -9,6 +9,7 @@ import { scanAllMounted } from "./albums";
 import { syncEnvAdmin } from "./auth";
 import { config, dirs } from "./config";
 import { purgeExpiredKeys } from "./keys";
+import { sweepHdCache } from "./hd/cache";
 import { processMedia } from "./media/derive";
 import { enqueue, setRunner } from "./queue";
 
@@ -32,7 +33,9 @@ async function init() {
   const hourly = setInterval(() => {
     void purgeExpiredKeys().catch(() => undefined);
     void cleanTmp().catch(() => undefined);
+    void sweepHdCache().catch(() => undefined);
   }, 3600_000);
+  void sweepHdCache().catch(() => undefined);
   hourly.unref();
   void purgeExpiredKeys().catch(() => undefined);
 

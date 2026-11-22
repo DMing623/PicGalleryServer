@@ -8,6 +8,7 @@ import { api } from "@/lib/api";
 import { bytes } from "@/lib/format";
 import AlbumActions, { type AlbumDto } from "./AlbumActions";
 import { useApp } from "./AppProvider";
+import { useDialog } from "./DialogProvider";
 import Gallery from "./Gallery";
 
 interface Detail extends AlbumDto {
@@ -47,6 +48,7 @@ function Card({ a }: { a: AlbumDto }) {
 export default function AlbumsView({ code }: { code?: string }) {
   const { loading, can, me } = useApp();
   const router = useRouter();
+  const dlg = useDialog();
   const [detail, setDetail] = useState<Detail | null>(null);
   const [list, setList] = useState<AlbumDto[] | null>(null);
   const [unsorted, setUnsorted] = useState<number | null>(null);
@@ -78,7 +80,7 @@ export default function AlbumsView({ code }: { code?: string }) {
   if (code === "_unsorted") {
     return (
       <div>
-        <h1 className="mb-3 text-xl font-semibold">未归类(收件箱)</h1>
+        <h1 className="mb-2 px-2 text-lg font-semibold">未归类(收件箱)</h1>
         <Suspense fallback={null}><Gallery album="_unsorted" /></Suspense>
       </div>
     );
@@ -95,20 +97,20 @@ export default function AlbumsView({ code }: { code?: string }) {
 
   if (!code) {
     return (
-      <div>
-        <div className="mb-4 flex items-center gap-3">
-          <h1 className="text-xl font-semibold">相册</h1>
+      <div className="px-2">
+        <div className="mb-3 flex items-center gap-3">
+          <h1 className="text-lg font-semibold">相册</h1>
           {can("album.manage") && (
             <button
-              className="btn btn-primary"
+              className="btn btn-primary !py-1 text-xs"
               onClick={async () => {
-                const name = prompt("新相册名称");
+                const name = await dlg.prompt({ title: "新建相册", label: "相册名称", placeholder: "例如:旅行", confirmText: "创建", validate: (v) => (v ? (v.length > 80 ? "名称过长(最多 80 字)" : null) : "请输入相册名称") });
                 if (!name) return;
                 try {
                   await api("/albums", { method: "POST", json: { name, visibility: "private" } });
                   await load();
                 } catch (e) {
-                  alert((e as Error).message);
+                  await dlg.alert((e as Error).message, "创建失败");
                 }
               }}
             >
@@ -141,7 +143,7 @@ export default function AlbumsView({ code }: { code?: string }) {
 
   return (
     <div>
-      <div className="glass mb-4 rounded-2xl p-4">
+      <div className="glass mx-2 mb-3 rounded-2xl p-3">
         <nav className="muted mb-1 flex flex-wrap items-center gap-1 text-sm">
           <Link href="/albums" className="hover:underline">相册</Link>
           {detail.breadcrumbs.map((b) => (
@@ -168,7 +170,7 @@ export default function AlbumsView({ code }: { code?: string }) {
       </div>
 
       {detail.children.length > 0 && (
-        <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-7">
+        <div className="mx-2 mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-7">
           {detail.children.map((a) => <Card key={a.code} a={a} />)}
         </div>
       )}

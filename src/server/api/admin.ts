@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+import { hdCacheInfo } from "../hd/cache";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -138,10 +139,11 @@ route("GET", "/status", "status", async () => {
     node: process.version,
     counts: r.rows[0],
     queue: queueStats(),
+    hd: await hdCacheInfo(),
     tools: { ffmpeg: ffCache.ffmpeg, ffprobe: ffCache.ffprobe, s3: s3Available() },
     memory: { rss: mem.rss, heapUsed: mem.heapUsed },
     disk: disk ? { freeBytes: Number(disk.bavail) * Number(disk.bsize), totalBytes: Number(disk.blocks) * Number(disk.bsize) } : null,
-    config: { dataDir: config.dataDir, thumbConcurrency: config.thumbConcurrency, thumbWidth: config.thumbWidth, previewWidth: config.previewWidth, maxUploadMb: config.maxUploadMb, scanIntervalMin: config.scanIntervalMin },
+    config: { dataDir: config.dataDir, thumbConcurrency: config.thumbConcurrency, thumbWidth: config.thumbWidth, previewWidth: config.previewWidth, hdWidth: config.hd.width, hdCacheMaxMb: Math.round(config.hd.cacheMaxBytes / 1048576), hdCacheTtlDays: config.hd.cacheTtlMs / 86400000, hdConcurrency: config.hd.concurrency, maxUploadMb: config.maxUploadMb, scanIntervalMin: config.scanIntervalMin },
   };
 });
 

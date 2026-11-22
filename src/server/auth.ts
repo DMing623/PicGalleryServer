@@ -132,8 +132,9 @@ export function issueStreamToken(mediaId: string, ttlSec = 6 * 3600): string {
 
 export function verifyStreamToken(token: string | null, mediaId: string): boolean {
   if (!token) return false;
-  const p = verifyToken<{ m?: string }>(token);
-  return !!p && p.m === mediaId;
+  const p = verifyToken<{ m?: string; s?: string }>(token);
+  // 带 scope 的令牌(如高清预览令牌)不得当作播放令牌使用,保证权限隔离
+  return !!p && p.s === undefined && p.m === mediaId;
 }
 
 /* ---------- 请求鉴权 ---------- */

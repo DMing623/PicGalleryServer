@@ -59,6 +59,13 @@ route("POST", "/media/:id/reprocess", "media.edit", async (ctx) => {
 
 route("POST", "/system/reprocess", "media.edit", async () => ({ queued: await reprocessFailed() }));
 
+/** 重新生成全部缩略图/预览图(升级到更高清的无元数据 WebP);不改变状态,生成完成前仍显示旧图 */
+route("POST", "/system/regenerate-derived", "media.edit", async () => {
+  const rows = await db.select({ id: media.id }).from(media).where(eq(media.status, "ready"));
+  rows.forEach((r) => enqueue(r.id));
+  return { queued: rows.length };
+});
+
 /**
  * 上传(multipart/form-data,文件字段名任意,可多文件)。
  * 参数(query 或表单字段): album | dir | storage | concurrency | duplicate(skip|keep) | note

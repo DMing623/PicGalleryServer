@@ -16,6 +16,10 @@ export default function LoginForm() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!username.trim() || !password) {
+      setErr(!username.trim() ? "请输入用户名" : "请输入密码");
+      return;
+    }
     setBusy(true);
     setErr("");
     try {
@@ -32,7 +36,7 @@ export default function LoginForm() {
 
   return (
     <main className="flex min-h-screen items-center justify-center p-4">
-      <form onSubmit={submit} className="glass-strong fade-in w-full max-w-sm space-y-4 rounded-3xl p-8">
+      <form noValidate onSubmit={submit} className="glass-strong fade-in w-full max-w-sm space-y-4 rounded-3xl p-8">
         <div className="flex items-center gap-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={me?.site.iconUrl ?? "/api/v1/branding/icon"} alt="" className="h-11 w-11 rounded-xl" />

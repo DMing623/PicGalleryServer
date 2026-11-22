@@ -17,6 +17,7 @@ interface Status {
   memory: { rss: number; heapUsed: number };
   disk: { freeBytes: number; totalBytes: number } | null;
   config: Record<string, string | number>;
+  hd?: { files: number; bytes: number; maxBytes: number; ttlDays: number; hits: number; misses: number; evicted: number; expired: number; invalidated: number; conversions: number; coalesced: number };
 }
 
 function Stat({ label, value }: { label: string; value: string | number }) {
@@ -70,6 +71,16 @@ export default function SystemTab() {
           <li>对象存储 S3:{s.tools.s3 ? "✓ 已配置" : "未配置"}</li>
           <li>处理并发上限:{s.queue.concurrency}(THUMB_CONCURRENCY)</li>
         </ul>
+        {s.hd && (
+          <>
+            <h3 className="mb-1 mt-4 font-semibold">高清预览缓存</h3>
+            <ul className="grid gap-1 sm:grid-cols-2">
+              <li>缓存:{s.hd.files} 个文件 · {bytes(s.hd.bytes)} / {bytes(s.hd.maxBytes)}(有效期 {s.hd.ttlDays} 天)</li>
+              <li>命中 {s.hd.hits} · 未命中 {s.hd.misses} · 合并并发 {s.hd.coalesced}</li>
+              <li>转换 {s.hd.conversions} 次 · LRU 淘汰 {s.hd.evicted} · 过期 {s.hd.expired} · 失效 {s.hd.invalidated}</li>
+            </ul>
+          </>
+        )}
         <h3 className="mb-1 mt-4 font-semibold">当前配置</h3>
         <pre className="glass overflow-auto rounded-lg p-3 text-xs">{JSON.stringify(s.config, null, 2)}</pre>
       </section>
@@ -83,6 +94,15 @@ export default function SystemTab() {
             }}
           >
             ⟳ 重新处理失败 / 待处理文件
+          </button>
+          <button
+            className="btn"
+            onClick={async () => {
+              const r = await api<{ queued: number }>("/system/regenerate-derived", { method: "POST" });
+              setMsg(`已入队 ${r.queued} 个文件,正在重新生成高清无元数据缩略图/预览图`);
+            }}
+          >
+            ↻ 重新生成全部缩略图
           </button>
           {msg && <span className="text-sm">{msg}</span>}
         </div>

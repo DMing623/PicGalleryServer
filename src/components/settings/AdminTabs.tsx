@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { bytes, dateTime } from "@/lib/format";
 import AlbumActions, { type AlbumDto } from "../AlbumActions";
 import { useApp } from "../AppProvider";
+import { useDialog } from "../DialogProvider";
 
 /* ============ 相册管理 + 目录挂载 ============ */
 
@@ -103,6 +104,7 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
 
 export function AlbumManager() {
   const { can, me } = useApp();
+  const dlg = useDialog();
   const [albums, setAlbums] = useState<AlbumDto[]>([]);
   const [mountOpen, setMountOpen] = useState(false);
   const [err, setErr] = useState("");
@@ -134,14 +136,19 @@ export function AlbumManager() {
   }, [albums]);
 
   async function create() {
-    const name = prompt("新相册名称");
+    const name = await dlg.prompt({ title: "新建相册", label: "相册名称", placeholder: "例如:旅行", confirmText: "创建", validate: (v) => (v ? (v.length > 80 ? "名称过长(最多 80 字)" : null) : "请输入相册名称") });
     if (!name) return;
-    const storage = me?.features.s3 && confirm("存储到对象存储 S3?\n确定 = S3,取消 = 本地数据目录") ? "s3" : "local";
+    let storage = "local";
+    if (me?.features.s3) {
+      const pick = await dlg.choose({ title: "选择存储位置", message: "新相册的原文件存放在哪里?", options: [{ value: "local", label: "本地数据目录", kind: "primary" }, { value: "s3", label: "对象存储 S3" }] });
+      if (!pick) return;
+      storage = pick;
+    }
     try {
       await api("/albums", { method: "POST", json: { name, storage, visibility: "private" } });
       await load();
     } catch (e) {
-      alert((e as Error).message);
+      await dlg.alert((e as Error).message, "操作失败");
     }
   }
 
@@ -266,6 +273,7 @@ const ROLE_DESC: Record<string, string> = {
 };
 
 export function UsersTab() {
+  const dlg = useDialog();
   const [users, setUsers] = useState<UserRow[]>([]);
   const [roles, setRoles] = useState<string[]>([]);
   const [f, setF] = useState({ username: "", password: "", role: "viewer" });
@@ -317,9 +325,9 @@ export function UsersTab() {
                   <td className="space-x-1 text-right">
                     {u.source !== "env" && (
                       <>
-                        <button className="btn !py-0.5 text-xs" onClick={() => { const p = prompt(`为 ${u.username} 设置新密码(至少 8 位)`); if (p) void act(() => api(`/users/${u.id}`, { method: "PATCH", json: { password: p } })); }}>重置密码</button>
+                        <button className="btn !py-0.5 text-xs" onClick={async () => { const p = await dlg.prompt({ title: `重置 ${u.username} 的密码`, label: "新密码(至少 8 位)", password: true, confirmText: "重置", validate: (v) => (v.length < 8 ? "密码至少 8 位" : v.length > 200 ? "密码过长" : null) }); if (p) void act(() => api(`/users/${u.id}`, { method: "PATCH", json: { password: p } })); }}>重置密码</button>
                         <button className="btn !py-0.5 text-xs" onClick={() => act(() => api(`/users/${u.id}`, { method: "PATCH", json: { disabled: !u.disabled } }))}>{u.disabled ? "启用" : "禁用"}</button>
-                        <button className="btn btn-danger !py-0.5 text-xs" onClick={() => confirm(`删除用户 ${u.username}?`) && act(() => api(`/users/${u.id}`, { method: "DELETE" }))}>删除</button>
+                        <button className="btn btn-danger !py-0.5 text-xs" onClick={async () => { if (await dlg.confirm({ title: "删除用户", message: `确定删除用户「${u.username}」吗?`, confirmText: "删除", danger: true })) void act(() => api(`/users/${u.id}`, { method: "DELETE" })); }}>删除</button>
                       </>
                     )}
                   </td>

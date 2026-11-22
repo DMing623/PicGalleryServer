@@ -43,6 +43,13 @@ export default function Splash({ conf }: { conf: SplashConf }) {
     return () => clearTimeout(t);
   }, [conf.enabled, conf.durationMs, close]);
 
+  // 启动页消失后通知其它组件(免责声明弹窗在此之后出现)
+  useEffect(() => {
+    if (visible) return;
+    (window as unknown as { __pgsSplashDone?: boolean }).__pgsSplashDone = true;
+    window.dispatchEvent(new Event("pgs:splash-done"));
+  }, [visible]);
+
   // 粒子网络
   useEffect(() => {
     if (!visible || conf.mode !== "builtin") return;

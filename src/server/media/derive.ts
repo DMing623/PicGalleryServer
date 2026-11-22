@@ -9,6 +9,7 @@ import { media } from "@/db/schema";
 import { config, dirs } from "../config";
 import { materialize } from "../storage";
 import { buildSearchText, extractImageMeta, grabVideoFrame, probeVideo, type MediaMeta } from "./metadata";
+import { invalidateHd } from "../hd/cache";
 import { isHeic } from "./types";
 
 /**
@@ -26,6 +27,7 @@ export function derivedPath(id: string, variant: Variant): string {
 }
 
 export async function removeDerived(id: string) {
+  await invalidateHd(id);
   await Promise.all((["thumb", "preview"] as Variant[]).map((v) => fs.unlink(derivedPath(id, v)).catch(() => undefined)));
 }
 
@@ -46,11 +48,11 @@ async function makeDerived(id: string, input: string | Buffer) {
   const previewBuf = await sharp(input, { failOn: "none" })
     .rotate()
     .resize({ width: config.previewWidth, height: config.previewWidth, fit: "inside", withoutEnlargement: true })
-    .webp({ quality: 82 })
+    .webp({ quality: 84 }) // 不调用 keepMetadata/withMetadata:输出不含 EXIF/XMP/ICC 等元数据
     .toBuffer();
   const thumbBuf = await sharp(previewBuf)
     .resize({ width: config.thumbWidth, height: config.thumbWidth * 2, fit: "inside", withoutEnlargement: true })
-    .webp({ quality: 78 })
+    .webp({ quality: 84 })
     .toBuffer();
   const px = await sharp(thumbBuf).resize(1, 1, { fit: "cover" }).removeAlpha().raw().toBuffer();
   const color = `#${[px[0], px[1], px[2]].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
@@ -58,7 +60,7 @@ async function makeDerived(id: string, input: string | Buffer) {
   return color;
 }
 
-async function heicToJpeg(file: string): Promise<Buffer> {
+export async function heicToJpeg(file: string): Promise<Buffer> {
   const convert = (await import("heic-convert")).default;
   const input = await fs.readFile(file);
   const out = await convert({ buffer: input as unknown as ArrayBufferLike, format: "JPEG", quality: 0.92 } as never);
@@ -73,6 +75,7 @@ const PLACEHOLDER = (label: string) =>
 export async function processMedia(id: string): Promise<void> {
   const [row] = await db.select().from(media).where(eq(media.id, id)).limit(1);
   if (!row) return;
+  await invalidateHd(id); // 重新处理 = 原文件可能已变化,旧高清缓存作废
   const hint = localHints.get(id);
   let mat: { path: string; cleanup: () => Promise<void> } | null = null;
   try {

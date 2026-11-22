@@ -31,11 +31,11 @@ export default function SettingsView() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl">
-      <h1 className="mb-3 text-xl font-semibold">设置</h1>
+    <div className="mx-auto max-w-5xl px-3">
+      <h1 className="mb-2 text-lg font-semibold">设置</h1>
       <div className="mb-4 flex flex-wrap gap-1.5">
         {tabs.map((t) => (
-          <button key={t.id} className="btn" style={active === t.id ? { background: "var(--accent)", color: "var(--accent-fg)" } : undefined} onClick={() => setTab(t.id)}>
+          <button key={t.id} className="btn !py-1 text-xs" style={active === t.id ? { background: "var(--accent)", color: "var(--accent-fg)" } : undefined} onClick={() => setTab(t.id)}>
             {t.label}
           </button>
         ))}

@@ -60,7 +60,7 @@ route("POST", "/auth/password", "user", async (ctx) => {
 
 route("GET", "/site", "public", async () => publicSite(await getSite()));
 
-const DEFAULT_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e8946f"/><stop offset="1" stop-color="#c15f3c"/></linearGradient></defs><rect width="128" height="128" rx="30" fill="url(#g)"/><g fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><rect x="26" y="40" width="76" height="52" rx="12"/><circle cx="64" cy="66" r="14"/><path d="M48 40l6-9h20l6 9"/></g></svg>`;
+export const DEFAULT_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e8946f"/><stop offset="1" stop-color="#c15f3c"/></linearGradient></defs><rect width="128" height="128" rx="30" fill="url(#g)"/><g fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><rect x="26" y="40" width="76" height="52" rx="12"/><circle cx="64" cy="66" r="14"/><path d="M48 40l6-9h20l6 9"/></g></svg>`;
 
 route("GET", "/branding/icon", "public", async () => {
   const site = await getSite();

@@ -73,7 +73,34 @@ select.field { appearance: auto; }
 .chip { display: inline-flex; align-items: center; padding: .1rem .5rem; border-radius: 999px; font-size: .72rem;
   background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 .muted { color: var(--muted); }
-.row-lazy { content-visibility: auto; contain-intrinsic-size: auto 220px; }
+/* ---------- 瀑布流:固定列数、等宽、间距 1mm、无圆角 ---------- */
+.masonry { display: flex; align-items: flex-start; gap: 1mm; padding-inline: 1mm; }
+.masonry-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 1mm; }
+.mtile { position: relative; display: block; width: 100%; overflow: hidden; border-radius: 0; padding: 0; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.mtile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 0; transition: filter .15s ease; }
+.mtile:hover img { filter: brightness(1.07); }
+.mtile:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ---------- 顶部搜索栏 / 底部毛玻璃工具栏 ---------- */
+.topbar { position: fixed; z-index: 40; left: 1mm; right: 1mm; top: calc(env(safe-area-inset-top, 0px) + 1mm); height: 36px; display: flex; align-items: center; gap: 6px; padding: 0 6px; border-radius: 12px; }
+.dock { position: fixed; z-index: 40; height: 40px; bottom: calc(env(safe-area-inset-bottom, 0px) + 14px); left: 1mm; right: 1mm; display: flex; align-items: center; gap: 2px; padding: 0 6px; border-radius: 20px; overflow-x: auto; scrollbar-width: none; }
+.dock::-webkit-scrollbar { display: none; }
+/* 开发模式下左下角有 Next 悬浮球,工具栏紧贴在它右侧、高度与之近似 */
+.dock.dev { left: 64px; }
+.dbtn { display: inline-flex; align-items: center; justify-content: center; gap: 3px; height: 28px; min-width: 28px; padding: 0 9px; border-radius: 14px; font-size: 12px; line-height: 1; white-space: nowrap; cursor: pointer; transition: background .15s, transform .1s; flex: none; }
+.dbtn:hover { background: color-mix(in srgb, var(--fg) 10%, transparent); }
+.dbtn:active { transform: scale(.94); }
+.dbtn.on { background: var(--accent); color: var(--accent-fg); }
+.dsep { width: 1px; height: 18px; margin: 0 4px; background: color-mix(in srgb, var(--fg) 18%, transparent); flex: none; }
+.compact-field { height: 28px; padding: 0 10px; font-size: 13px; border-radius: 10px; }
+
+/* 已同意免责声明的访客不再显示弹窗 */
+html[data-disc="ok"] #pgs-disclaimer { display: none; }
+
+/* 查看器 */
+.viewer-stage { touch-action: none; user-select: none; -webkit-user-select: none; }
+.hd-spinner { width: 28px; height: 28px; border-radius: 50%; border: 3px solid rgba(255,255,255,.25); border-top-color: #fff; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---------- 启动页动画 ---------- */
 @keyframes ring-a { from { transform: rotateX(70deg) rotateZ(0); } to { transform: rotateX(70deg) rotateZ(360deg); } }
@@ -90,5 +117,5 @@ select.field { appearance: auto; }
 .title3d { transform-style: preserve-3d; animation: title-spin 6s ease-in-out infinite; }
 .title3d span.layer { position: absolute; left: 0; top: 0; width: 100%; text-align: center; white-space: nowrap; }
 .fade-in { animation: rise .35s ease both; }
-.tile { transition: transform .18s ease, box-shadow .18s ease; }
+.tile { transition: transform .18s ease, box-shadow .18s ease; } /* 相册卡片 */
 .tile:hover { transform: translateY(-2px) scale(1.01); box-shadow: 0 10px 30px -10px color-mix(in srgb, var(--fg) 45%, transparent); }

@@ -12,7 +12,7 @@
 - **相册分类 + 嵌套相册**:可在数据目录里新建相册;也可以把 VPS 上任意位置的绝对路径目录"挂载"为相册,子目录自动变成嵌套子相册,原文件不搬家。
 - **本地 / 对象存储**:原文件可放在服务器本地,也可放在 S3 兼容的对象存储。
 - **自动缩略图与预览图**:生成速度可控(并发数可在 `.env` 配置,默认 15),不会把 CPU 和内存打满。
-- **详尽元数据**:相机型号/镜头/光圈快门 ISO/GPS/时间等 EXIF 信息;PNG 文本信息;Stable Diffusion、NovelAI、ComfyUI 等 AI 生成图的提示词与参数;视频编码、分辨率、码率等。没有的字段显示 `N/A`。
+- **详尽元数据**:相机型号/镜头/光圈快门 ISO/GPS/时间等 EXIF 信息;PNG 文本信息;Stable Diffusion、NovelAI、ComfyUI 等 AI 生成图的提示词与参数;视频编码、分辨率、码率等。详情页只显示文件里实际存在的字段(名称/备注/分辨率/相册/ID/上传时间/格式为必备条目)。
 - **文件链接**:每张图片/视频下方都有可复制的文件链接(直链、HTML、Markdown),可嵌入博客。
 - **管理员备注**:管理员可为任意图片/视频添加备注(只保存在数据库,不改动原文件),游客只读。
 - **搜索**:首页是全局搜索;在某个相册内搜索只会搜索该相册(含其子相册)。
@@ -20,6 +20,11 @@
 - **多用户与权限**:管理员 / 管理者 / 上传者 / 查看者四个级别;游客不能上传。
 - **炫酷界面**:3D 旋转光环 + 粒子 + 3D 文字的启动页(可换成你自己的 https 图片/视频/网页链接),毛玻璃质感主页;主题配色可在设置里调整,默认经典 Claude 配色;支持上传自定义站点图标。
 - **完整 API 与命令行**:所有操作都能通过 HTTP API 或命令行完成。
+
+* **高清预览与防盗图**:点击图片按屏幕分辨率加载无元数据的高清 WebP(最大 2560px,按需生成 + LRU 临时缓存),支持滚轮/双击/双指缩放;服务端合成来源水印(`Source: {域名} · github.com/DMing623/PicGalleryServer`,登录用户另有动态标识),短期令牌 + 独立限流 + 异常检测,不影响原图下载密钥体系。配置见 `.env.example` 的 `HD_*`。
+* **PWA**:可安装到手机主屏幕;**免责声明**:首次进入需阅读并同意后才显示相册。
+
+> 反向代理请对 `/api/v1/media/*/hd*` 关闭缓存并透传真实 IP,示例见下方「反向代理(HTTPS)」。
 
 ## 🚀 部署
 
@@ -82,19 +87,19 @@ npm start                # 端口由 .env 中的 PORT 决定,默认 3000
 
 放在 Nginx/Caddy 之后时,请在 `.env` 设置 `PUBLIC_BASE_URL=https://你的域名` 与 `COOKIE_SECURE=true`,并转发 `X-Forwarded-Proto`/`X-Forwarded-For`。
 
-### 方式二:直接运行(Node.js 22+ 与 PostgreSQL)
+高清预览(HD)接口带短期令牌且按用户鉴权,**必须关闭缓存**并透传真实 IP(Nginx 示例):
 
-```bash
-npm install
-cp .env.example .env     # 修改 DATABASE_URL、ADMIN_USER、ADMIN_PASSWORD、SESSION_SECRET
-npm run build
-npm start                # 端口由 .env 中的 PORT 决定,默认 3000
+```nginx
+location ~ ^/api/v1/media/[^/]+/hd {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_cache off; proxy_no_cache 1; proxy_cache_bypass 1;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Host $host;
+}
 ```
-数据表会在首次启动时自动创建。视频封面与视频元数据需要系统安装 `ffmpeg`(可选):`apt install ffmpeg`。
 
-### 反向代理(HTTPS)
-
-放在 Nginx/Caddy 之后时,请在 `.env` 设置 `PUBLIC_BASE_URL=https://你的域名` 与 `COOKIE_SECURE=true`,并转发 `X-Forwarded-Proto`/`X-Forwarded-For`。
+使用 CDN 时请把 `/api/*` 设为「绕过缓存」。
 
 ## ⚙️ 配置(.env)
 
