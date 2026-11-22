@@ -79,12 +79,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: 将 GHCR 镜像包设为公开(便于服务器免登录拉取)
+      - name: 验证镜像已推送且可匿名拉取
         continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api --method PATCH \
-            -H "Accept: application/vnd.github+json" \
-            "/user/packages/container/${{ github.event.repository.name }}" \
-            -f visibility=public
+          TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:${{ steps.image.outputs.repo }}:pull&service=ghcr.io" | jq -r .token)
+          if curl -sf -H "Authorization: Bearer $TOKEN" \
+               -H "Accept: application/vnd.oci.image.index.v1+json" \
+               "https://ghcr.io/v2/${{ steps.image.outputs.repo }}/manifests/latest" > /dev/null; then
+            echo "✅ 镜像可匿名拉取"
+          else
+            echo "⚠️ 镜像暂不可匿名拉取。若仓库为私有,请在仓库 Packages 页面手动将容器包设为 Public,"
+            echo "   或在服务器执行 docker login ghcr.io 后再拉取。"
+          fi

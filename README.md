@@ -69,6 +69,7 @@ npm start                # 端口由 .env 中的 PORT 决定,默认 3000
 | 支持架构 | `linux/amd64`、`linux/arm64`(通过 QEMU 模拟构建) |
 | 标签规则 | `latest`(main 分支与 v* 标签)、`main`、`sha-<短哈希>`、`v1.2.3`、`v1.2` |
 | 构建缓存 | 使用 GitHub Actions 内置缓存(`type=gha`)加速重复构建 |
+| 镜像可见性 | 公开仓库关联的容器包默认继承为 Public,服务器可免登录拉取;若仓库转为私有,需在仓库 **Packages** 页面手动将容器包设为 Public,或先 `docker login ghcr.io` |
 
 在 GitHub 仓库的 **Actions** 页面可查看构建进度;镜像包托管于 **Packages** 页面。
 

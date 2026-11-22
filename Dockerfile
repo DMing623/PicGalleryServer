@@ -8,11 +8,10 @@ WORKDIR /app
 #   [cause]: Error: DATABASE_URL is required
 # 下列占位值【仅在构建阶段生效】,运行期的真实配置由 docker-compose 注入;
 # 最终镜像的运行阶段是全新 FROM,不会携带这些变量,也不含任何真实凭据。
+# 注:ADMIN_PASSWORD / SESSION_SECRET / ADMIN_USER 在 src/server/config.ts 中
+# 均有默认值,构建期无需提供,此处刻意不声明,以免被镜像扫描工具误判为硬编码密钥。
 ENV NEXT_TELEMETRY_DISABLED=1 \
-    DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build \
-    SESSION_SECRET=build-time-placeholder-not-used-at-runtime \
-    ADMIN_USER=admin \
-    ADMIN_PASSWORD=build-time-placeholder-not-used-at-runtime
+    DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build
 
 COPY package.json package-lock.json* ./
 RUN npm ci
