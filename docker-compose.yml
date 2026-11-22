@@ -1,3 +1,20 @@
+# PicGalleryServer 部署编排
+#
+# 【镜像来源说明】
+# 本项目已接入 GitHub Actions 自动构建流水线:
+#   工作流文件:.github/workflows/docker-publish.yml
+#   触发条件:向 main 分支推送代码,或推送 v* 版本标签
+#   镜像仓库:GitHub Container Registry (GHCR)
+#   镜像地址:ghcr.io/dming623/picgalleryserver
+#   可用标签:latest(最新构建)、main、sha-<短哈希>、v1.2.3
+#
+# 因此 app 服务默认【不再本地构建】,直接拉取流水线构建好的最新镜像。
+# 首次部署请先执行一次 `docker compose pull` 拉取镜像,再执行 `docker compose up -d`。
+# 更新版本时执行:`docker compose pull && docker compose up -d`
+#
+# 【如需改回本地自行构建】
+# 取消下方 `build: .` 的注释,并删除或注释 `image:` 与 `pull_policy:` 两行即可。
+
 services:
   db:
     image: postgres:16-alpine
@@ -10,7 +27,12 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   app:
-    build: .
+    # —— 使用 GitHub Actions 构建好的最新镜像(默认方式)——
+    image: ghcr.io/dming623/picgalleryserver:latest
+    # 每次启动都从仓库拉取最新镜像,保证与流水线构建结果一致
+    pull_policy: always
+    # —— 本地自行构建(已注释;启用时需同时移除上面的 image 与 pull_policy)——
+    # build: .
     restart: unless-stopped
     depends_on: [db]
     ports:

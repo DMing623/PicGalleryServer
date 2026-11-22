@@ -18,16 +18,63 @@
 
 ## 🚀 部署
 
-### 方式一:Docker Compose(推荐)
+### 方式一:Docker Compose(推荐,直接使用流水线构建好的镜像)
+
+仓库已接入 GitHub Actions 自动构建镜像,**无需在服务器上自行构建**,直接拉取即可:
 
 ```bash
 git clone <本仓库地址> picgalleryserver && cd picgalleryserver
 # 编辑 docker-compose.yml,修改管理员密码、SESSION_SECRET、数据库密码
-docker compose up -d --build
+docker compose pull        # 拉取 ghcr.io/dming623/picgalleryserver:latest
+docker compose up -d      # 启动服务
 ```
 浏览器打开 `http://服务器IP:3000`,用你设置的管理员账号登录。
 
+> 后续更新版本时,只需在服务器执行 `docker compose pull && docker compose up -d` 即可获取最新镜像。
+
 想使用 VPS 上已有的图片目录:在 `docker-compose.yml` 的 `volumes` 里加入 `- /srv/photos:/photos`,然后在 **设置 → 相册管理 → 挂载服务器目录** 里选择 `/photos`。
+
+> 若服务器为私有网络环境,需先执行 `docker login ghcr.io -u <GitHub用户名> --password-stdin` 并输入具备 `read:packages` 权限的 Personal Access Token。
+
+### 方式二:在服务器本地自行构建镜像
+
+如需改回本地构建,编辑 `docker-compose.yml` 的 `app` 服务:
+
+```yaml
+  app:
+    image: ghcr.io/dming623/picgalleryserver:latest   # 注释或删除此行
+    pull_policy: always                                # 注释或删除此行
+    build: .                                           # 取消此行注释
+```
+然后执行 `docker compose up -d --build`。
+
+### 方式三:直接运行(Node.js 22+ 与 PostgreSQL)
+
+```bash
+npm install
+cp .env.example .env     # 修改 DATABASE_URL、ADMIN_USER、ADMIN_PASSWORD、SESSION_SECRET
+npm run build
+npm start                # 端口由 .env 中的 PORT 决定,默认 3000
+```
+数据表会在首次启动时自动创建。视频封面与视频元数据需要系统安装 `ffmpeg`(可选):`apt install ffmpeg`。
+
+### 镜像构建流水线(GitHub Actions)
+
+工作流文件:[`.github/workflows/docker-publish.yml`](./.github/workflows/docker-publish.yml)
+
+| 项目 | 说明 |
+|---|---|
+| 触发条件 | 向 `main` 分支推送代码、推送 `v*` 版本标签,或手动触发(`workflow_dispatch`) |
+| 镜像地址 | `ghcr.io/dming623/picgalleryserver` |
+| 支持架构 | `linux/amd64`、`linux/arm64`(通过 QEMU 模拟构建) |
+| 标签规则 | `latest`(main 分支与 v* 标签)、`main`、`sha-<短哈希>`、`v1.2.3`、`v1.2` |
+| 构建缓存 | 使用 GitHub Actions 内置缓存(`type=gha`)加速重复构建 |
+
+在 GitHub 仓库的 **Actions** 页面可查看构建进度;镜像包托管于 **Packages** 页面。
+
+### 反向代理(HTTPS)
+
+放在 Nginx/Caddy 之后时,请在 `.env` 设置 `PUBLIC_BASE_URL=https://你的域名` 与 `COOKIE_SECURE=true`,并转发 `X-Forwarded-Proto`/`X-Forwarded-For`。
 
 ### 方式二:直接运行(Node.js 22+ 与 PostgreSQL)
 
