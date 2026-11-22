@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
 import exifr from "exifr";
 import { config } from "../config";
 import { detectAi, type AiMeta } from "./ai";
@@ -109,15 +110,36 @@ export interface ImageMetaResult {
   takenAt: Date | null;
 }
 
+/** EXIF 解析的最大输入体积:超过则跳过 EXIF(避免整文件读入内存) */
+const EXIF_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * 读取待解析的图片内容。
+ * 直接把路径交给 exifr 时,exifr 会自行打开 FileHandle 且不显式关闭,
+ * 在 Node 24+(GC 时抛 ERR_INVALID_STATE)会打断入库流程;这里统一读成 Buffer 再解析。
+ */
+async function readExifInput(file: string): Promise<Buffer | null> {
+  try {
+    const st = await fs.stat(file);
+    if (!st.isFile() || st.size > EXIF_MAX_BYTES) return null;
+    return await fs.readFile(file);
+  } catch {
+    return null;
+  }
+}
+
 export async function extractImageMeta(file: string, facts: ImageFacts): Promise<ImageMetaResult> {
   let parsed: Record<string, Seg> = {};
   try {
-    const out = (await exifr.parse(file, {
-      tiff: true, ifd0: true, exif: true, gps: true, interop: true, xmp: true, iptc: true, icc: true,
-      jfif: true, ihdr: true, makerNote: false, userComment: true, multiSegment: true,
-      mergeOutput: false, translateKeys: true, translateValues: true, reviveValues: true,
-      sanitize: true, chunked: true,
-    } as unknown as Parameters<typeof exifr.parse>[1])) as Record<string, Seg> | undefined;
+    const input = await readExifInput(file);
+    const out = input
+      ? ((await exifr.parse(input, {
+          tiff: true, ifd0: true, exif: true, gps: true, interop: true, xmp: true, iptc: true, icc: true,
+          jfif: true, ihdr: true, makerNote: false, userComment: true, multiSegment: true,
+          mergeOutput: false, translateKeys: true, translateValues: true, reviveValues: true,
+          sanitize: true, chunked: true,
+        } as unknown as Parameters<typeof exifr.parse>[1])) as Record<string, Seg> | undefined)
+      : undefined;
     if (out && typeof out === "object") parsed = out;
   } catch {
     /* 无元数据或格式不支持 */
