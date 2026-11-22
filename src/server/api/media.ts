@@ -21,7 +21,7 @@ route("GET", "/media", "public", async (ctx) =>
     album: ctx.q.get("album"),
     q: ctx.q.get("q"),
     kind: ctx.q.get("kind"),
-    recursive: boolParam(ctx.q.get("recursive"), true),
+    recursive: boolParam(ctx.q.get("recursive"), false),
     cursor: ctx.q.get("cursor"),
     limit: intParam(ctx.q.get("limit"), 60, 1, 200),
     order: ctx.q.get("order") === "asc" ? "asc" : "desc",
@@ -39,8 +39,9 @@ route("PATCH", "/media/:id", "media.edit", async (ctx) => {
 
 route("DELETE", "/media/:id", "media.delete", async (ctx) => {
   await getVisible(ctx.params.id, ctx.user);
-  await deleteMediaByIds([ctx.params.id], boolParam(ctx.q.get("purge")));
-  return { deleted: ctx.params.id };
+  const purge = boolParam(ctx.q.get("purge"));
+  await deleteMediaByIds([ctx.params.id], purge, { user: ctx.user });
+  return { deleted: ctx.params.id, purge, blocked: !purge };
 });
 
 route("POST", "/media/batch", "user", async (ctx) => {

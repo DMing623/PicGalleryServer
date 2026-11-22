@@ -59,8 +59,8 @@ const layerCache = new Map<string, Promise<Buffer>>();
 async function buildLayer(W: number, H: number, siteText: string, userText: string | null): Promise<Buffer> {
   const wm = config.hd.wm;
   const size = Math.max(8, Math.round(wm.fontSize * Math.min(1.4, Math.max(0.7, W / 1920))));
-  const siteImgs = await Promise.all([textPng(siteText, size, "#000000", wm.opacity * 0.7), textPng(siteText, size, "#ffffff", wm.opacity)]);
-  const userImgs = userText ? await Promise.all([textPng(userText, size, "#000000", wm.opacity * 0.7), textPng(userText, size, "#ffffff", wm.opacity)]) : null;
+  const siteImgs = await Promise.all([textPng(siteText, size, "#000000", wm.opacity * 0.55), textPng(siteText, size, "#ffffff", wm.opacity)]);
+  const userImgs = userText ? await Promise.all([textPng(userText, size, "#000000", wm.opacity * 0.55), textPng(userText, size, "#ffffff", wm.opacity)]) : null;
   const sMeta = await sharp(siteImgs[1]).metadata();
   const tw = sMeta.width ?? 400;
   const th = sMeta.height ?? size;

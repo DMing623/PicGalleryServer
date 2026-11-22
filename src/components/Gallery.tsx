@@ -213,7 +213,7 @@ export default function Gallery({ album }: { album?: string }) {
           <div className="text-4xl">🖼️</div>
           <p className="mt-3 font-medium">{q ? "没有找到匹配的内容" : "这里还没有内容"}</p>
           <p className="muted mt-1 text-sm">
-            {q ? (album ? "搜索范围仅限当前相册(含子相册)" : "已在全部可见相册中搜索") : me?.user ? "点击底部「上传」添加图片或视频" : "游客仅可浏览管理员开放的相册,可登录后查看更多"}
+            {q ? (album ? "搜索范围仅限当前相册(不含子相册)" : "已在全部可见相册中搜索") : me?.user ? "点击底部「上传」添加图片或视频" : "游客仅可浏览管理员开放的相册,可登录后查看更多"}
           </p>
         </div>
       )}

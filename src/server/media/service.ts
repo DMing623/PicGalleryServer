@@ -3,7 +3,7 @@ import { and, asc, desc, eq, inArray, like, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { media } from "@/db/schema";
 import { can, issueStreamToken, type AuthUser } from "../auth";
-import { breadcrumbs, deleteMediaByIds, invalidateAlbums, loadTree, resolveAlbum, scopeIds, visibleIds } from "../albums";
+import { breadcrumbs, deleteMediaByIds, invalidateAlbums, loadTree, relocateExtFile, resolveAlbum, scopeIds, visibleIds } from "../albums";
 import { config } from "../config";
 import { E } from "../http";
 import { enqueue } from "../queue";
@@ -46,7 +46,7 @@ export interface ListOptions {
   album?: string | null;
   q?: string | null;
   kind?: string | null;
-  /** 是否包含子相册。全局搜索无意义 */
+  /** 是否包含子相册。默认 false:父相册只显示自身文件,子相册文件仅在子相册内显示 */
   recursive?: boolean;
   cursor?: string | null;
   limit?: number;
@@ -65,7 +65,7 @@ export async function listMedia(o: ListOptions) {
   } else if (o.album) {
     // 相册内搜索/浏览:范围严格限定在该相册(及可选的子相册)
     const { album } = await resolveAlbum(o.album, o.user);
-    const ids = scopeIds(t, album, o.recursive !== false, allowed);
+    const ids = scopeIds(t, album, o.recursive === true, allowed);
     if (!ids.length) return { items: [], nextCursor: null };
     conds.push(inArray(media.albumId, ids));
   } else if (allowed) {
@@ -175,6 +175,10 @@ export async function updateMedia(id: string, patch: Record<string, unknown>) {
   }
   if (!Object.keys(set).length) throw E.badRequest("没有可更新的字段");
   await db.update(media).set(set).where(eq(media.id, id));
+  // 挂载相册内移动文件:同步移动服务器上的实际文件,避免父/子目录各存一份
+  if (set.albumId !== undefined && set.albumId !== row.albumId && row.storage === "ext") {
+    await relocateExtFile(row, set.albumId);
+  }
   invalidateAlbums();
 }
 
@@ -184,8 +188,8 @@ export async function batchAction(body: { action?: unknown; ids?: unknown; album
   switch (body.action) {
     case "delete":
       if (!can(user, "media.delete")) throw E.forbidden("需要权限: media.delete");
-      await deleteMediaByIds(ids, body.purge === true);
-      return { affected: ids.length };
+      await deleteMediaByIds(ids, body.purge === true, { user });
+      return { affected: ids.length, purge: body.purge === true };
     case "move": {
       const t = await loadTree();
       let albumId: string | null = null;
@@ -195,6 +199,9 @@ export async function batchAction(body: { action?: unknown; ids?: unknown; album
         albumId = a.id;
       }
       await db.update(media).set({ albumId }).where(inArray(media.id, ids));
+      // 挂载相册(ext)内的文件同步移动服务器上的实际文件,避免父子目录各存一份
+      const moved = await db.select().from(media).where(inArray(media.id, ids));
+      for (const r of moved) if (r.storage === "ext") await relocateExtFile(r, albumId);
       invalidateAlbums();
       return { affected: ids.length };
     }

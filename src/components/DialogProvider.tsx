@@ -42,16 +42,34 @@ interface PromptOpts {
   validate?: (value: string) => string | null;
 }
 
+/** 带勾选项的确认框:用于「删除时是否同时删除源文件」这类需要显式勾选的危险操作 */
+interface CheckOpts {
+  title?: string;
+  message?: ReactNode;
+  /** 勾选项文案,例如「同时删除服务器上的原文件(不可恢复)」 */
+  checkLabel: ReactNode;
+  /** 勾选后的补充说明(可选,显示在勾选项下方) */
+  checkHint?: ReactNode;
+  confirmText?: string;
+  cancelText?: string;
+  danger?: boolean;
+  /** 默认是否勾选(默认 false:必须用户主动勾选) */
+  defaultChecked?: boolean;
+}
+
 interface DialogApi {
   choose: (o: ChooseOpts) => Promise<string | null>;
   confirm: (o: ConfirmOpts | string) => Promise<boolean>;
   prompt: (o: PromptOpts) => Promise<string | null>;
   alert: (message: ReactNode, title?: string) => Promise<void>;
+  /** 返回 null 表示取消;否则返回 {checked} */
+  confirmCheck: (o: CheckOpts) => Promise<{ checked: boolean } | null>;
 }
 
 type Item =
   | { id: number; kind: "choose"; o: ChooseOpts; resolve: (v: string | null) => void }
-  | { id: number; kind: "prompt"; o: PromptOpts; resolve: (v: string | null) => void };
+  | { id: number; kind: "prompt"; o: PromptOpts; resolve: (v: string | null) => void }
+  | { id: number; kind: "check"; o: CheckOpts; resolve: (v: string | null) => void };
 
 const Ctx = createContext<DialogApi | null>(null);
 
@@ -63,6 +81,7 @@ export function useDialog(): DialogApi {
 
 function Modal({ item, onDone }: { item: Item; onDone: () => void }) {
   const [text, setText] = useState(item.kind === "prompt" ? item.o.defaultValue ?? "" : "");
+  const [checked, setChecked] = useState(item.kind === "check" ? !!item.o.defaultChecked : false);
   const [err, setErr] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const primaryRef = useRef<HTMLButtonElement>(null);
@@ -107,6 +126,29 @@ function Modal({ item, onDone }: { item: Item; onDone: () => void }) {
 
   const title = item.o.title;
   const cls = (k?: string) => (k === "primary" ? "btn btn-primary" : k === "danger" ? "btn btn-danger" : "btn");
+
+  if (item.kind === "check") {
+    const o = item.o;
+    return (
+      <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onMouseDown={(e) => e.target === e.currentTarget && finish(null)}>
+        <div role="dialog" aria-modal="true" className="glass-strong fade-in w-full max-w-sm rounded-2xl p-5 shadow-2xl">
+          {title && <h3 className="mb-1.5 text-base font-semibold">{title}</h3>}
+          {o.message && <div className="mb-3 whitespace-pre-wrap text-sm leading-relaxed">{o.message}</div>}
+          <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-line/60 p-3 text-sm">
+            <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0" checked={checked} onChange={(e) => setChecked(e.target.checked)} />
+            <span className="min-w-0 flex-1">{o.checkLabel}</span>
+          </label>
+          {o.checkHint && <p className="muted mt-2 text-xs leading-relaxed">{o.checkHint}</p>}
+          <div className="mt-4 flex justify-end gap-2">
+            <button className="btn" onClick={() => finish(null)}>{o.cancelText ?? "取消"}</button>
+            <button ref={primaryRef} className={o.danger ? "btn btn-danger" : "btn btn-primary"} onClick={() => finish(checked ? "checked" : "unchecked")}>
+              {o.confirmText ?? "确定"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onMouseDown={(e) => e.target === e.currentTarget && finish(null)}>
@@ -185,6 +227,10 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         return v === "ok";
       },
       prompt: (o) => push((resolve) => ({ kind: "prompt", o, resolve })),
+      confirmCheck: async (o) => {
+        const v = await push((resolve) => ({ kind: "check", o, resolve }));
+        return v === null ? null : { checked: v === "checked" };
+      },
       alert: async (message, title) => {
         await push((resolve) => ({ kind: "choose", resolve, o: { title: title ?? "提示", message, options: [{ value: "ok", label: "知道了", kind: "primary" }], cancelText: null } }));
       },

@@ -108,6 +108,8 @@ export function AlbumManager() {
   const [albums, setAlbums] = useState<AlbumDto[]>([]);
   const [mountOpen, setMountOpen] = useState(false);
   const [err, setErr] = useState("");
+  /** 当前所在文件夹路径(相册代码链);空 = 顶层 */
+  const [path, setPath] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -128,12 +130,17 @@ export function AlbumManager() {
     };
   }, [load]);
 
-  const rows = useMemo(() => {
-    const out: Array<{ a: AlbumDto; d: number }> = [];
-    const walk = (p: string | null, d: number) => albums.filter((a) => a.parent === p).forEach((a) => (out.push({ a, d }), walk(a.code, d + 1)));
-    walk(null, 0);
-    return out;
-  }, [albums]);
+  const byCode = useMemo(() => new Map(albums.map((a) => [a.code, a])), [albums]);
+
+  /** 只显示当前层级的相册(子相册默认隐藏,点文件夹图标进入) */
+  const current = useMemo(() => {
+    const parent = path.length ? path[path.length - 1] : null;
+    return albums.filter((a) => (a.parent ?? null) === parent);
+  }, [albums, path]);
+
+  const crumbs = useMemo(() => path.map((c) => byCode.get(c)).filter((a): a is AlbumDto => !!a), [path, byCode]);
+
+  const childCount = useCallback((code: string) => albums.filter((a) => a.parent === code).length, [albums]);
 
   async function create() {
     const name = await dlg.prompt({ title: "新建相册", label: "相册名称", placeholder: "例如:旅行", confirmText: "创建", validate: (v) => (v ? (v.length > 80 ? "名称过长(最多 80 字)" : null) : "请输入相册名称") });
@@ -144,8 +151,9 @@ export function AlbumManager() {
       if (!pick) return;
       storage = pick;
     }
+    const parent = path.length ? path[path.length - 1] : null;
     try {
-      await api("/albums", { method: "POST", json: { name, storage, visibility: "private" } });
+      await api("/albums", { method: "POST", json: { name, storage, visibility: "private", parent } });
       await load();
     } catch (e) {
       await dlg.alert((e as Error).message, "操作失败");
@@ -160,23 +168,56 @@ export function AlbumManager() {
         <span className="muted text-xs">受管相册 = 文件保存在数据目录 / S3;挂载相册 = 就地索引服务器上的已有目录。</span>
       </div>
       {err && <p className="text-sm text-red-600">{err}</p>}
-      <div className="space-y-2">
-        {rows.map(({ a, d }) => (
-          <div key={a.code} className="glass rounded-2xl p-3" style={{ marginLeft: d * 22 }}>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium">{a.name}</span>
-              <span className="chip">{a.visibility === "public" ? "公开" : "私有"}</span>
-              <span className="chip">{a.kind === "mounted" ? "挂载" : a.storage === "s3" ? "受管·S3" : "受管·本地"}</span>
-              <code className="muted text-xs">{a.code}</code>
-              <span className="muted text-xs">{a.counts.media} 项 · {bytes(a.counts.size)}</span>
-              {a.counts.pending > 0 && <span className="chip">处理中 {a.counts.pending}</span>}
-              {a.counts.failed > 0 && <span className="chip" style={{ color: "#c0392b" }}>失败 {a.counts.failed}</span>}
-            </div>
-            {a.rootPath && <p className="muted mt-0.5 break-all text-xs">📂 {a.rootPath}{a.lastScanAt && ` · 上次扫描 ${dateTime(a.lastScanAt)}`}</p>}
-            <div className="mt-2"><AlbumActions album={a} onChanged={load} /></div>
-          </div>
+
+      {/* 文件夹式导航:只显示当前层级的相册,子相册需点击文件夹图标进入 */}
+      <div className="glass flex flex-wrap items-center gap-1 rounded-2xl px-3 py-2 text-sm">
+        <button className="hover:underline" onClick={() => setPath([])}>全部相册</button>
+        {crumbs.map((c, i) => (
+          <span key={c.code} className="flex items-center gap-1">
+            <span className="muted">/</span>
+            <button className="hover:underline" onClick={() => setPath(path.slice(0, i + 1))}>{c.name}</button>
+          </span>
         ))}
-        {!rows.length && <p className="muted text-sm">还没有相册。</p>}
+        {path.length > 0 && (
+          <button className="btn ml-auto !px-2 !py-0.5 text-xs" onClick={() => setPath(path.slice(0, -1))}>⬆ 上一级</button>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        {current.map((a) => {
+          const kids = childCount(a.code);
+          return (
+            <div key={a.code} className="glass rounded-2xl p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {kids > 0 ? (
+                  <button
+                    className="grid h-6 w-6 shrink-0 place-items-center rounded-md hover:bg-black/10"
+                    title={`进入「${a.name}」查看 ${kids} 个子相册`}
+                    aria-label={`进入 ${a.name}`}
+                    onClick={() => setPath([...path, a.code])}
+                  >
+                    📁
+                  </button>
+                ) : (
+                  <span className="grid h-6 w-6 shrink-0 place-items-center opacity-45" title="没有子相册">📄</span>
+                )}
+                <span className="font-medium">{a.name}</span>
+                <span className="chip">{a.visibility === "public" ? "公开" : "私有"}</span>
+                <span className="chip">{a.kind === "mounted" ? "挂载" : a.storage === "s3" ? "受管·S3" : "受管·本地"}</span>
+                <code className="muted text-xs">{a.code}</code>
+                <span className="muted text-xs">{a.counts.media} 项 · {bytes(a.counts.size)}</span>
+                {kids > 0 && (
+                  <button className="chip cursor-pointer" onClick={() => setPath([...path, a.code])}>{kids} 个子相册 ›</button>
+                )}
+                {a.counts.pending > 0 && <span className="chip">处理中 {a.counts.pending}</span>}
+                {a.counts.failed > 0 && <span className="chip" style={{ color: "#c0392b" }}>失败 {a.counts.failed}</span>}
+              </div>
+              {a.rootPath && <p className="muted mt-0.5 break-all text-xs">📂 {a.rootPath}{a.lastScanAt && ` · 上次扫描 ${dateTime(a.lastScanAt)}`}</p>}
+              <div className="mt-2"><AlbumActions album={a} onChanged={load} /></div>
+            </div>
+          );
+        })}
+        {!current.length && <p className="muted text-sm">{path.length ? "该相册下没有子相册。" : "还没有相册。"}</p>}
       </div>
       {mountOpen && <MountDialog albums={albums} onClose={() => setMountOpen(false)} onDone={load} />}
     </div>
@@ -351,6 +392,114 @@ export function UsersTab() {
           </table>
         </div>
       </section>
+    </div>
+  );
+}
+
+/* ============ 删除黑名单 ============ */
+
+interface BlockRow {
+  id: string;
+  mediaId: string | null;
+  albumId: string | null;
+  albumCode: string | null;
+  albumName: string | null;
+  kind: string;
+  filename: string;
+  mime: string;
+  size: number;
+  storage: string;
+  storageKey: string;
+  note: string;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+export function BlocklistTab() {
+  const dlg = useDialog();
+  const [items, setItems] = useState<BlockRow[]>([]);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState("");
+  const [q, setQ] = useState("");
+
+  const load = useCallback(() => {
+    api<{ items: BlockRow[] }>("/blocklist")
+      .then((r) => {
+        setItems(r.items);
+        setErr("");
+      })
+      .catch((e) => setErr((e as Error).message));
+  }, []);
+  useEffect(() => void load(), [load]);
+
+  const shown = useMemo(() => {
+    const k = q.trim().toLowerCase();
+    return k ? items.filter((i) => i.filename.toLowerCase().includes(k) || i.storageKey.toLowerCase().includes(k)) : items;
+  }, [items, q]);
+
+  async function restore(it: BlockRow) {
+    setBusy(it.id);
+    try {
+      await api(`/blocklist/${it.id}/restore`, { method: "POST" });
+      await load();
+      window.dispatchEvent(new Event("pgs:albums"));
+      window.dispatchEvent(new Event("pgs:changed"));
+    } catch (e) {
+      await dlg.alert((e as Error).message, "解除失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function purge(it: BlockRow) {
+    if (!(await dlg.confirm({ title: "彻底删除源文件", message: `将从服务器删除源文件:\n${it.storageKey}\n\n此操作不可恢复。`, confirmText: "彻底删除", danger: true }))) return;
+    setBusy(it.id);
+    try {
+      await api(`/blocklist/${it.id}`, { method: "DELETE" });
+      await load();
+    } catch (e) {
+      await dlg.alert((e as Error).message, "删除失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <section className="glass rounded-2xl p-5">
+        <h2 className="mb-1 font-semibold">删除黑名单</h2>
+        <p className="muted text-xs leading-relaxed">
+          在图片/视频详情页删除时,若未勾选「同时删除服务器上的原文件」,记录会出现在这里:源文件仍保留在服务器上,但被本项目排除,挂载目录重新扫描也不会再入库。
+          点击「解除」即可恢复记录并重新生成缩略图/预览图;点击「彻底删除」才会真正移除源文件。
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <input className="field min-w-0 flex-1" placeholder="按文件名或路径筛选…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <button className="btn" onClick={load}>↻ 刷新</button>
+          <span className="muted text-xs">{items.length} 条</span>
+        </div>
+        {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
+      </section>
+
+      <div className="space-y-2">
+        {shown.map((it) => (
+          <div key={it.id} className="glass rounded-2xl p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium break-all">{it.filename}</span>
+              <span className="chip">{it.kind === "video" ? "视频" : "图片"}</span>
+              <span className="chip">{it.storage}</span>
+              <span className="muted text-xs">{bytes(it.size)}</span>
+              {it.albumName || it.albumCode ? <span className="chip">原相册:{it.albumName ?? it.albumCode}</span> : <span className="chip">未归类</span>}
+            </div>
+            <p className="muted mt-0.5 break-all text-xs">{it.storageKey}</p>
+            <p className="muted mt-0.5 text-xs">加入时间 {dateTime(it.createdAt)}</p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <button className="btn btn-primary !py-1 text-xs" disabled={busy === it.id} onClick={() => restore(it)}>↩ 解除黑名单</button>
+              <button className="btn btn-danger !py-1 text-xs" disabled={busy === it.id} onClick={() => purge(it)}>🗑 彻底删除源文件</button>
+            </div>
+          </div>
+        ))}
+        {!shown.length && <p className="muted text-sm">{items.length ? "没有匹配的记录。" : "黑名单为空。"}</p>}
+      </div>
     </div>
   );
 }

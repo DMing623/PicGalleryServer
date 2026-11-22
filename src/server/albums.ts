@@ -5,6 +5,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { albums, media } from "@/db/schema";
 import { can, type AuthUser } from "./auth";
+import { addToBlocklist, blockedExtKeys } from "./blocklist";
 import { config, dirs } from "./config";
 import { E } from "./http";
 import { removeDerived } from "./media/derive";
@@ -323,14 +324,21 @@ export async function updateAlbum(code: string, patch: Record<string, unknown>) 
   invalidateAlbums();
 }
 
-export async function deleteMediaByIds(ids: string[], purge: boolean) {
+export async function deleteMediaByIds(
+  ids: string[],
+  purge: boolean,
+  opts: { user?: AuthUser | null; block?: boolean } = {},
+) {
   if (!ids.length) return;
+  // 未勾选「同时删除源文件」时,默认把记录移入黑名单(源文件保留在服务器上)
+  const block = opts.block ?? !purge;
   for (let i = 0; i < ids.length; i += 500) {
     const chunk = ids.slice(i, i + 500);
     const rows = await db.select().from(media).where(inArray(media.id, chunk));
+    if (block && rows.length) await addToBlocklist(rows, opts.user ?? null);
     for (const r of rows) {
-      // ext 原文件只有 purge=true 时才物理删除;local/s3 属于本系统自己的数据,总是删除
-      if (r.storage !== "ext" || purge) {
+      // 只有 purge=true 才物理删除源文件;进入黑名单时源文件保留在服务器上,便于解除后恢复
+      if (purge) {
         try {
           await (await driverFor(r.storage)).remove(r.storageKey);
         } catch (e) {
@@ -344,7 +352,54 @@ export async function deleteMediaByIds(ids: string[], purge: boolean) {
   invalidateAlbums();
 }
 
-export async function deleteAlbum(code: string, opts: { media: "move" | "delete"; purge: boolean }) {
+/**
+ * 把挂载相册(ext)里的文件真正移动到目标相册所在目录,并更新 storage_key。
+ * 用于「移动文件」操作:避免父相册与子相册目录各存一份同一张图片。
+ * 目标不是挂载目录(或目标目录不可写)时只改数据库归属,不动文件。
+ */
+export async function relocateExtFile(
+  row: typeof media.$inferSelect,
+  targetAlbumId: string | null,
+): Promise<void> {
+  if (row.storage !== "ext" || !path.isAbsolute(row.storageKey)) return;
+  const t = await loadTree();
+  const target = targetAlbumId ? t.byId.get(targetAlbumId) : undefined;
+  if (!target || target.kind !== "mounted" || !target.rootPath) return;
+  const dstDir = target.rootPath;
+  const src = row.storageKey;
+  if (path.dirname(src) === dstDir) return;
+  if (!src.startsWith(dstDir + path.sep) && !dstDir.startsWith(path.dirname(src) + path.sep)) {
+    // 两个挂载目录互不包含(不同磁盘/不同挂载点):仍允许移动,但需确认目标可写
+  }
+  const base = path.basename(src);
+  const ext = path.extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+  let dst = path.join(dstDir, base);
+  for (let i = 0; i < 50; i++) {
+    const exists = await fs.stat(dst).catch(() => null);
+    if (!exists) break;
+    dst = path.join(dstDir, `${stem}-${randomId(4)}${ext}`);
+  }
+  try {
+    await fs.mkdir(dstDir, { recursive: true });
+    await fs.rename(src, dst);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EXDEV") {
+      console.error("[move] rename failed, keep record only", src, dst, e);
+      return;
+    }
+    try {
+      await fs.copyFile(src, dst);
+      await fs.unlink(src);
+    } catch (e2) {
+      console.error("[move] copy+unlink failed, keep record only", src, dst, e2);
+      return;
+    }
+  }
+  await db.update(media).set({ storageKey: dst, filename: path.basename(dst) }).where(eq(media.id, row.id));
+}
+
+export async function deleteAlbum(code: string, opts: { media: "move" | "delete"; purge: boolean; user?: AuthUser | null }) {
   const t = await loadTree();
   const a = t.byCode.get(code);
   if (!a) throw E.notFound("相册不存在");
@@ -352,13 +407,15 @@ export async function deleteAlbum(code: string, opts: { media: "move" | "delete"
     // 挂载相册:仅解除登记(连同自动生成的子相册),绝不删除服务器上的文件(除非 purge)
     const ids = descendants(t, a.id);
     const rows = await db.select({ id: media.id }).from(media).where(inArray(media.albumId, ids));
-    await deleteMediaByIds(rows.map((r) => r.id), opts.purge);
+    // 解除挂载只清理登记信息:不进入删除黑名单(重新挂载该目录时文件仍会被索引)
+    await deleteMediaByIds(rows.map((r) => r.id), opts.purge, { user: opts.user, block: false });
     await db.delete(albums).where(inArray(albums.id, ids));
   } else {
     const parent = a.parentId ?? null;
     if (opts.media === "delete") {
       const rows = await db.select({ id: media.id }).from(media).where(eq(media.albumId, a.id));
-      await deleteMediaByIds(rows.map((r) => r.id), opts.purge);
+      // 受管相册的文件属于本系统自己的数据,删除相册时一并物理删除(不进入黑名单)
+      await deleteMediaByIds(rows.map((r) => r.id), true, { user: opts.user, block: false });
     } else {
       await db.update(media).set({ albumId: parent }).where(eq(media.albumId, a.id));
     }
@@ -396,6 +453,7 @@ const SKIP_DIR = /^(\.|@eaDir|#recycle|\$RECYCLE\.BIN|System Volume Information|
 
 async function scanOne(a: AlbumRow, recursive: boolean, s: ScanState, depth: number): Promise<void> {
   if (!a.rootPath) return;
+  const blocked = await blockedExtKeys();
   const entries = await fs.readdir(a.rootPath, { withFileTypes: true });
   const files: Array<{ abs: string; name: string; size: number; mtime: Date; kind: string; mime: string }> = [];
   for (const e of entries) {
@@ -423,6 +481,9 @@ async function scanOne(a: AlbumRow, recursive: boolean, s: ScanState, depth: num
     } else if (e.isFile() && !e.name.startsWith(".")) {
       const k = detectKind(e.name);
       if (!k) continue;
+      const abs = path.join(a.rootPath, e.name);
+      // 已加入删除黑名单的文件:扫描时跳过,不会被重新入库
+      if (blocked.has(abs)) continue;
       const st = await fs.stat(abs).catch(() => null);
       if (st) files.push({ abs, name: e.name, size: st.size, mtime: st.mtime, kind: k.kind, mime: k.mime });
     }
@@ -457,7 +518,8 @@ async function scanOne(a: AlbumRow, recursive: boolean, s: ScanState, depth: num
   s.updated += changed.length;
   const gone = existing.filter((r) => !seen.has(r.key)).map((r) => r.id);
   if (gone.length) {
-    await deleteMediaByIds(gone, false);
+    // 磁盘上已消失的文件:仅清理记录,不进入删除黑名单
+    await deleteMediaByIds(gone, false, { block: false });
     s.removed += gone.length;
   }
   await db.update(albums).set({ lastScanAt: new Date() }).where(eq(albums.id, a.id));

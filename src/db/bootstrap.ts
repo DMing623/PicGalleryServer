@@ -59,6 +59,25 @@ CREATE TABLE IF NOT EXISTS "pgs_media" (
   "uploaded_by" text,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE IF NOT EXISTS "pgs_blocklist" (
+  "id" text PRIMARY KEY NOT NULL,
+  "media_id" text,
+  "album_id" text,
+  "album_code" text,
+  "kind" text NOT NULL,
+  "filename" text NOT NULL,
+  "mime" text NOT NULL,
+  "size" bigint DEFAULT 0 NOT NULL,
+  "storage" text NOT NULL,
+  "storage_key" text NOT NULL,
+  "hash" text,
+  "taken_at" timestamp with time zone,
+  "sort_at" timestamp with time zone,
+  "meta" jsonb,
+  "note" text DEFAULT '' NOT NULL,
+  "created_by" text,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE IF NOT EXISTS "pgs_download_keys" (
   "id" text PRIMARY KEY NOT NULL,
   "key_hash" text NOT NULL,
@@ -83,6 +102,8 @@ CREATE INDEX IF NOT EXISTS "pgs_media_album_sort_idx" ON "pgs_media" USING btree
 CREATE UNIQUE INDEX IF NOT EXISTS "pgs_media_storage_uq" ON "pgs_media" USING btree ("storage","storage_key");
 CREATE INDEX IF NOT EXISTS "pgs_media_hash_idx" ON "pgs_media" USING btree ("hash");
 CREATE INDEX IF NOT EXISTS "pgs_media_status_idx" ON "pgs_media" USING btree ("status");
+CREATE UNIQUE INDEX IF NOT EXISTS "pgs_blocklist_key_uq" ON "pgs_blocklist" USING btree ("storage","storage_key");
+CREATE INDEX IF NOT EXISTS "pgs_blocklist_album_idx" ON "pgs_blocklist" USING btree ("album_id");
 `;
 
 /** 在 advisory lock 保护下建表,避免多实例并发启动冲突。 */

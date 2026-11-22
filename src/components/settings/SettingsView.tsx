@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useApp } from "../AppProvider";
-import { AlbumManager, KeysTab, UsersTab } from "./AdminTabs";
+import { AlbumManager, BlocklistTab, KeysTab, UsersTab } from "./AdminTabs";
 import AppearanceTab from "./AppearanceTab";
 import SystemTab from "./SystemTab";
 
@@ -13,6 +13,7 @@ export default function SettingsView() {
   const tabs = [
     { id: "appearance", label: "外观与启动页", ok: can("settings") },
     { id: "albums", label: "相册管理", ok: can("album.manage") },
+    { id: "blocklist", label: "删除黑名单", ok: can("media.delete") },
     { id: "keys", label: "原文件下载密钥", ok: can("keys") },
     { id: "users", label: "用户与权限", ok: can("users") },
     { id: "system", label: "系统状态", ok: can("status") },
@@ -43,6 +44,7 @@ export default function SettingsView() {
       <div className="fade-in min-w-0" key={active}>
         {active === "appearance" && <AppearanceTab />}
         {active === "albums" && <AlbumManager />}
+        {active === "blocklist" && <BlocklistTab />}
         {active === "keys" && <KeysTab />}
         {active === "users" && <UsersTab />}
         {active === "system" && <SystemTab />}

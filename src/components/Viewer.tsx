@@ -420,19 +420,18 @@ export default function Viewer({
 
   async function remove() {
     if (!d) return;
-    if (!(await dlg.confirm({ title: "删除文件", message: `确定删除「${d.filename}」吗?此操作不可恢复。`, confirmText: "删除", danger: true }))) return;
-    let purge = false;
-    if (d.storage === "ext") {
-      const pick = await dlg.choose({
-        title: "挂载目录中的文件",
-        message: "该文件位于挂载的服务器目录。是否同时删除服务器上的源文件?",
-        options: [{ value: "purge", label: "同时删除服务器源文件", kind: "danger" }, { value: "record", label: "仅移除记录(下次扫描文件还会回来)" }],
-      });
-      if (!pick) return;
-      purge = pick === "purge";
-    }
+    const pick = await dlg.confirmCheck({
+      title: "删除文件",
+      message: `即将删除「${d.filename}」。`,
+      checkLabel: "同时删除服务器上的原文件(彻底删除,不可恢复)",
+      checkHint:
+        "不勾选时:仅把该文件从本项目排除(加入删除黑名单),服务器上的源文件保持原样;之后可在 设置 → 删除黑名单 中解除并恢复。",
+      confirmText: "删除",
+      danger: true,
+    });
+    if (!pick) return;
     try {
-      await api(`/media/${cur.id}?purge=${purge ? 1 : 0}`, { method: "DELETE" });
+      await api(`/media/${cur.id}?purge=${pick.checked ? 1 : 0}`, { method: "DELETE" });
       onRemoved(cur.id);
     } catch (e) {
       setErr((e as Error).message);
@@ -471,32 +470,32 @@ export default function Viewer({
                 <img src={cur.previewUrl} alt="" className="max-h-full max-w-full opacity-60" />
               )}
             </div>
-          ) : (
+          ) : hdReady ? (
             <ZoomStage
-              key={cur.id + (hdReady ? "-hd" : "-pv")}
-              src={hdReady ? hd.state!.url! : `${cur.previewUrl}?s=${cur.status}`}
+              key={cur.id + "-hd"}
+              src={hd.state!.url!}
               natW={cur.width}
               natH={cur.height}
-              zoomable={hdReady}
+              zoomable
               alt={cur.filename}
               onSwipe={(dir) => (dir > 0 ? next() : prev())}
-            >
-              {hd.state?.status === "loading" && (
-                <div data-nodrag className="pointer-events-none absolute inset-x-0 bottom-6 flex justify-center">
-                  <span className="flex items-center gap-2 rounded-full bg-black/60 px-3 py-1.5 text-xs backdrop-blur">
-                    <span className="hd-spinner !h-4 !w-4 !border-2" /> 高清图加载中…
-                  </span>
-                </div>
+            />
+          ) : (
+            /* 高清图(已含水印)就绪前只显示加载状态,不先展示无水印的预览图 */
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
+              {hd.state?.status === "error" ? (
+                <>
+                  <span className="text-3xl">⚠️</span>
+                  <p className="max-w-sm break-words text-sm">高清图加载失败:{hd.state.error}</p>
+                  <button className="btn btn-primary !py-1 text-xs" onClick={hd.retry}>重试</button>
+                </>
+              ) : (
+                <>
+                  <span className="hd-spinner" />
+                  <p className="text-xs opacity-70">正在加载高清预览…</p>
+                </>
               )}
-              {hd.state?.status === "error" && (
-                <div data-nodrag className="absolute inset-x-0 bottom-6 flex justify-center px-3">
-                  <span className="flex max-w-full items-center gap-2 rounded-2xl bg-black/70 px-3 py-2 text-xs backdrop-blur">
-                    <span className="min-w-0 break-words">高清图加载失败:{hd.state.error}</span>
-                    <button className="shrink-0 rounded-full bg-white/90 px-3 py-1 text-black" onClick={hd.retry}>重试</button>
-                  </span>
-                </div>
-              )}
-            </ZoomStage>
+            </div>
           )}
 
           {/* 顶栏:关闭 / 计数 / 右上角功能按钮 */}

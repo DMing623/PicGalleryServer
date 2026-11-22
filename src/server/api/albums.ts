@@ -67,7 +67,7 @@ route("DELETE", "/albums/:code", "album.manage", async (ctx) => {
   const t = await loadTree();
   const a = t.byCode.get(ctx.params.code);
   if (a?.kind === "mounted" && ctx.user?.role !== "admin") throw E.forbidden("只有管理员可以移除挂载相册");
-  await deleteAlbum(ctx.params.code, { media: mode, purge });
+  await deleteAlbum(ctx.params.code, { media: mode, purge, user: ctx.user });
   return { deleted: ctx.params.code };
 });
 

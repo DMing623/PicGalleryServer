@@ -89,6 +89,37 @@ export const media = pgTable(
   ],
 );
 
+/**
+ * 删除黑名单:从相册中删除但保留源文件的记录。
+ *  - 扫描挂载目录时按 (storage, storage_key) 跳过这些文件,不再重新入库
+ *  - 可在设置页「删除黑名单」中解除,解除后重新生成缩略图并回到原相册
+ */
+export const blocklist = pgTable(
+  "pgs_blocklist",
+  {
+    id: text("id").primaryKey(),
+    /** 原媒体 id(仅用于追溯) */
+    mediaId: text("media_id"),
+    albumId: text("album_id"),
+    /** 删除时所属相册代码(相册被删后仍可读) */
+    albumCode: text("album_code"),
+    kind: text("kind").notNull(),
+    filename: text("filename").notNull(),
+    mime: text("mime").notNull(),
+    size: bigint("size", { mode: "number" }).notNull().default(0),
+    storage: text("storage").notNull(),
+    storageKey: text("storage_key").notNull(),
+    hash: text("hash"),
+    takenAt: timestamp("taken_at", { withTimezone: true }),
+    sortAt: timestamp("sort_at", { withTimezone: true }),
+    meta: jsonb("meta"),
+    note: text("note").notNull().default(""),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("pgs_blocklist_key_uq").on(t.storage, t.storageKey), index("pgs_blocklist_album_idx").on(t.albumId)],
+);
+
 /** 原文件下载密钥(仅存哈希) */
 export const downloadKeys = pgTable("pgs_download_keys", {
   id: text("id").primaryKey(),

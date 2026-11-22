@@ -5,5 +5,6 @@ import "./albums";
 import "./media";
 import "./hd";
 import "./admin";
+import "./blocklist";
 
 export { dispatch } from "../router";

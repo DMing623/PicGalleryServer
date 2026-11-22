@@ -41,7 +41,7 @@ const s3Bucket = process.env.S3_BUCKET?.trim();
 
 export const config = {
   appName: "PicGalleryServer",
-  version: "1.1.0",
+  version: "1.2.0",
   adminUser: process.env.ADMIN_USER?.trim() || "admin",
   adminPassword,
   /** 会话/令牌签名密钥,未配置时由管理员密码派生(更换密码会使旧会话失效) */
@@ -99,7 +99,7 @@ export const config = {
       enabled: flag("HD_WM_ENABLED", true),
       /** 水印文字模板。宏: {host} 站点域名(随请求域名/PUBLIC_BASE_URL 变化)、{project} 项目地址 */
       text: process.env.HD_WM_TEXT?.trim() || "Source: {host} · {project}",
-      opacity: num("HD_WM_OPACITY", 14, 1, 100),
+      opacity: num("HD_WM_OPACITY", 8, 1, 100),
       fontSize: int("HD_WM_FONT_SIZE", 16, 8, 96),
       angle: num("HD_WM_ANGLE", -30, -90, 90),
       /** 重复密度 1(稀疏)~5(密集) */

@@ -12,7 +12,8 @@
 - 相册分类(树形嵌套);两类相册:**受管相册**(文件存放在 `DATA_DIR` 或 S3)与**挂载相册**(把 VPS 上任意绝对路径目录就地索引,子目录自动成为嵌套子相册)。
 - 缩略图 / 预览图自动生成(并发可控),详尽元数据提取(EXIF/XMP/IPTC/ICC、PNG 文本块、Stable Diffusion / NovelAI / ComfyUI / InvokeAI 生成参数、视频流信息),缺失字段展示 `N/A`。
 - 原文件保护:游客只能看到管理员"公开"的相册;文件链接默认只返回预览图;原图/原视频必须带下载密钥(或具备 `original` 权限的登录用户)。
-- 全局搜索 / 相册内搜索(范围严格限定在当前相册及其子相册)。
+- 全局搜索 / 相册内搜索(范围严格限定在当前相册**自身**;子相册的文件只在子相册里出现,父相册不重复展示)。
+- 删除可反悔:删除时默认只把文件"排除"出本项目(源文件保留,进入**删除黑名单**,扫描不再入库),只有显式勾选"同时删除源文件"才物理删除;黑名单可在设置页解除或彻底删除。
 - 管理员备注(只存数据库,不写入原文件)。
 - 多用户、四级角色;完整 REST API + 零依赖 CLI;`.env` 配置端口、管理员、并发等私密/运行参数。
 - 毛玻璃 UI,主题 / 启动页 / 站点图标均可在设置中调整(默认 Claude 经典配色)。
@@ -51,7 +52,7 @@
    ├─ instrumentation.ts           服务启动钩子:触发 ensureReady()
    ├─ db/
    │   ├─ index.ts                 pg Pool + drizzle 实例(导出 db、pool)
-   │   ├─ schema.ts                表结构定义(5 张表,见 §5)
+   │   ├─ schema.ts                表结构定义(6 张表,见 §5)
    │   └─ bootstrap.ts             幂等建表 DDL(带 advisory lock)。改 schema 必须同步改这里
    ├─ lib/                         前后端共用的纯函数(无 IO)
    │   ├─ theme.ts                 主题预设 PRESETS、themeCss()、DEFAULT_THEME
@@ -65,7 +66,8 @@
    │   ├─ auth.ts                  角色权限矩阵、密码哈希、令牌、请求鉴权、env 管理员同步、登录限流
    │   ├─ settings.ts              站点设置(单 JSON,key="site")读写与校验、publicSite()
    │   ├─ ready.ts                 ensureReady():建表→建目录→同步管理员→恢复队列→定时器
-   │   ├─ albums.ts                相册树缓存、可见性、统计、创建/挂载/改/删、目录扫描
+   │   ├─ albums.ts                相册树缓存、可见性、统计、创建/挂载/改/删、目录扫描、ext 文件搬迁
+   │   ├─ blocklist.ts             删除黑名单:写入/列出/解除(恢复记录+重生成派生图)/彻底删除
    │   ├─ keys.ts                  下载密钥:创建(upsert)/列表/删除/验证/过期清理
    │   ├─ files.ts                 serveMedia():thumb/preview/file/stream 的授权与输出(Range/ETag)
    │   ├─ queue.ts                 进程内任务队列(THUMB_CONCURRENCY)+ limiter()
@@ -84,6 +86,7 @@
    │       ├─ auth.ts              /auth/*  /site  /branding/icon  /settings*
    │       ├─ albums.ts            /albums*  /fs/browse
    │       ├─ media.ts             /media*  /system/reprocess  /media-timeline
+   │       ├─ blocklist.ts         /blocklist*  (删除黑名单)
    │       └─ admin.ts             /keys*  /users*  /health  /status*
    ├─ app/
    │   ├─ layout.tsx               根布局:注入主题 <style id="pgs-theme">、站点图标 metadata、Splash、AppProvider
@@ -102,7 +105,8 @@
        ├─ Splash.tsx               启动页:粒子 canvas + 3D 光环 + 3D 挤出文字;url 模式支持图片/视频/iframe
        ├─ Shell.tsx                毛玻璃顶栏、导航、搜索框(相册页自动限定范围)、上传入口、账户菜单
        ├─ Gallery.tsx              等高行图库、游标无限滚动、按日期分组、处理中轮询;导出 MediaItem
-       ├─ Viewer.tsx               全屏查看器:媒体、文件链接、备注编辑、元数据侧栏、删除/重处理
+       ├─ Viewer.tsx               全屏查看器:高清图(加载中转圈→带水印大图)、文件链接、备注编辑、元数据侧栏、删除(带"同时删除源文件"勾选)/重处理
+       ├─ DialogProvider.tsx       内置对话框:choose/confirm/prompt/alert/confirmCheck(带勾选项的确认框)
        ├─ MetaPanel.tsx            元数据渲染(固定字段缺失显示 N/A、AI 区块、原始段折叠)
        ├─ UploadDialog.tsx         上传对话框:相册下拉、存储选择、并发、进度、结果去向提示
        ├─ AlbumsView.tsx           相册列表/详情页的客户端主体、相册卡片
@@ -111,7 +115,7 @@
        └─ settings/
            ├─ SettingsView.tsx     设置页标签容器(按权限显示标签)
            ├─ AppearanceTab.tsx    站点名/图标上传/主题/明暗/启动页/游客开关,主题实时预览
-           ├─ AdminTabs.tsx        导出 AlbumManager(含目录挂载对话框)/KeysTab/UsersTab
+           ├─ AdminTabs.tsx        导出 AlbumManager(文件夹式导航 + 目录挂载对话框)/BlocklistTab/KeysTab/UsersTab
            └─ SystemTab.tsx        系统状态面板(3 秒轮询)+ 重处理按钮
 ```
 
@@ -156,7 +160,8 @@
 ### 4.4 搜索范围
 
 - `GET /media?q=` 无 `album` → **全局搜索**(范围 = 访问者可见的全部媒体)。
-- `GET /media?q=&album=<code>` → **只在该相册内**(默认含子相册;`recursive=0` 仅限该相册自身)。
+- `GET /media?q=&album=<code>` → **只在该相册内**(默认 `recursive=0` 仅限该相册自身;显式 `recursive=1` 才把子相册一并纳入)。
+- 相册浏览同样默认只看本相册文件:父相册不会重复显示子相册里的图片/视频。
 - 前端:`Shell.tsx` 依据路径 `/albums/<code>` 自动把搜索限定为当前相册,并显示"当前相册/全局"标签。
 - 匹配:空格分词,每个词都必须出现(AND),对 `search_text`(小写的 文件名 + 备注 + 相机/镜头/软件 + 标题/描述/作者/关键词 + AI 提示词/模型)做 `LIKE %词%`。
 
@@ -189,6 +194,8 @@
 **pgs_albums**:`id`(PK) `code`(唯一,对外使用) `name` `description` `parent_id` `kind`(`managed|mounted`) `storage`(`local|s3|ext`) `root_path`(挂载目录,唯一) `visibility` `cover_media_id` `sort_order` `last_scan_at` `created_at` `updated_at`;索引:`parent_id`、`root_path` 唯一。
 
 **pgs_media**:`id`(12 位随机,PK) `album_id`(null=未归类) `kind`(`image|video`) `filename` `mime` `size` `width` `height` `duration`(秒) `taken_at` `sort_at`(= taken_at ?? 文件时间/上传时间,排序与游标依据) `storage` `storage_key` `hash`(SHA-256,上传才有) `color`(平均色,占位用) `status`(`pending|ready|failed`) `error` `note`(管理员备注) `meta`(jsonb,见 §7.3) `search_text` `uploaded_by` `created_at`;索引:`(sort_at,id)`、`(album_id,sort_at,id)`、`(storage,storage_key)` 唯一、`hash`、`status`。
+
+**pgs_blocklist**(删除黑名单):`id`(PK) `media_id`(原记录 id,仅追溯) `album_id` `album_code` `kind` `filename` `mime` `size` `storage` `storage_key` `hash` `taken_at` `sort_at` `meta` `note` `created_by` `created_at`;唯一索引 `(storage,storage_key)`、普通索引 `album_id`。记录"被排除但源文件仍在"的文件;扫描时按 `(ext, 绝对路径)` 跳过。
 
 **pgs_download_keys**:`id` `key_hash`(SHA-256,唯一) `hint`(前 2 位 + `*`) `label` `expires_at`(null=永不) `created_by` `created_at` `last_used_at` `use_count`。
 
@@ -229,10 +236,12 @@
 - 树缓存:`loadTree()`(10 秒 TTL,任何写操作后调用 `invalidateAlbums()`),`descendants / breadcrumbs / effectivelyPublic`。
 - 可见性:`visibleIds(user)` → `{t, allowed: Set|null}`(`null`=不受限);`resolveAlbum(code,user)`(不可见抛 404);`scopeIds(t, album, recursive, allowed)`。
 - 展示:`listAlbums(user, parent?)`、`albumDetail(code,user)`、`albumStatus(code,user)`、`albumDtos`(含 5 秒统计缓存:每相册计数/体积/处理中/失败、封面)、`unsortedCount()`。`rootPath` 仅对具备 `album.mount` 的用户返回。
-- 变更:`createManaged`、`mountDir`、`updateAlbum`(`cascade:true` 时可见性级联到子孙)、`deleteAlbum({media:'move'|'delete', purge})`、`deleteMediaByIds(ids, purge)`。
+- 变更:`createManaged`、`mountDir`、`updateAlbum`(`cascade:true` 时可见性级联到子孙)、`deleteAlbum({media:'move'|'delete', purge, user})`、`deleteMediaByIds(ids, purge, {user, block})`、`relocateExtFile(row, targetAlbumId)`。
+  - `deleteMediaByIds`:`purge=true` 才物理删除源文件;`block` 默认 `= !purge`,即未勾选删除源文件时把记录写入 `pgs_blocklist`(源文件保留)。扫描发现的"磁盘上已消失"的文件以 `block:false` 清理,不进黑名单。
+  - `relocateExtFile`:把挂载相册(ext)里的文件真正 `rename` 到目标相册目录并更新 `storage_key`,避免移动后父/子目录各存一份;跨设备(EXDEV)退化为复制+删除。
   - 删除挂载相册:只删登记与记录,不动磁盘文件(`purge=true` 才物理删除)。
   - 删除受管相册:`media=move` 把文件上移到父相册(根级则变未归类);`media=delete` 连文件删除;子相册上移。
-- 扫描:`scanAlbum(code, recursive)`:读取目录 → 子目录自动建嵌套相册(跳过 `.`/`@eaDir`/`#recycle`/`node_modules` 等)→ 新文件批量插入 `pending` 并入队 → 大小变化的文件重新入队 → 磁盘上已消失的文件删除记录(若根目录不可访问则中止并保留记录,防止卸载盘误删)。状态在 `scanStates`。
+- 扫描:`scanAlbum(code, recursive)`:读取目录 → 子目录自动建嵌套相册(跳过 `.`/`@eaDir`/`#recycle`/`node_modules` 等)→ **跳过删除黑名单中的路径** → 新文件批量插入 `pending` 并入队 → 大小变化的文件重新入队 → 磁盘上已消失的文件删除记录(若根目录不可访问则中止并保留记录,防止卸载盘误删)。状态在 `scanStates`。
 - `browseDirs(path)`、`assertMountAllowed(abs)`(受 `ALLOWED_MOUNT_ROOTS` 约束)、`scanAllMounted()`(`SCAN_INTERVAL_MIN` 定时器调用)。
 
 ### 6.7 `storage/index.ts`
@@ -260,6 +269,14 @@
 ### 6.11 `queue.ts` 与 `ready.ts`
 - `enqueue(id, priority?)`(同 id 去重)、`queueStats()`、`idle(timeout)`、`limiter(n)`。并发上限 = `THUMB_CONCURRENCY`(默认 15);`sharp.concurrency(2)` 限制单任务线程。
 - `ensureReady()`:进程内只执行一次(失败会重试):`runBootstrap` → 建 `dirs` → `syncEnvAdmin` → `setRunner(processMedia)` → 把所有 `status=pending` 记录重新入队 → 启动每小时定时器(过期密钥、tmp 清理)与可选的挂载相册定时重扫。
+
+### 6.12 `blocklist.ts`
+- `blockedExtKeys()`:黑名单中 `storage='ext'` 的绝对路径集合(5 秒内存缓存,`invalidateBlocklist()` 失效),扫描时用于跳过。
+- `addToBlocklist(rows, user)`:把即将删除的 `pgs_media` 行写入黑名单(同 `(storage,key)` 已存在则忽略),并冗余保存相册代码。
+- `listBlocklist()`:按创建时间倒序返回,`leftJoin pgs_albums` 带出当前相册名。
+- `unblock(id)`:校验源文件仍存在 → 重新插入 `pgs_media`(`status=pending`,沿用原相册/备注/元数据)→ 删除黑名单行 → `enqueue(id, true)` 重新生成缩略图;源文件缺失抛 `source_missing`,已存在同路径记录抛 409。
+- `purgeBlocked(id)`:物理删除源文件并移除黑名单行。
+- 刻意不 import `albums.ts`(避免与 `albums.ts → blocklist.ts` 形成循环依赖)。
 
 ## 7. 关键流程
 
@@ -297,6 +314,23 @@ MediaMeta {
 ```
 AI 参数来源:PNG `parameters`(Stable Diffusion WebUI)、`Comment`+`Software`(NovelAI,含 alpha 通道 LSB 隐写 `stealth_pngcomp/pnginfo`)、`prompt`(ComfyUI API 图)、`invokeai_metadata`、JPEG/WebP 的 EXIF `UserComment`。无则 `ai=null`,前端显示 N/A。
 增删展示字段:改 `metadata.ts`(提取)+ `lib/meta-labels.ts`(标签)。
+
+### 7.4 删除与删除黑名单
+```
+DELETE /media/:id?purge=0|1
+  purge=1 → 物理删除源文件 + 派生图 + 记录
+  purge=0 → 派生图删除、记录移入 pgs_blocklist、源文件保留
+             (挂载目录重新扫描时按路径跳过,不会再入库)
+POST /blocklist/:id/restore → 重新插入记录(status=pending) + enqueue → 缩略图/预览图重新生成
+DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行
+```
+前端 `Viewer.tsx` 用 `dlg.confirmCheck()` 弹出带勾选框的确认框:勾选"同时删除服务器上的原文件"才 `purge=1`,否则 `purge=0`。
+
+### 7.5 父子相册不产生重复文件
+- 列表:`GET /media?album=` 默认 `recursive=0`,父相册只显示自身文件;子相册文件只在子相册内出现。
+- 上传:`resolveTarget` 按所选相册决定落盘位置(父相册 → 父目录;子相册 → 子目录),一次上传只写一份。
+- 移动:`batchAction('move')` / `PATCH /media/:id {album}` 对 `storage='ext'` 的文件调用 `relocateExtFile` 真正搬移文件,避免父/子目录各留一份。
+- 扫描:每个目录只索引**本层**文件,子目录交给对应子相册;`(storage,storage_key)` 唯一索引兜底防重复记录。
 
 ## 8. REST API(`/api/v1`)
 
@@ -344,10 +378,10 @@ AI 参数来源:PNG `parameters`(Stable Diffusion WebUI)、`Comment`+`Software`(
 
 | 方法 路径 | 权限 | 参数 | 说明 |
 |---|---|---|---|
-| GET `/media` | public | `album`(相册代码或 `_unsorted`)、`q`(搜索)、`kind=image|video`、`recursive=1|0`(相册范围含子相册,默认 1)、`cursor`、`limit`(1-200,默认 60)、`order=desc|asc`、`from`/`to`(ISO 时间) | **列表 + 搜索**。无 `album` = 全局;有 `album` = 限定该相册。返回 `{items[], nextCursor}`(游标 = `(sort_at,id)` 键集分页) |
+| GET `/media` | public | `album`(相册代码或 `_unsorted`)、`q`(搜索)、`kind=image|video`、`recursive=1|0`(是否含子相册,默认 0)、`cursor`、`limit`(1-200,默认 60)、`order=desc|asc`、`from`/`to`(ISO 时间) | **列表 + 搜索**。无 `album` = 全局;有 `album` = 限定该相册。返回 `{items[], nextCursor}`(游标 = `(sort_at,id)` 键集分页) |
 | GET `/media/:id` | public | — | 详情:列表字段 + `note, error, meta, storage, createdAt, breadcrumbs, canEdit, canOriginal, links{file,thumb,preview,originalTemplate,html,markdown}, streamUrl`;`storageKey/hash` 仅特权可见 |
-| PATCH `/media/:id` | media.edit | `{note?(≤5000), album?(code|null)}` | 改备注(只存库,不写原文件)/ 移动相册 |
-| DELETE `/media/:id` | media.delete | `purge=0|1` | 受管/S3 文件总是连原文件删除;`ext`(挂载目录)文件仅 `purge=1` 才删磁盘文件 |
+| PATCH `/media/:id` | media.edit | `{note?(≤5000), album?(code|null)}` | 改备注(只存库,不写原文件)/ 移动相册(ext 文件会真正搬移) |
+| DELETE `/media/:id` | media.delete | `purge=0|1` | `purge=1` 物理删除源文件;`purge=0`(默认)保留源文件并把记录移入删除黑名单。返回 `{deleted,purge,blocked}` |
 | POST `/media/batch` | media.edit(delete 需 media.delete) | `{action: delete|move|reprocess, ids[1..2000], album?, purge?}` | 批量 |
 | POST `/media/:id/reprocess` | media.edit | — | 重新生成派生图与元数据 |
 | POST `/system/reprocess` | media.edit | — | 重新入队所有 `failed/pending` |
@@ -391,7 +425,15 @@ AI 参数来源:PNG `parameters`(Stable Diffusion WebUI)、`Comment`+`Software`(
 | GET `/status` | status | 版本、运行时长、计数(总数/图/视频/待处理/失败/未归类/字节/相册/用户/密钥)、队列、工具可用性(ffmpeg/ffprobe/s3)、内存、磁盘、关键配置 |
 | GET `/status/queue` | status | `{concurrency,running,waiting,done,failed}` |
 
-### 8.8 curl 示例
+### 8.8 删除黑名单(仅 `media.delete`,即管理者及以上)
+
+| 方法 路径 | 权限 | 说明 |
+|---|---|---|
+| GET `/blocklist` | media.delete | `{items:[{id,mediaId,albumId,albumCode,albumName,kind,filename,mime,size,storage,storageKey,note,createdBy,createdAt}]}` |
+| POST `/blocklist/:id/restore` | media.delete | 解除黑名单:恢复记录并重新生成缩略图,返回 `{id,albumId}`;源文件不存在 → 400 `source_missing` |
+| DELETE `/blocklist/:id` | media.delete | 彻底删除:移除服务器源文件并删除黑名单行 |
+
+### 8.9 curl 示例
 ```bash
 A="-u admin:密码"; B=http://127.0.0.1:3000/api/v1
 curl $A -X POST $B/albums -H 'content-type: application/json' -d '{"name":"旅行","visibility":"public"}'
@@ -403,6 +445,9 @@ curl -o orig.jpg "http://host:3000/f/<id>?key=my-secret-key"                  # 
 curl -G "$B/media" --data-urlencode "q=日落" --data-urlencode "album=alb_xxxxxxxx"   # 相册内搜索
 curl $A -X POST $B/users -H 'content-type: application/json' -d '{"username":"bob","password":"password123","role":"viewer"}'
 curl $A $B/albums/alb_xxxxxxxx/status
+curl $A -X DELETE "$B/media/<id>?purge=0"        # 仅排除(进黑名单,源文件保留)
+curl $A $B/blocklist                              # 查看黑名单
+curl $A -X POST $B/blocklist/<bid>/restore        # 解除黑名单并重生成缩略图
 ```
 
 ## 9. 支持的文件类型
@@ -429,6 +474,7 @@ curl $A $B/albums/alb_xxxxxxxx/status
 | `SCAN_INTERVAL_MIN` | 0 | 挂载相册自动重扫间隔(分钟),0=关闭 |
 | `FFMPEG_PATH` / `FFPROBE_PATH` | `ffmpeg` / `ffprobe` | 视频工具路径 |
 | `S3_BUCKET` `S3_REGION` `S3_ENDPOINT` `S3_ACCESS_KEY` `S3_SECRET_KEY` `S3_FORCE_PATH_STYLE` `S3_PREFIX` | — | 配置 `S3_BUCKET` 即启用对象存储 |
+| `HD_*` | 见 `.env.example` | 高清预览:宽度/质量/缓存/令牌/限流;水印 `HD_WM_ENABLED` `HD_WM_TEXT` `HD_WM_OPACITY`(默认 8) `HD_WM_FONT_SIZE` `HD_WM_ANGLE` `HD_WM_DENSITY` `HD_WM_USER` `HD_WM_FONT_FILE` |
 
 ## 11. 命令行(`cli/pgs.mjs`)
 
@@ -467,6 +513,9 @@ node cli/pgs.mjs reprocess
 | 改启动页 | `components/Splash.tsx`;动画 CSS 在 `app/globals.css`;配置项在 `server/settings.ts` |
 | 改图库布局 | `components/Gallery.tsx#justify` |
 | 改上传界面 | `components/UploadDialog.tsx`;服务端 `api/media.ts` + `media/ingest.ts` |
+| 改删除行为 / 黑名单 | `server/albums.ts#deleteMediaByIds`、`server/blocklist.ts`、`components/Viewer.tsx#remove`、`components/settings/AdminTabs.tsx#BlocklistTab` |
+| 改水印浓淡 | `.env` 的 `HD_WM_OPACITY`(默认 8);合成逻辑在 `server/hd/watermark.ts` |
+| 改相册管理页层级显示 | `components/settings/AdminTabs.tsx#AlbumManager`(文件夹式导航) |
 | 加数据库字段 | §5 的三步流程 |
 | 改端口 / 管理员 / 并发 | `.env`,无需改代码 |
 
@@ -474,6 +523,8 @@ node cli/pgs.mjs reprocess
 
 - 根布局注入 `<style id="pgs-theme">`(`themeCss()`),设置页修改主题时直接替换其 `textContent` 实现实时预览;保存后全站生效。CSS 变量:`--bg --bg2 --surface --fg --muted --accent --accent-fg --border`;毛玻璃类 `.glass / .glass-strong`;按钮 `.btn / .btn-primary / .btn-danger`;输入 `.field`。
 - 全局事件(`window.dispatchEvent`):`pgs:changed`(媒体变更,图库刷新)、`pgs:albums`(相册变更,相册视图刷新)。
+- 对话框统一走 `useDialog()`:`choose/confirm/prompt/alert`,危险且需显式勾选的操作(如"同时删除源文件")用 `confirmCheck({checkLabel, checkHint, defaultChecked})` → `Promise<{checked}|null>`。
+- 高清图查看:`Viewer.tsx` 在 HD 就绪前只显示转圈加载态,不先渲染无水印预览图;HD 响应本身已在服务端合成水印(`x-pgs-wm: 1`)。
 - 登录态与权限来自 `AppProvider`(`/auth/me`)。页面是否展示管理控件只做体验层判断,**真正的授权永远在服务端 `route()` 的 access 参数**。
 - 图库使用游标分页 + `IntersectionObserver` 无限滚动,等高行布局,`content-visibility:auto` 降低长列表渲染成本;存在 `pending` 项时每 3 秒轮询前 80 项状态。
 - 启动页每个标签页会话只显示一次(`sessionStorage["pgs-splash"]`);`url` 模式按扩展名选择 `<img>`/`<video>`/`<iframe sandbox="allow-scripts">`。
@@ -484,6 +535,7 @@ node cli/pgs.mjs reprocess
 - 列表走键集分页 `(sort_at,id)` 与复合索引;相册树与统计在内存短时缓存,写操作主动失效;游客可见性判断为内存集合运算。
 - 派生图 `ETag` + 缓存头,原文件 `no-store`;所有 S3 访问懒加载 SDK。
 - 密码 scrypt;下载密钥只存哈希;令牌 HMAC 常量时间比较;登录按 IP 限流;`local` 存储路径防穿越;自定义图标光栅化重编码、SVG 以 `sandbox` CSP 输出;媒体 `Content-Type` 来自扩展名白名单且附带 `nosniff`。
+- 水印在服务端合成进最终 WebP 像素(默认透明度 8%),前端不会先展示无水印大图;高清缓存目录不对外暴露,只能经带令牌与权限校验的 `/media/:id/hd` 读取。
 - 已知边界:播放令牌 + `Sec-Fetch-Dest` 校验只能防"直接下载",无法阻止录屏/抓包;进程内队列在多实例部署时各自独立(多实例需外置队列);限流与缓存为单进程内存。
 
 ## 15. 开发与验证

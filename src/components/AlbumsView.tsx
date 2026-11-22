@@ -120,10 +120,14 @@ export default function AlbumsView({ code }: { code?: string }) {
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
           {unsorted !== null && (
-            <Link href="/albums/_unsorted" className="tile glass flex aspect-[4/3] flex-col items-center justify-center rounded-2xl p-3 text-center">
-              <span className="text-3xl">📥</span>
-              <span className="mt-1 font-medium">未归类</span>
-              <span className="muted text-xs">{unsorted} 项</span>
+            <Link href="/albums/_unsorted" className="tile glass group block overflow-hidden rounded-2xl">
+              <div className="relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden" style={{ background: "linear-gradient(135deg, var(--bg2), color-mix(in srgb, var(--accent) 25%, var(--bg)))" }}>
+                <span className="text-4xl opacity-60">📥</span>
+              </div>
+              <div className="p-3">
+                <div className="truncate font-medium">未归类</div>
+                <div className="muted mt-0.5 text-xs">{unsorted} 项</div>
+              </div>
             </Link>
           )}
           {list?.map((a) => <Card key={a.code} a={a} />)}
