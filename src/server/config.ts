@@ -62,7 +62,7 @@ const s3Bucket = process.env.S3_BUCKET?.trim();
 
 export const config = {
   appName: "PicGalleryServer",
-  version: "1.3.5",
+  version: "1.3.6",
   adminUser: process.env.ADMIN_USER?.trim() || "admin",
   adminPassword,
   /** 会话/令牌签名密钥来源:env | file | generated | derived(见 secret.ts) */
@@ -94,6 +94,11 @@ export const config = {
   scanPruneMaxRatio: num("SCAN_PRUNE_MAX_RATIO", 0.3, 0, 1),
   /** 扫描熔断:已知记录数低于该值时不做比例熔断(小相册正常删文件) */
   scanPruneMinCount: int("SCAN_PRUNE_MIN_COUNT", 20, 1, 100_000),
+  /**
+   * 疑似损坏文件(处理失败)的自动清理:停止上传超过该小时数后自动删除,0 = 关闭。
+   * 默认 5 小时:用户批量导入时偶尔会有损坏文件,处理完一段时间后自动清掉,免去手动删除。
+   */
+  corruptAutoPurgeHours: num("CORRUPT_AUTO_PURGE_HOURS", 5, 0, 24 * 30),
   ffmpeg: process.env.FFMPEG_PATH?.trim() || "ffmpeg",
   ffprobe: process.env.FFPROBE_PATH?.trim() || "ffprobe",
   /** 生成文件链接时使用的对外地址,空则使用请求来源 */

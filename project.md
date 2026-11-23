@@ -243,11 +243,14 @@
 
 ### 6.6 `albums.ts`
 - 树缓存:`loadTree()`(10 秒 TTL,写操作后调用 `invalidateAlbums()`;有 in-flight 合并,并随树一起缓存游客可见集合 `publicIds`),`descendants / breadcrumbs / effectivelyPublic`。媒体数量变化用 `invalidateMediaCaches()`(2 秒防抖),不要用 `invalidateAlbums()`。
+  - **缓存代数(v1.3.5)**:`invalidateAlbums()` 会自增 `treeGen`;`loadTree()` 在查询开始时记录代数,写回缓存前比对,不一致则丢弃结果(避免"插入前启动的旧查询"把过期树盖回缓存,导致新相册在 TTL 内查不到)。同时 in-flight 查询带代数,代数已过期的查询不再被新请求复用。
 - 可见性:`visibleIds(user)` → `{t, allowed: Set|null}`(`null`=不受限);`resolveAlbum(code,user)`(不可见抛 404);`scopeIds(t, album, recursive, allowed)`。
 - 展示:`listAlbums(user, parent?)`、`albumDetail(code,user)`、`albumStatus(code,user)`、`albumDtos`(含 5 秒统计缓存:每相册计数/体积/处理中/失败、封面)、`unsortedCount()`。`rootPath` 仅对具备 `album.mount` 的用户返回。
 - 变更:`createManaged`、`mountDir`、`updateAlbum`(`cascade:true` 时可见性级联到子孙;`readonly` 可改)、`deleteAlbum({media:'move'|'delete', purge, user})`、`deleteMediaByIds(ids, purge, {user, block})`、`relocateExtFile(row, targetAlbumId)`、`realPath`。
   - `deleteMediaByIds`:`purge=true` 才物理删除源文件;`block` 默认 `= !purge`,即未勾选删除源文件时把记录写入 `pgs_blocklist`(源文件保留)。「写黑名单 + 删记录」在同一事务里,物理删除在提交后执行,失败以 `{removed, failed[]}` 返回。扫描发现的"磁盘上已消失"的文件以 `block:false` 清理,不进黑名单。
   - `relocateExtFile`:把挂载相册(ext)里的文件真正移动到目标相册目录并返回新的 `{storageKey, filename}`,**由调用方在移动成功后再更新数据库**;用 `fs.link`+`unlink`(跨盘回落 `COPYFILE_EXCL`)保证不覆盖已有文件,失败直接抛错;目标或源相册为只读时抛 403。
+  - **搬移串行化(v1.3.5)**:`relocateLocalFile` / `relocateExtFile` 外层包 `withMoveLock(row.id, ...)`,同一媒体 id 的搬移互斥;`moveNoOverwrite` 容忍 `unlink` 的 `ENOENT`(并发下另一请求已删源时,目标文件仍有效)。修复并发搬同一文件残留 nlink=2 孤儿硬链接。
+  - **建目录回滚(v1.3.5)**:`createManaged` 先 `mkdir` 后 `insert`,insert 失败时 `rm -rf` 已建目录;`cleanName` 过滤 `\u0000-\u001f` 与 `\u007f`(NUL 曾触发 PostgreSQL 22021 → 500 并留孤儿目录)。
   - 删除挂载相册:只删登记与记录,不动磁盘文件(`purge=true` 才物理删除)。
   - 删除受管相册:`media=move` 把文件真正搬到父相册目录(根级则 `_inbox`)并更新 `storage_key`;`media=delete` 连文件删除;子相册上移。
 - 扫描:`scanAlbum(code, recursive)`:读取目录(文件 `stat` 8 路受限并发)→ 子目录自动建嵌套相册(跳过 `.`/`@eaDir`/`#recycle`/`node_modules` 等)→ **跳过删除黑名单中的路径** → 新文件批量插入 `pending` 并入队 → `(size, mtime)` 变化的文件重新入队 → 消失/新增按 `(size, mtime)` 配对识别重命名(只改 `storage_key`,保留 id 与备注)→ 其余消失文件先打 `missing_at` 软删除标记(超过 7 天宽限期才真正清理)→ **熔断**:消失比例超过 `SCAN_PRUNE_MAX_RATIO` 且记录数 ≥ `SCAN_PRUNE_MIN_COUNT` 时中止清理并报错(若根目录不可访问同样中止并保留记录)。状态在 `scanStates`(含 `added/removed/updated/renamed/missing/albumsCreated/error`)。
@@ -264,6 +267,7 @@
 - `ingest.ts`:
   - `resolveTarget({album,dir,storage})` → `{album,storage,dirKey}`:`dir` 必须落在已挂载相册根目录内(不存在的子目录自动创建并生成嵌套相册);`album` 为挂载相册则写入该目录;受管相册沿用相册自身存储代码(与显式 `storage` 冲突时 400);都不给则写入 `albums/_inbox`(`storage` 默认 `local`)。
   - `ingestOne(file, target, {user,note,duplicate})`:去重(同相册同 hash,`duplicate=skip` 默认)→ 唯一文件名 → 放入存储 → 插入 `pending` → `enqueue(id, priority)`。返回 `{status: created|duplicate|error, id, link, ...}`。
+    - **入库串行化(v1.3.5)**:外层包 `withHashLock(hash:albumId, ...)`,同一 `(hash, 相册)` 的入库互斥,消除"先查后插"的并发竞态(20 路并发同一文件曾入库 2 条)。未加数据库唯一约束,因为 `album_id` 可为 NULL 且历史数据可能已有重复。
   - `collectFiles / copyToTmp`:服务器路径导入使用。
 - `derive.ts`:`processMedia(id)`(队列 runner)、`derivedPath(id, 'thumb'|'preview')`、`removeDerived`、`hintLocalCopy`。
 - `metadata.ts`、`png.ts`、`ai.ts`:见 §7.3。
@@ -278,6 +282,13 @@
 ### 6.11 `queue.ts` 与 `ready.ts`
 - `enqueue(id, priority?)`(同 id 去重)、`queueStats()`、`idle(timeout)`、`limiter(n)`。并发上限 = `THUMB_CONCURRENCY`(默认 15);`sharp.concurrency(2)` 限制单任务线程。
 - `ensureReady()`:进程内只执行一次(失败会重试):`runBootstrap` → 建 `dirs` → `syncEnvAdmin` → `setRunner(processMedia)` → 把所有 `status=pending` 记录重新入队 → 启动每小时定时器(过期密钥、tmp 清理)与可选的挂载相册定时重扫。
+
+### 6.13 `media/corrupt.ts`(疑似损坏文件)
+- `noteUploadActivity()`:每次入库(含失败)调用,重置自动清理倒计时。
+- `corruptSummary(limit)`:返回 `{count, items[≤limit], autoPurgeHours, purgeInSec}`;`items` 只含 `id/filename/kind/size/error/createdAt`。
+- `purgeCorrupt(ids?)`:ids 为空 = 全部 `status='failed'`。受管存储(local/s3)连源文件删除;挂载目录(ext)只删登记,不动用户文件。
+- `startCorruptSweeper()`:每 10 分钟检查,若「距上次上传 ≥ `CORRUPT_AUTO_PURGE_HOURS`」则自动清理;`0` 关闭。进程启动时 `lastUploadAt = now`,不会一上线就清。
+- 图库默认不展示 failed 记录(`listMedia` 的 `includeFailed` 默认 false),避免损坏文件干扰浏览。
 
 ### 6.12 `blocklist.ts`
 - `blockedExtKeys()`:黑名单中 `storage='ext'` 的绝对路径集合(5 秒内存缓存,`invalidateBlocklist()` 失效),扫描时用于跳过。
@@ -437,6 +448,8 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(源�
 | GET `/health/ready` | public | readiness:数据库连通 + `DATA_DIR` 可写 + 磁盘剩余;不满足返回 503 |
 | GET `/status` | status | 版本、运行时长、计数、队列、工具可用性、内存、磁盘、关键配置(结果缓存 5 秒) |
 | GET `/status/queue` | status | `{concurrency,running,waiting,done,failed,retrying}` |
+| GET `/status/corrupt` | status | 疑似损坏文件:`{count, items[≤20], autoPurgeHours, purgeInSec}` |
+| POST `/status/corrupt/purge` | media.delete | 清理疑似损坏文件,body `{ids?}`(空 = 全部);受管存储连源文件删除,挂载目录只删登记 |
 
 ### 8.8 删除黑名单(仅 `media.delete`,即管理者及以上)
 
@@ -488,6 +501,7 @@ curl $A -X POST $B/blocklist/<bid>/restore        # 解除黑名单并重生成�
 | `EXIF_READ_BYTES` | 1048576 | EXIF 只读文件头字节数(读不到再放大到 8MB) |
 | `MAX_UPLOAD_MB` | 2048 | 单文件上限,0=不限 |
 | `MIN_FREE_DISK_MB` | 1024 | 上传前要求的最小剩余磁盘,0=不检查 |
+| `CORRUPT_AUTO_PURGE_HOURS` | 5 | 疑似损坏文件在停止上传满该小时数后自动清理,0=关闭 |
 | `JSON_BODY_MAX_KB` | 1024 | JSON 请求体上限 |
 | `DB_POOL_MAX` / `DB_STATEMENT_TIMEOUT_MS` / `DB_CONNECT_TIMEOUT_MS` / `DATABASE_SSL` | 10 / 20000 / 5000 / false | 连接池与慢查询保护 |
 | `ALLOWED_MOUNT_ROOTS` | 空 | 逗号分隔白名单;留空时只允许数据目录与 `/photos /mnt /media /srv /home /volume1` |
@@ -582,7 +596,7 @@ npm run typecheck && npm run lint && npm run build   # 提交前校验(CI 同样
 ```
 端到端冒烟:启动后依次验证 `POST /albums` → `POST /media/upload` → `GET /media?q=` → `GET /f/:id`(无 key=预览,有 key=原图)→ `POST /keys` → 游客访问私有相册应 404。
 
-## 16. 本轮优化(v1.3.0 ~ v1.3.4,2026-11-23)与遗留项
+## 16. 本轮优化(v1.3.0 ~ v1.3.5,2026-11-23)与遗留项
 
 本轮依据一份外部代码审查清单(整合版 issue,已在完成后移除)逐条落地,共完成 41 项。要点:
 
@@ -610,3 +624,36 @@ v1.3.0 的改动在代码复查与 InstaBox 真机部署中暴露出 8 处问题
 8. **`local` 存储的 `storageKey` 是相对路径(实测发现)**:第一版 `relocateLocalFile` 直接把 `albums/<code>/x.jpg` 当绝对路径做 `fs.link`,全部 `ENOENT`。现统一经 `localAbs()` / `localKey()` 在「相对 DATA_DIR 的 key」与「绝对路径」之间转换,与 `storage/index.ts` 的 `localDriver` 保持同一规则;`deleteAlbum` 的移交路径同样修正。
 
 版本号 `1.3.4`(`package.json`、`package-lock.json`、`config.ts`、`cli/pgs.mjs`、`.env.example` 的 `PGS_TAG` 一致)。`tsc --noEmit`、`eslint .`、`node --check cli/pgs.mjs` 均通过;InstaBox 真机 `scripts/test-hd.mjs` **46/46 通过**。
+
+### 16.2 v1.3.5 外部检测报告缺陷修复(2026-11-23)
+
+一份基于 208 个真实 NASA 素材、351 项检查的外部检测报告(裸机 `npm start`)指出 9 类问题,v1.3.5 全部修复并在容器内复测通过。
+
+**元数据**
+1. **TIFF 元数据几乎全部丢失(B1)**:`extractImageMeta` 用 `Object.keys(out).length` 判断 exifr 是否解析成功,而截断缓冲区时 exifr 返回 `{errors:[{}]}`,该判定为真 → 停止放大读取。TIFF 的条带偏移表在文件后部,因此 32 个 TIFF 只有 1 个能取到字段。现改为 `hasSegments()`:忽略 `errors` 键,只有真正解析出段才算成功;TIFF 的读取上限从固定 8MB 改为逐级放大到 `EXIF_MAX_BYTES`(64MB)。实测 33MB 的 NASA TIFF 在 1MB/8MB 处均为空壳,整文件解析后 Make/Model/ISO/镜头/拍摄时间/标题/关键词全部正确。
+2. **仅含 XMP 的字段取不到(B4)**:exifr 把 XMP 按命名空间拆成独立段(`dc` / `photoshop` / `aux`),旧代码只读 `parsed.xmp`,因此 `dc:title`、`dc:subject`、`photoshop:DateCreated` 全部丢失。现按 `ifd0 → exif → gps → iptc → xmp → dc → photoshop → aux → …` 的顺序合并所有段;`fmt()` 对 XMP 的 `{lang,value}` 结构取 `value`;`time.taken` 在无 `DateTimeOriginal` 时回落到 `DateCreated`。
+3. **XMP 字符串日期未识别**:`takenAt` 原先只接受 `Date` 实例,而 XMP 日期多为字符串。新增 `toDate()`,统一解析 `Date` / ISO 字符串 / EXIF 的 `YYYY:MM:DD HH:MM:SS` / 扫描件的 `YYYYMMDD`。
+4. **展示值不可读(B10)**:`colorSpace` 的 `"1"` → `sRGB`、`"65535"` → `未校准`,无 EXIF 时回落到 sharp 的 `srgb/rgb/cmyk` 并转成常见写法;`bitDepth` 的 `uchar/ushort/float` → `8-bit/16-bit/32-bit`。
+
+**相册与并发**
+5. **并发建相册偶发幽灵 404(B2)**:`loadTree()` 的惊群合并会让「插入前启动的旧查询」在 `invalidateAlbums()` 之后把过期树写回缓存,新相册在 10 秒缓存期内查不到。现引入**缓存代数** `treeGen`:查询开始时记录代数,写回前比对,不一致则丢弃;同时若 in-flight 查询的代数已过期,新请求不再复用它。实测 120 并发建相册 120/120 返回 201(修复前 300 并发有 8 个 404)。
+6. **相册名含 NUL 触发 500 并留孤儿目录(B6)**:`cleanName()` 过滤 `\u0000-\u001f` 与 `\u007f`;`createManaged()` 在 insert 失败时回滚已创建的目录。
+7. **并发搬同一文件残留孤儿硬链接(B7)**:`link→unlink` 在并发下互相穿插,旧目录残留 nlink=2 的不可见文件。现为每个媒体 id 加键控互斥 `withMoveLock()`,并让 `moveNoOverwrite()` 容忍 `unlink` 的 `ENOENT`(另一请求已删源时目标文件仍有效)。实测 12 路并发搬 3 个文件:源目录 0 残留、目标 3/3。
+
+**入库与视频**
+8. **并发上传同一文件重复入库(B12)**:去重是「先查后插」且 `hash` 列无唯一约束。现按 `(hash, 相册)` 加键控互斥 `withHashLock()` 串行化入库(不引入唯一约束,因为 `album_id` 可为 NULL 且历史数据可能已有重复)。实测 20 路并发:created=1 / duplicate=19 / 相册内 1 条。
+9. **损坏视频被标记 ready(B11)**:`probeVideo` 失败时返回全 null 但仍走 `status=ready` 与占位封面。现三个关键字段全 null 直接抛错 → `failed`,并给出「文件可能已损坏或不是有效视频」。
+10. **视频封面可能是纯黑帧(B9)**:新增 `isBlankFrame()`,抽帧后检测标准差与均值,命中纯色/黑场则依次换 `duration/2 → 0 → 25% → 75%` 重试。
+
+**运维**
+11. **崩溃后 tmp 遗留(B8)**:`cleanTmp()` 增加阈值参数,启动时以 `0` 调用(进程刚启动不可能有进行中的上传),每小时定时清理仍保留 6 小时阈值。
+12. **readiness 不反映磁盘阈值**:`/health/ready` 的磁盘检查从固定 64MB 改为 `max(64, MIN_FREE_DISK_MB)`,与上传的 507 保护同阈值。
+
+**CLI**
+13. **三处文档与实现不一致(B5)**:`OPTIONS` 补注册 `links`、`watch`(此前 `parseArgs` 严格模式直接退出码 2);`album list --parent <code>` 真正把 `parent` 传给接口(此前忽略该参数返回全部相册)。
+
+**实测结果(容器内,4 vCPU / 8GB,PostgreSQL 16)**
+- 修复验证 18/18 通过(12 项元数据/并发/异常文件 + 6 项搬移/tmp/CLI)。
+- 内存:99 个 NASA 文件全量上传 5.5s / 峰值 733MB;24 路 HD 并发峰值 **1897MB**;静置 20 秒回落到 **709MB**。对比裸机 `npm start`(报告数据)峰值 2490MB 且压测后 2168MB 不回落 —— 差异来自镜像内的 `jemalloc` 与 `MALLOC_ARENA_MAX=2`,已在 README 的部署章节写明。
+
+版本号 `1.3.5`(`package.json`、`package-lock.json`、`config.ts`、`cli/pgs.mjs`、`.env.example` 的 `PGS_TAG`、`docker-compose.yml` 的默认 tag 一致)。CI(`tsc --noEmit` + `eslint .` + `next build`)通过;镜像 `ghcr.io/dming623/picgalleryserver:1.3.5` 已发布。

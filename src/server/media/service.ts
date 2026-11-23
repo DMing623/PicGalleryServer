@@ -53,6 +53,8 @@ export interface ListOptions {
   order?: "asc" | "desc";
   from?: string | null;
   to?: string | null;
+  /** 是否包含处理失败(疑似损坏)的记录。默认 false:这类文件没有缩略图也不可看,统一在系统状态页处理 */
+  includeFailed?: boolean;
 }
 
 export async function listMedia(o: ListOptions) {
@@ -78,6 +80,9 @@ export async function listMedia(o: ListOptions) {
   if (o.to && !Number.isNaN(Date.parse(o.to))) conds.push(sql`${media.sortAt} <= ${new Date(o.to).toISOString()}::timestamptz`);
   // 软删除(扫描时暂时消失)的记录不参与列表与搜索
   conds.push(sql`${media.missingAt} IS NULL`);
+  // 处理失败的记录(损坏/伪造文件)默认不展示:没有缩略图、也打不开,
+  // 集中到「系统状态 → 疑似损坏文件」里一键清理(见 media/corrupt.ts)
+  if (!o.includeFailed) conds.push(sql`${media.status} <> 'failed'`);
   const terms = (o.q ?? "").toLowerCase().split(/\s+/).filter(Boolean).slice(0, 6);
   for (const term of terms) {
     const pat = `%${term.replace(/[\\%_]/g, "\\$&")}%`;

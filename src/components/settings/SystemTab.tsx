@@ -1,10 +1,11 @@
 "use client";
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { bytes } from "@/lib/format";
 import { useApp } from "../AppProvider";
+import { useDialog } from "../DialogProvider";
 
 interface Status {
   app: string;
@@ -20,6 +21,22 @@ interface Status {
   hd?: { files: number; bytes: number; maxBytes: number; ttlDays: number; hits: number; misses: number; evicted: number; expired: number; invalidated: number; conversions: number; coalesced: number };
 }
 
+interface CorruptItem {
+  id: string;
+  filename: string;
+  kind: string;
+  size: number;
+  error: string | null;
+  createdAt: string;
+}
+
+interface CorruptSummary {
+  count: number;
+  items: CorruptItem[];
+  autoPurgeHours: number;
+  purgeInSec: number | null;
+}
+
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="glass min-w-0 rounded-xl p-3">
@@ -29,21 +46,91 @@ function Stat({ label, value }: { label: string; value: string | number }) {
   );
 }
 
+/** 疑似损坏文件:右上角垃圾桶图标,点击弹出确认框并列出文件名(最多 20 个) */
+function CorruptCard({ data, onPurged }: { data: CorruptSummary; onPurged: () => void }) {
+  const dlg = useDialog();
+  const [busy, setBusy] = useState(false);
+  const shown = data.items.slice(0, 20);
+  const more = data.count - shown.length;
+
+  async function purge() {
+    const list = shown.map((i) => `· ${i.filename}`).join("\n");
+    const ok = await dlg.confirm({
+      title: "清理疑似损坏文件",
+      message: (
+        <span className="block space-y-2">
+          <span className="block">
+            共 <b>{data.count}</b> 个文件无法生成缩略图或解析元数据(损坏、伪造或格式不支持)。
+            删除后记录与源文件一并移除,不可恢复。
+          </span>
+          <span className="block whitespace-pre-wrap break-all text-xs opacity-80">
+            {list}
+            {more > 0 && `\n…另有 ${more} 个未列出`}
+          </span>
+        </span>
+      ),
+      confirmText: "全部删除",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await api("/status/corrupt/purge", { method: "POST", json: {} });
+      onPurged();
+    } catch (e) {
+      await dlg.alert((e as Error).message, "清理失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="glass relative min-w-0 rounded-xl p-3">
+      <div className="muted text-xs">疑似损坏文件</div>
+      <div className="mt-0.5 break-words text-lg font-semibold">{data.count}</div>
+      <div className="muted mt-0.5 text-[11px] leading-tight">
+        {data.count === 0
+          ? "无"
+          : data.autoPurgeHours > 0 && data.purgeInSec !== null
+            ? `${Math.floor(data.purgeInSec / 3600)} 小时后自动清理`
+            : "需手动清理"}
+      </div>
+      {data.count > 0 && (
+        <button
+          className="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-lg text-sm hover:bg-black/10 disabled:opacity-40"
+          title="清理疑似损坏文件"
+          aria-label="清理疑似损坏文件"
+          disabled={busy}
+          onClick={purge}
+        >
+          🗑
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function SystemTab() {
   const { can } = useApp();
   const [s, setS] = useState<Status | null>(null);
+  const [corrupt, setCorrupt] = useState<CorruptSummary | null>(null);
   const [msg, setMsg] = useState("");
+
+  const loadCorrupt = useCallback(() => api<CorruptSummary>("/status/corrupt").then(setCorrupt).catch(() => undefined), []);
 
   useEffect(() => {
     let alive = true;
     const load = () => api<Status>("/status").then((r) => alive && setS(r)).catch((e) => alive && setMsg(e.message));
     void load();
+    void loadCorrupt();
     const t = setInterval(load, 3000);
+    const t2 = setInterval(() => void loadCorrupt(), 10000);
     return () => {
       alive = false;
       clearInterval(t);
+      clearInterval(t2);
     };
-  }, []);
+  }, [loadCorrupt]);
 
   if (!s) return <p className="muted text-sm">{msg || "加载中…"}</p>;
   const c = s.counts;
@@ -58,6 +145,15 @@ export default function SystemTab() {
         <Stat label="待处理 / 失败" value={`${c.pending} / ${c.failed}`} />
         <Stat label="未归类" value={c.unsorted} />
         <Stat label="磁盘剩余" value={s.disk ? `${bytes(s.disk.freeBytes)} / ${bytes(s.disk.totalBytes)}` : "N/A"} />
+        {corrupt && (
+          <CorruptCard
+            data={corrupt}
+            onPurged={() => {
+              void loadCorrupt();
+              setMsg("已清理疑似损坏文件");
+            }}
+          />
+        )}
       </div>
       <section className="glass rounded-2xl p-5 text-sm">
         <h3 className="mb-2 font-semibold">运行环境</h3>

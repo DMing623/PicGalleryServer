@@ -8,8 +8,10 @@ import { db } from "@/db";
 import { users } from "@/db/schema";
 import { hashPassword, invalidateUserCache, isRole, ROLES, validatePasswordStrength } from "../auth";
 import { config } from "../config";
-import { E, json, readJson, str } from "../http";
+import { E, json, readJson, str, intParam } from "../http";
 import { createKey, deleteKeyById, deleteKeyByValue, listKeys, verifyKey } from "../keys";
+import { corruptSummary, purgeCorrupt } from "../media/corrupt";
+import { invalidateAlbums, invalidateMediaCaches } from "../albums";
 import { queueStats } from "../queue";
 import { route } from "../router";
 import { s3Available } from "../storage";
@@ -203,3 +205,16 @@ route("GET", "/status", "status", async () => {
 });
 
 route("GET", "/status/queue", "status", async () => queueStats());
+
+/* ---------- 疑似损坏文件(处理失败) ---------- */
+
+route("GET", "/status/corrupt", "status", async (ctx) => corruptSummary(intParam(ctx.q.get("limit"), 20, 1, 200)));
+
+route("POST", "/status/corrupt/purge", "media.delete", async (ctx) => {
+  const body = await readJson(ctx.req).catch(() => ({}) as Record<string, unknown>);
+  const ids = Array.isArray(body.ids) ? body.ids.map(String).slice(0, 5000) : undefined;
+  const r = await purgeCorrupt(ids?.length ? ids : undefined);
+  invalidateMediaCaches();
+  invalidateAlbums();
+  return r;
+});

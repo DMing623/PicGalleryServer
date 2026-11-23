@@ -52,54 +52,66 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3 backdrop-blur-sm" onClick={onClose}>
-      <div className="glass-strong fade-in flex max-h-[90vh] w-full max-w-xl flex-col rounded-3xl p-5" onClick={(e) => e.stopPropagation()}>
-        <h2 className="mb-1 text-lg font-semibold">挂载服务器目录为相册</h2>
-        <p className="muted mb-3 text-xs">目录内的图片/视频会就地建立索引(不复制原文件);子目录自动生成嵌套子相册。</p>
-        <div className="flex gap-2">
-          <input className="field" value={path} onChange={(e) => setPath(e.target.value)} onKeyDown={(e) => e.key === "Enter" && browse(path)} placeholder="/data/photos" />
-          <button className="btn" onClick={() => browse(path)}>浏览</button>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-3 backdrop-blur-sm sm:items-center" onClick={onClose}>
+      {/* 手机端:整体高度受限于可视区(减去安全区),内容区可滚动,避免被底部导航栏遮挡 */}
+      <div
+        className="glass-strong fade-in flex w-full max-w-xl flex-col rounded-3xl"
+        style={{ maxHeight: "calc(100dvh - 1.5rem - env(safe-area-inset-bottom, 0px))" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="shrink-0 px-5 pt-5">
+          <h2 className="mb-1 text-lg font-semibold">挂载服务器目录为相册</h2>
+          <p className="muted mb-3 text-xs">目录内的图片/视频会就地建立索引(不复制原文件);子目录自动生成嵌套子相册。</p>
         </div>
-        <div className="glass mt-2 max-h-48 min-h-24 overflow-y-auto rounded-xl p-1 text-sm">
-          {parent && <button className="block w-full rounded-lg px-2 py-1 text-left hover:bg-black/5" onClick={() => browse(parent)}>⬆ 上级目录</button>}
-          {dirs.map((d) => (
-            <button key={d} className="block w-full truncate rounded-lg px-2 py-1 text-left hover:bg-black/5" onClick={() => browse(`${path === "/" ? "" : path}/${d}`)}>
-              📁 {d}
-            </button>
-          ))}
-          {!dirs.length && <p className="muted p-2 text-xs">没有子目录</p>}
+        {/* 可滚动内容区:手机弹出键盘或屏幕较矮时,底部按钮始终可见 */}
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5">
+          <div className="flex gap-2">
+            <input className="field" value={path} onChange={(e) => setPath(e.target.value)} onKeyDown={(e) => e.key === "Enter" && browse(path)} placeholder="/data/photos" />
+            <button className="btn shrink-0" onClick={() => browse(path)}>浏览</button>
+          </div>
+          <div className="glass mt-2 max-h-48 min-h-24 overflow-y-auto rounded-xl p-1 text-sm">
+            {parent && <button className="block w-full rounded-lg px-2 py-1 text-left hover:bg-black/5" onClick={() => browse(parent)}>⬆ 上级目录</button>}
+            {dirs.map((d) => (
+              <button key={d} className="block w-full truncate rounded-lg px-2 py-1 text-left hover:bg-black/5" onClick={() => browse(`${path === "/" ? "" : path}/${d}`)}>
+                📁 {d}
+              </button>
+            ))}
+            {!dirs.length && <p className="muted p-2 text-xs">没有子目录</p>}
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label className="text-sm">
+              <span className="muted mb-1 block text-xs">相册名称(默认取目录名)</span>
+              <input className="field" value={name} onChange={(e) => setName(e.target.value)} />
+            </label>
+            <label className="text-sm">
+              <span className="muted mb-1 block text-xs">放在哪个相册下(嵌套)</span>
+              <select className="field" value={parentAlbum} onChange={(e) => setParentAlbum(e.target.value)}>
+                <option value="">顶层</option>
+                {albums.map((a) => <option key={a.code} value={a.code}>{a.name}</option>)}
+              </select>
+            </label>
+            <label className="text-sm">
+              <span className="muted mb-1 block text-xs">可见性</span>
+              <select className="field" value={visibility} onChange={(e) => setVisibility(e.target.value)}>
+                <option value="private">私有(仅登录用户)</option>
+                <option value="public">公开(游客可见缩略图)</option>
+              </select>
+            </label>
+            <label className="mt-5 flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={recursive} onChange={(e) => setRecursive(e.target.checked)} /> 子目录生成嵌套相册
+            </label>
+            <label className="mt-5 flex items-center gap-2 text-sm" title="只读时本系统不会写入、移动或删除该目录下的文件">
+              <input type="checkbox" checked={readonly} onChange={(e) => setReadonly(e.target.checked)} /> 只读挂载(推荐)
+            </label>
+          </div>
+          {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
         </div>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2">
-          <label className="text-sm">
-            <span className="muted mb-1 block text-xs">相册名称(默认取目录名)</span>
-            <input className="field" value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label className="text-sm">
-            <span className="muted mb-1 block text-xs">放在哪个相册下(嵌套)</span>
-            <select className="field" value={parentAlbum} onChange={(e) => setParentAlbum(e.target.value)}>
-              <option value="">顶层</option>
-              {albums.map((a) => <option key={a.code} value={a.code}>{a.name}</option>)}
-            </select>
-          </label>
-          <label className="text-sm">
-            <span className="muted mb-1 block text-xs">可见性</span>
-            <select className="field" value={visibility} onChange={(e) => setVisibility(e.target.value)}>
-              <option value="private">私有(仅登录用户)</option>
-              <option value="public">公开(游客可见缩略图)</option>
-            </select>
-          </label>
-          <label className="mt-5 flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={recursive} onChange={(e) => setRecursive(e.target.checked)} /> 子目录生成嵌套相册
-          </label>
-          <label className="mt-5 flex items-center gap-2 text-sm" title="只读时本系统不会写入、移动或删除该目录下的文件">
-            <input type="checkbox" checked={readonly} onChange={(e) => setReadonly(e.target.checked)} /> 只读挂载(推荐)
-          </label>
-        </div>
-        {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
-        <div className="mt-4 flex gap-2">
-          <span className="muted min-w-0 flex-1 truncate self-center text-xs">将挂载:{path}</span>
-          <button className="btn" onClick={onClose}>取消</button>
-          <button className="btn btn-primary" disabled={busy} onClick={mount}>挂载并扫描</button>
+        <div className="shrink-0 px-5 pb-5 pt-3" style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom, 0px))" }}>
+          <div className="flex gap-2">
+            <span className="muted min-w-0 flex-1 truncate self-center text-xs">将挂载:{path}</span>
+            <button className="btn shrink-0" onClick={onClose}>取消</button>
+            <button className="btn btn-primary shrink-0" disabled={busy} onClick={mount}>挂载并扫描</button>
+          </div>
         </div>
       </div>
     </div>
@@ -110,6 +122,7 @@ export function AlbumManager() {
   const { can, me } = useApp();
   const dlg = useDialog();
   const [albums, setAlbums] = useState<AlbumDto[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [mountOpen, setMountOpen] = useState(false);
   const [err, setErr] = useState("");
   /** 当前所在文件夹路径(相册代码链);空 = 顶层 */
@@ -118,8 +131,12 @@ export function AlbumManager() {
   const load = useCallback(async () => {
     try {
       setAlbums((await api<{ albums: AlbumDto[] }>("/albums")).albums);
+      setErr("");
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      // 首次请求返回后才允许显示"还没有相册",避免加载期间闪一下空状态
+      setLoaded(true);
     }
   }, []);
 
@@ -169,7 +186,7 @@ export function AlbumManager() {
       <div className="flex flex-wrap items-center gap-2">
         <button className="btn btn-primary" onClick={create}>＋ 新建受管相册</button>
         {can("album.mount") && <button className="btn" onClick={() => setMountOpen(true)}>📂 挂载服务器目录</button>}
-        <span className="muted text-xs">受管相册 = 文件保存在数据目录 / S3;挂载相册 = 就地索引服务器上的已有目录。</span>
+        <span className="muted text-xs">受管相册 = 文件保存在数据目录 / S3;挂载相册 = 就地索引服务器上的已有目录。此处不提供文件预览,只展示文件夹属性相册。</span>
       </div>
       {err && <p className="text-sm text-red-600">{err}</p>}
 
@@ -221,7 +238,11 @@ export function AlbumManager() {
             </div>
           );
         })}
-        {!current.length && <p className="muted text-sm">{path.length ? "该相册下没有子相册。" : "还没有相册。"}</p>}
+        {!current.length && (
+          <p className="muted text-sm">
+            {!loaded ? "加载中…" : path.length ? "该相册下没有子相册。" : "还没有相册。"}
+          </p>
+        )}
       </div>
       {mountOpen && <MountDialog albums={albums} onClose={() => setMountOpen(false)} onDone={load} />}
     </div>
@@ -422,6 +443,7 @@ interface BlockRow {
 export function BlocklistTab() {
   const dlg = useDialog();
   const [items, setItems] = useState<BlockRow[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState("");
   const [q, setQ] = useState("");
@@ -432,7 +454,8 @@ export function BlocklistTab() {
         setItems(r.items);
         setErr("");
       })
-      .catch((e) => setErr((e as Error).message));
+      .catch((e) => setErr((e as Error).message))
+      .finally(() => setLoaded(true));
   }, []);
   useEffect(() => void load(), [load]);
 
@@ -479,7 +502,7 @@ export function BlocklistTab() {
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <input className="field min-w-0 flex-1" placeholder="按文件名或路径筛选…" value={q} onChange={(e) => setQ(e.target.value)} />
           <button className="btn" onClick={load}>↻ 刷新</button>
-          <span className="muted text-xs">{items.length} 条</span>
+          <span className="muted text-xs">{loaded ? `${items.length} 条` : "加载中…"}</span>
         </div>
         {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
       </section>
@@ -502,7 +525,7 @@ export function BlocklistTab() {
             </div>
           </div>
         ))}
-        {!shown.length && <p className="muted text-sm">{items.length ? "没有匹配的记录。" : "黑名单为空。"}</p>}
+        {!shown.length && <p className="muted text-sm">{!loaded ? "加载中…" : items.length ? "没有匹配的记录。" : "黑名单为空。"}</p>}
       </div>
     </div>
   );

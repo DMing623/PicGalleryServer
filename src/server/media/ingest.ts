@@ -13,6 +13,7 @@ import { E } from "../http";
 import { enqueue } from "../queue";
 import { driverFor, isStorageCode, moveFile, s3Available, type StorageCode } from "../storage";
 import { hintLocalCopy } from "./derive";
+import { noteUploadActivity } from "./corrupt";
 import { detectKind, randomId, safeName } from "./types";
 import type { UploadedTmp } from "./upload";
 
@@ -162,6 +163,8 @@ async function ingestOneInner(
   target: IngestTarget,
   opts: { user: AuthUser; note?: string; duplicate: "skip" | "keep" },
 ): Promise<IngestResult> {
+  // 任何一次上传都重置「疑似损坏文件」的自动清理倒计时
+  noteUploadActivity();
   const result: IngestResult = { filename: file.name, status: "error" };
   let consumed = false;
   let keepTmp = false;

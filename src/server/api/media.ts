@@ -30,6 +30,8 @@ route("GET", "/media", "public", async (ctx) => {
     order: ctx.q.get("order") === "asc" ? "asc" : "desc",
     from: ctx.q.get("from"),
     to: ctx.q.get("to"),
+    // 仅管理员/管理者可显式查看失败记录(用于排查);普通浏览默认过滤掉
+    includeFailed: boolParam(ctx.q.get("includeFailed"), false) && !!ctx.user,
   });
 });
 

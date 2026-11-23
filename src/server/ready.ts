@@ -11,6 +11,7 @@ import { config, dirs } from "./config";
 import { purgeExpiredKeys } from "./keys";
 import { sweepHdCache } from "./hd/cache";
 import { processMedia } from "./media/derive";
+import { startCorruptSweeper } from "./media/corrupt";
 import { enqueue, setRunner } from "./queue";
 
 /**
@@ -69,6 +70,8 @@ async function init() {
   // 启动时清理上次进程遗留的临时文件:进程刚启动时不可能有正在进行的上传,
   // tmp/ 里的文件必然是异常中断(崩溃、kill -9)留下的残骸
   void cleanTmp(0).catch(() => undefined);
+  // 疑似损坏文件的自动清理(停止上传满 CORRUPT_AUTO_PURGE_HOURS 小时后)
+  startCorruptSweeper();
 
   if (config.scanIntervalMin > 0) {
     const t = setInterval(() => void scanAllMounted().catch(() => undefined), config.scanIntervalMin * 60_000);
