@@ -315,7 +315,8 @@ export async function extractImageMeta(file: string, facts: ImageFacts): Promise
         sceneType: fmt(g("SceneCaptureType")),
       },
       time: {
-        taken: dateStr(g("DateTimeOriginal")),
+        // 拍摄时间:优先 EXIF 的 DateTimeOriginal;仅含 XMP 的文件回落到 DateCreated
+        taken: dateStr(g("DateTimeOriginal", "DateCreated")),
         created: dateStr(g("CreateDate", "DateCreated")),
         modified: dateStr(g("ModifyDate", "DateTime")),
         timezone: fmt(g("OffsetTimeOriginal", "OffsetTime")),
