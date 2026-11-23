@@ -596,9 +596,9 @@ npm run typecheck && npm run lint && npm run build   # 提交前校验(CI 同样
 
 **升级注意**:新增字段由 `bootstrap.ts` 的 `ALTER TABLE ... IF NOT EXISTS` 自动补齐,老库直接启动即可;`pg_trgm` 索引在数据库无权限时只告警不影响启动。挂载相册新增 `readonly` 且**默认 true**,升级后向挂载相册上传/移动会被拒绝,需要时用 `PATCH /albums/:code {readonly:false}` 或 `pgs album set <code> --no-readonly` 关闭。
 
-### 16.1 v1.3.1 / v1.3.2 复查与实测修补(2026-11-23)
+### 16.1 v1.3.1 / v1.3.2 / v1.3.3 复查与实测修补(2026-11-23)
 
-v1.3.0 的改动在代码复查与 InstaBox 真机部署中暴露出 6 处问题,均已修复:
+v1.3.0 的改动在代码复查与 InstaBox 真机部署中暴露出 7 处问题,均已修复:
 
 1. 只读挂载可被物理删除:`deleteMediaByIds(ids, purge=true)` 与 `blocklist.purgeBlocked()` 原先不检查 `readonly`。现 `purge` 前先整体校验,命中只读挂载直接 403(而不是「删记录、留文件」——后者会让用户以为已删除,且下次扫描又把文件重新入库);黑名单彻底删除同样 403。
 2. 扫描熔断误判:`gone` 原先包含「上次扫描已标记 `missing_at`」的记录,一次合法的大批量删除会让比例长期超阈值,导致此后每次扫描都抛错。现熔断只统计本次新消失的文件,且判断前移到任何写库动作之前(先熔断,后重命名/插入/软删除)。
@@ -606,5 +606,6 @@ v1.3.0 的改动在代码复查与 InstaBox 真机部署中暴露出 6 处问题
 4. CLI 无法关闭只读:`util.parseArgs` 的 boolean 不接受 `--readonly=false`,新增 `--no-readonly`(`album mount` 与 `album set` 均支持),并修正帮助文本。
 5. **升级后数据目录不可写(实测发现)**:旧版本容器以 root 运行,`DATA_DIR` 下的 `albums/derived/tmp` 属主为 root;v1.3.0 改为 `USER node` 后,这些目录对新容器只读,上传直接 `EACCES`(表现为 500)。现改为「容器以 root 启动入口脚本 → 仅修正本系统管理的子目录属主 → `setpriv` 降权到 uid 1000 再启动应用」,进程本身仍非 root,且不触碰用户自行挂载的照片目录。
 6. 生产环境弱口令拦截生效(实测):`ADMIN_PASSWORD=admin123456` 会被拒绝启动。升级时若沿用旧测试口令需同步更换。
+7. **受管相册移动不搬文件(实测发现)**:`batchAction('move')` 与 `PATCH /media/:id` 原先只对 `storage='ext'` 调 `relocateExtFile`,受管相册(`local`)的文件只改了 `album_id`,文件仍留在原相册目录——接口返回 `affected:6` 但磁盘上 `A=6 / B=0`。现新增 `relocateLocalFile()`,受管相册移动同样先搬文件后改库;`deleteAlbum` 的移交逻辑也改为同名冲突自动换名重试,不再因 `EEXIST` 中断整个移交。
 
-版本号 `1.3.2`(`package.json`、`package-lock.json`、`config.ts`、`cli/pgs.mjs`、`.env.example` 的 `PGS_TAG` 一致)。`tsc --noEmit`、`eslint .`、`node --check cli/pgs.mjs` 均通过。
+版本号 `1.3.3`(`package.json`、`package-lock.json`、`config.ts`、`cli/pgs.mjs`、`.env.example` 的 `PGS_TAG` 一致)。`tsc --noEmit`、`eslint .`、`node --check cli/pgs.mjs` 均通过;InstaBox 真机 `scripts/test-hd.mjs` **46/46 通过**。

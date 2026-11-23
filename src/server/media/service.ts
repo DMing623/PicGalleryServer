@@ -3,7 +3,7 @@ import { and, asc, desc, eq, inArray, like, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { media } from "@/db/schema";
 import { can, issueStreamToken, type AuthUser } from "../auth";
-import { breadcrumbs, deleteMediaByIds, invalidateAlbums, loadTree, relocateExtFile, resolveAlbum, scopeIds, visibleIds } from "../albums";
+import { breadcrumbs, deleteMediaByIds, invalidateAlbums, loadTree, relocateExtFile, relocateLocalFile, resolveAlbum, scopeIds, visibleIds } from "../albums";
 import { config } from "../config";
 import { E } from "../http";
 import { enqueue } from "../queue";
@@ -222,11 +222,19 @@ export async function updateMedia(id: string, patch: Record<string, unknown>) {
   }
   if (!Object.keys(set).length) throw E.badRequest("没有可更新的字段");
   // 先移动文件、成功后再改库:搬失败时记录仍指向旧路径,不会被下一次扫描误删(issue §2.2)
-  if (set.albumId !== undefined && set.albumId !== row.albumId && row.storage === "ext") {
-    const moved = await relocateExtFile(row, set.albumId);
-    if (moved) {
-      set.storageKey = moved.storageKey;
-      set.filename = moved.filename;
+  if (set.albumId !== undefined && set.albumId !== row.albumId) {
+    if (row.storage === "ext") {
+      const moved = await relocateExtFile(row, set.albumId);
+      if (moved) {
+        set.storageKey = moved.storageKey;
+        set.filename = moved.filename;
+      }
+    } else if (row.storage === "local") {
+      const moved = await relocateLocalFile(row, set.albumId);
+      if (moved) {
+        set.storageKey = moved.storageKey;
+        set.filename = moved.filename;
+      }
     }
   }
   await db.update(media).set(set).where(eq(media.id, id));
@@ -261,6 +269,13 @@ export async function batchAction(body: { action?: unknown; ids?: unknown; album
           const set: Partial<typeof media.$inferInsert> = { albumId };
           if (r.storage === "ext" && albumId !== r.albumId) {
             const moved = await relocateExtFile(r, albumId);
+            if (moved) {
+              set.storageKey = moved.storageKey;
+              set.filename = moved.filename;
+            }
+          } else if (r.storage === "local" && albumId !== r.albumId) {
+            // 受管相册的文件也要真正搬到目标目录,否则目录与归属脱节(与 §2.6 同理)
+            const moved = await relocateLocalFile(r, albumId);
             if (moved) {
               set.storageKey = moved.storageKey;
               set.filename = moved.filename;

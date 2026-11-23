@@ -473,6 +473,42 @@ export async function deleteMediaByIds(
 }
 
 /**
+ * 把受管相册(local)里的文件真正移动到目标相册目录。
+ * 返回新的 storageKey/filename;不需要移动时返回 null;移动失败会抛错。
+ *
+ * 与 relocateExtFile 同理:必须先搬文件、成功后再由调用方更新数据库,
+ * 否则库里指向旧目录,原目录被清理后记录就成了孤儿。
+ */
+export async function relocateLocalFile(
+  row: typeof media.$inferSelect,
+  targetAlbumId: string | null,
+): Promise<{ storageKey: string; filename: string } | null> {
+  if (row.storage !== "local") return null;
+  const t = await loadTree();
+  const target = targetAlbumId ? t.byId.get(targetAlbumId) : undefined;
+  // 目标是挂载相册时文件类型不变,仍留在数据目录,交给 relocateExtFile 之外的路径处理
+  if (target && target.kind === "mounted") return null;
+  const dstDir = target ? path.join(dirs.albums, target.code) : path.join(dirs.albums, "_inbox");
+  const src = row.storageKey;
+  if (path.dirname(src) === dstDir) return null;
+  await fs.mkdir(dstDir, { recursive: true });
+  const base = path.basename(src);
+  const ext = path.extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+  let dst = path.join(dstDir, base);
+  for (let i = 0; i < 50; i++) {
+    try {
+      await moveNoOverwrite(src, dst);
+      return { storageKey: dst, filename: path.basename(dst) };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      dst = path.join(dstDir, `${stem}-${randomId(4)}${ext}`);
+    }
+  }
+  throw E.conflict("目标目录重名文件过多,无法移动");
+}
+
+/**
  * 把挂载相册(ext)里的文件真正移动到目标相册所在目录。
  * 返回新的 storageKey/filename;不需要移动时返回 null;移动失败会抛错(issue §2.2)。
  *
@@ -557,15 +593,27 @@ export async function deleteAlbum(code: string, opts: { media: "move" | "delete"
         if (r.storage === "local") {
           const dstDir = parent ? path.join(dirs.albums, t.byId.get(parent)?.code ?? "") : path.join(dirs.albums, "_inbox");
           await fs.mkdir(dstDir, { recursive: true });
-          const dst = path.join(dstDir, path.basename(r.storageKey));
-          try {
-            await moveNoOverwrite(r.storageKey, dst);
-            storageKey = dst;
-            filename = path.basename(dst);
-          } catch (e) {
-            console.error("[album] 移交文件失败,记录保持原归属", r.id, e);
-            continue;
+          const base = path.basename(r.storageKey);
+          const ext = path.extname(base);
+          const stem = base.slice(0, base.length - ext.length);
+          let dst = path.join(dstDir, base);
+          let done = false;
+          // 目标已有同名文件时换名重试,避免 moveNoOverwrite 抛 EEXIST 导致整个移交中断
+          for (let i = 0; i < 50 && !done; i++) {
+            try {
+              await moveNoOverwrite(r.storageKey, dst);
+              storageKey = dst;
+              filename = path.basename(dst);
+              done = true;
+            } catch (e) {
+              if ((e as NodeJS.ErrnoException).code !== "EEXIST") {
+                console.error("[album] 移交文件失败,记录保持原归属", r.id, e);
+                break;
+              }
+              dst = path.join(dstDir, `${stem}-${randomId(4)}${ext}`);
+            }
           }
+          if (!done) continue;
         }
         await db.update(media).set({ albumId: parent, storageKey, filename }).where(eq(media.id, r.id));
       }
