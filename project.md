@@ -582,9 +582,9 @@ npm run typecheck && npm run lint && npm run build   # 提交前校验(CI 同样
 ```
 端到端冒烟:启动后依次验证 `POST /albums` → `POST /media/upload` → `GET /media?q=` → `GET /f/:id`(无 key=预览,有 key=原图)→ `POST /keys` → 游客访问私有相册应 404。
 
-## 16. 本轮优化(v1.3.0 / v1.3.1,2026-11-23)与遗留项
+## 16. 本轮优化(v1.3.0 ~ v1.3.4,2026-11-23)与遗留项
 
-按 `issue.md` §0.3 的优先清单完成 41 项,详见 `issue.md` 顶部「优化执行记录」以及各条目标题下的 `✅ 已解决` 标注。要点:
+本轮依据一份外部代码审查清单(整合版 issue,已在完成后移除)逐条落地,共完成 41 项。要点:
 
 - 数据安全:扫描熔断 + `missing_at` 软删除、先搬文件后改库、`(size,mtime)` 变更与重命名识别、删除事务化、黑名单复用原 id。
 - 认证:Basic 与登录共用限流、`TRUST_PROXY`、生产环境拒绝占位密码、`token_version`。
@@ -592,13 +592,13 @@ npm run typecheck && npm run lint && npm run build   # 提交前校验(CI 同样
 - 性能:分池并发、EXIF 只读头部、只选必要列、可见集合缓存、失效防抖、`pg_trgm`、队列游标。
 - 部署:tini + 非 root + healthcheck + jemalloc、连接池 `error` 监听、CI 工作流。
 
-**明确未做**(issue.md 中标注 `⏳ 本次未处理`):视频转码预览(§1.6)、`/media/import` 异步 Job(§2.8)、列表接口统一分页(§3.2)、个人访问令牌 PAT(§3.3)、drizzle 迁移体系与 FK/CHECK(§5.3)、ext 文件 hash 与感知哈希(§6.5)、前端虚拟列表与 SSE(§6.8),以及 §7 的功能扩展、§8 的自动化测试、§9 的文档补充。
+**明确未做**:视频转码预览(720p/HLS)、`/media/import` 异步 Job、列表接口统一分页、个人访问令牌 PAT 与作用域、drizzle 迁移体系与 FK/CHECK 约束、ext 文件 hash 与感知哈希、前端虚拟列表与 SSE、自动化测试骨架、Caddy/Cloudflare 反代示例。
 
 **升级注意**:新增字段由 `bootstrap.ts` 的 `ALTER TABLE ... IF NOT EXISTS` 自动补齐,老库直接启动即可;`pg_trgm` 索引在数据库无权限时只告警不影响启动。挂载相册新增 `readonly` 且**默认 true**,升级后向挂载相册上传/移动会被拒绝,需要时用 `PATCH /albums/:code {readonly:false}` 或 `pgs album set <code> --no-readonly` 关闭。
 
-### 16.1 v1.3.1 / v1.3.2 / v1.3.3 复查与实测修补(2026-11-23)
+### 16.1 v1.3.1 ~ v1.3.4 复查与实测修补(2026-11-23)
 
-v1.3.0 的改动在代码复查与 InstaBox 真机部署中暴露出 7 处问题,均已修复:
+v1.3.0 的改动在代码复查与 InstaBox 真机部署中暴露出 8 处问题,均已修复:
 
 1. 只读挂载可被物理删除:`deleteMediaByIds(ids, purge=true)` 与 `blocklist.purgeBlocked()` 原先不检查 `readonly`。现 `purge` 前先整体校验,命中只读挂载直接 403(而不是「删记录、留文件」——后者会让用户以为已删除,且下次扫描又把文件重新入库);黑名单彻底删除同样 403。
 2. 扫描熔断误判:`gone` 原先包含「上次扫描已标记 `missing_at`」的记录,一次合法的大批量删除会让比例长期超阈值,导致此后每次扫描都抛错。现熔断只统计本次新消失的文件,且判断前移到任何写库动作之前(先熔断,后重命名/插入/软删除)。
