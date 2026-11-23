@@ -102,6 +102,30 @@ const dateStr = (v: unknown): string | null => {
   return fmt(v);
 };
 
+/** 把 Date / 字符串 / EXIF 的 "YYYY:MM:DD HH:MM:SS" 统一转成 Date;失败返回 null */
+function toDate(v: unknown): Date | null {
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;
+  if (typeof v === "number") {
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (!s) return null;
+    // EXIF 风格 "2014:06:03 08:15:00" → ISO 风格;纯 8 位数字 "19690303" 也常见于扫描件
+    const exif = /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(s);
+    const ymd = /^(\d{4})(\d{2})(\d{2})$/.exec(s);
+    const iso = exif
+      ? `${exif[1]}-${exif[2]}-${exif[3]}T${exif[4]}:${exif[5]}:${exif[6]}`
+      : ymd
+        ? `${ymd[1]}-${ymd[2]}-${ymd[3]}T00:00:00`
+        : s;
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
 function exposureTime(v: unknown): string | null {
   const n = num(v);
   if (n === null || n <= 0) return fmt(v);
@@ -161,7 +185,11 @@ function colorSpaceName(v: unknown, fallback?: string): string | null {
   const raw = fmt(v);
   const map: Record<string, string> = { "1": "sRGB", "2": "Adobe RGB", "65535": "未校准", "65534": "未校准" };
   if (raw && map[raw]) return map[raw];
-  return raw ?? fallback ?? null;
+  if (raw) return raw;
+  // sharp 的 space 是小写标识(srgb / rgb / cmyk),统一成常见写法
+  const fb = (fallback ?? "").toLowerCase();
+  const sharpMap: Record<string, string> = { srgb: "sRGB", rgb: "RGB", cmyk: "CMYK", lab: "Lab", grey: "灰度", "b-w": "黑白" };
+  return sharpMap[fb] ?? fallback ?? null;
 }
 
 /** sharp 的位深表示 → 人类可读(uchar/ushort/float → 8-bit/16-bit/32-bit) */
@@ -244,7 +272,8 @@ export async function extractImageMeta(file: string, facts: ImageFacts): Promise
   }
 
   const taken = g("DateTimeOriginal", "CreateDate", "DateCreated");
-  const takenAt = taken instanceof Date && !Number.isNaN(taken.getTime()) ? taken : null;
+  // XMP 的日期常常是字符串("2014-06-03T08:15:00")而不是 Date,不能只认 Date 实例
+  const takenAt = toDate(taken);
 
   const lat = num(parsed.gps?.latitude ?? g("GPSLatitude"));
   const lon = num(parsed.gps?.longitude ?? g("GPSLongitude"));
