@@ -30,19 +30,35 @@ ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1
 
 # libjemalloc 路径随架构不同(amd64 / arm64),用入口脚本探测后设置 LD_PRELOAD
+# 同时处理「旧版本以 root 运行、数据目录属主为 root」的升级场景:
+# 容器仍以 root 启动入口脚本,仅修正本系统自己管理的子目录属主,再用 setpriv 降权到 node 运行应用。
 RUN printf '%s\n' \
   '#!/bin/sh' \
+  'set -e' \
   'for p in /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 /usr/lib/aarch64-linux-gnu/libjemalloc.so.2 /usr/lib/libjemalloc.so.2; do' \
   '  if [ -f "$p" ]; then export LD_PRELOAD="$p"; break; fi' \
   'done' \
+  '# 升级兼容:老版本容器以 root 写入,数据目录属主为 root,非 root 运行会 EACCES。' \
+  '# 只修正本系统管理的子目录,不触碰用户自行挂载的照片目录。' \
+  'if [ "$(id -u)" = "0" ]; then' \
+  '  D="${DATA_DIR:-/app/data}"' \
+  '  if [ -d "$D" ]; then' \
+  '    for sub in "" albums derived tmp cache logs branding hdCache; do' \
+  '      t="$D/$sub"' \
+  '      [ -e "$t" ] || continue' \
+  '      [ "$(stat -c %u "$t")" = "1000" ] || chown -R 1000:1000 "$t" 2>/dev/null || true' \
+  '    done' \
+  '  fi' \
+  '  exec setpriv --reuid=1000 --regid=1000 --clear-groups "$@"' \
+  'fi' \
   'exec "$@"' > /usr/local/bin/pgs-entrypoint \
  && chmod +x /usr/local/bin/pgs-entrypoint
 
 WORKDIR /app
 COPY --from=build /app ./
-# 以非 root 运行(issue §5.1):数据目录交给 node 用户
+# 数据目录预建并交给 node 用户;容器仍以 root 启动入口脚本以便修正旧数据属主,
+# 脚本内用 setpriv 降权到 node(uid 1000)后才启动应用,进程本身始终非 root。
 RUN mkdir -p /app/data && chown -R node:node /app/data
-USER node
 
 VOLUME ["/app/data"]
 EXPOSE 3000

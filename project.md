@@ -596,13 +596,15 @@ npm run typecheck && npm run lint && npm run build   # 提交前校验(CI 同样
 
 **升级注意**:新增字段由 `bootstrap.ts` 的 `ALTER TABLE ... IF NOT EXISTS` 自动补齐,老库直接启动即可;`pg_trgm` 索引在数据库无权限时只告警不影响启动。挂载相册新增 `readonly` 且**默认 true**,升级后向挂载相册上传/移动会被拒绝,需要时用 `PATCH /albums/:code {readonly:false}` 或 `pgs album set <code> --no-readonly` 关闭。
 
-### 16.1 v1.3.1 复查修补(2026-11-23)
+### 16.1 v1.3.1 / v1.3.2 复查与实测修补(2026-11-23)
 
-对 v1.3.0 的改动做代码复查时发现并修掉 4 处问题,均为「文档声称的行为」与「实际实现」不一致:
+v1.3.0 的改动在代码复查与 InstaBox 真机部署中暴露出 6 处问题,均已修复:
 
-1. 只读挂载可被物理删除:`deleteMediaByIds(ids, purge=true)` 与 `blocklist.purgeBlocked()` 原先不检查 `readonly`,管理员对只读挂载相册执行 `purge` 仍会 `unlink` 用户原文件。现改为逐条校验归属相册,只读时跳过并在 `failed[]` 里返回原因(黑名单彻底删除直接 403)。
-2. 扫描熔断误判:`gone` 原先包含「上次扫描已标记 `missing_at`」的记录,一次合法的大批量删除会让比例长期超阈值,导致此后每次扫描都抛错、软删除永远无法推进到清理。现熔断只统计本次新消失的文件,且判断前移到任何写库动作之前(先熔断,后重命名/插入/软删除)。
+1. 只读挂载可被物理删除:`deleteMediaByIds(ids, purge=true)` 与 `blocklist.purgeBlocked()` 原先不检查 `readonly`。现 `purge` 前先整体校验,命中只读挂载直接 403(而不是「删记录、留文件」——后者会让用户以为已删除,且下次扫描又把文件重新入库);黑名单彻底删除同样 403。
+2. 扫描熔断误判:`gone` 原先包含「上次扫描已标记 `missing_at`」的记录,一次合法的大批量删除会让比例长期超阈值,导致此后每次扫描都抛错。现熔断只统计本次新消失的文件,且判断前移到任何写库动作之前(先熔断,后重命名/插入/软删除)。
 3. 前端无法感知只读:上传对话框不显示只读状态,用户上传后才收到 403。现 `UploadDialog` 在选择只读挂载相册时禁用「开始上传」并给出说明,相册下拉标注「目录(只读)」;`AlbumActions` 增加「只读 ↔ 允许写入」切换(需 `album.mount`);挂载对话框增加「只读挂载(推荐)」勾选项;设置页相册列表显示「挂载·只读 / 挂载·可写」。
 4. CLI 无法关闭只读:`util.parseArgs` 的 boolean 不接受 `--readonly=false`,新增 `--no-readonly`(`album mount` 与 `album set` 均支持),并修正帮助文本。
+5. **升级后数据目录不可写(实测发现)**:旧版本容器以 root 运行,`DATA_DIR` 下的 `albums/derived/tmp` 属主为 root;v1.3.0 改为 `USER node` 后,这些目录对新容器只读,上传直接 `EACCES`(表现为 500)。现改为「容器以 root 启动入口脚本 → 仅修正本系统管理的子目录属主 → `setpriv` 降权到 uid 1000 再启动应用」,进程本身仍非 root,且不触碰用户自行挂载的照片目录。
+6. 生产环境弱口令拦截生效(实测):`ADMIN_PASSWORD=admin123456` 会被拒绝启动。升级时若沿用旧测试口令需同步更换。
 
-版本号同步升到 `1.3.1`(`package.json`、`package-lock.json`、`config.ts`、`cli/pgs.mjs` 四处一致)。`tsc --noEmit`、`eslint .`、`node --check cli/pgs.mjs` 均通过。
+版本号 `1.3.2`(`package.json`、`package-lock.json`、`config.ts`、`cli/pgs.mjs`、`.env.example` 的 `PGS_TAG` 一致)。`tsc --noEmit`、`eslint .`、`node --check cli/pgs.mjs` 均通过。

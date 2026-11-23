@@ -418,21 +418,24 @@ export async function deleteMediaByIds(
   // 未勾选「同时删除源文件」时,默认把记录移入黑名单(源文件保留在服务器上)
   const block = opts.block ?? !purge;
   const failed: Array<{ id: string; error: string }> = [];
-  // 只读挂载目录里的文件不属于本系统,即使管理员勾了 purge 也不能物理删除(issue §1.10)
-  const t = await loadTree();
+  // 只读挂载目录里的文件不属于本系统,即使管理员勾了 purge 也不能物理删除(issue §1.10)。
+  // 这里直接整体拒绝,而不是「删记录、留文件」——后者会让用户以为已删除,且下次扫描又把文件重新入库。
+  if (purge) {
+    const t = await loadTree();
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const rows = await db.select({ id: media.id, storage: media.storage, albumId: media.albumId }).from(media).where(inArray(media.id, chunk));
+      for (const r of rows) {
+        if (r.storage !== "ext") continue;
+        const owner = r.albumId ? t.byId.get(r.albumId) : undefined;
+        if (owner?.readonly) throw E.forbidden("源文件位于只读挂载目录,不能物理删除;如需删除请先在相册设置里关闭只读");
+      }
+    }
+  }
   for (let i = 0; i < ids.length; i += 500) {
     const chunk = ids.slice(i, i + 500);
-    const all = await db.select().from(media).where(inArray(media.id, chunk));
-    if (!all.length) continue;
-    const rows = all.filter((r) => {
-      if (!purge || r.storage !== "ext") return true;
-      const owner = r.albumId ? t.byId.get(r.albumId) : undefined;
-      if (!owner?.readonly) return true;
-      failed.push({ id: r.id, error: "源相册是只读挂载目录,已跳过物理删除" });
-      return false;
-    });
+    const rows = await db.select().from(media).where(inArray(media.id, chunk));
     if (!rows.length) continue;
-    const keepIds = rows.map((r) => r.id);
     // 1) 先把「黑名单 + 删除记录」放进同一事务:任何一步失败都不会留下半截状态(issue §2.4)
     await db.transaction(async (tx) => {
       if (block) {
@@ -449,7 +452,7 @@ export async function deleteMediaByIds(
         }
         await tx.insert(blocklist).values(values).onConflictDoNothing();
       }
-      await tx.delete(media).where(inArray(media.id, keepIds));
+      await tx.delete(media).where(inArray(media.id, chunk));
     });
     // 2) 事务提交后再动物理文件:失败只记录并返回,不再"静默继续"(issue §2.4)
     for (const r of rows) {

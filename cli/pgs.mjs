@@ -13,7 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-const VERSION = "1.3.1";
+const VERSION = "1.3.2";
 
 /* ---------- 参数解析(util.parseArgs:未知参数直接报错,支持 --k=v 与 -- 结束符) ---------- */
 
