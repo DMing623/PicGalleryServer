@@ -219,11 +219,17 @@ async function main() {
   section("4. 并发转换合并");
   const cId = await upload(admin, pub.code, await makeImage(3200, 2200), "concurrent.jpg");
   await waitReady(admin, cId);
-  const s0 = (await data(await call("GET", "/status", { token: admin }))).hd;
+  // /status 有 5 秒缓存(issue §6.3),前后两次读取可能命中同一快照而算出 0 差值。
+  // 这里先等缓存过期取基线,再在并发结束后等缓存过期取结果。
+  const hdStats = async () => {
+    await new Promise((r) => setTimeout(r, 5200));
+    return (await data(await call("GET", "/status", { token: admin }))).hd;
+  };
+  const s0 = await hdStats();
   const toks = await Promise.all(Array.from({ length: 8 }, () => hdToken(cId)));
   const rs = await Promise.all(toks.map((t) => hdGet(cId, t.body.token)));
   ok(rs.every((x) => x.status === 200), "8 个并发请求全部成功", rs.map((x) => x.status).join(","));
-  const s1 = (await data(await call("GET", "/status", { token: admin }))).hd;
+  const s1 = await hdStats();
   ok(s1.conversions - s0.conversions === 1, `8 个并发请求只执行 1 次转换 (实际 ${s1.conversions - s0.conversions})`);
   ok(s1.coalesced - s0.coalesced >= 1, `并发请求被合并 (${s1.coalesced - s0.coalesced} 个)`);
 
