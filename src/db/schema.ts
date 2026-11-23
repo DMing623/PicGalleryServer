@@ -21,6 +21,8 @@ export const users = pgTable("pgs_users", {
   disabled: boolean("disabled").notNull().default(false),
   /** env = 由环境变量同步的超级管理员, api = 经接口创建 */
   source: text("source").notNull().default("api"),
+  /** 令牌版本:改密码/重置/强制下线时自增,旧令牌立即失效(issue §1.4) */
+  tokenVersion: integer("token_version").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
 });
@@ -41,6 +43,8 @@ export const albums = pgTable(
     rootPath: text("root_path"),
     /** public | private */
     visibility: text("visibility").notNull().default("private"),
+    /** 挂载相册是否只读:只读时拒绝上传/移动/物理删除(issue §1.10) */
+    readonly: boolean("readonly").notNull().default(false),
     coverMediaId: text("cover_media_id"),
     sortOrder: integer("sort_order").notNull().default(0),
     lastScanAt: timestamp("last_scan_at", { withTimezone: true }),
@@ -61,6 +65,8 @@ export const media = pgTable(
     filename: text("filename").notNull(),
     mime: text("mime").notNull(),
     size: bigint("size", { mode: "number" }).notNull().default(0),
+    /** 源文件修改时间(毫秒):与 size 一起做变更检测,并用于重命名配对(issue §2.3) */
+    mtimeMs: bigint("mtime_ms", { mode: "number" }),
     width: integer("width"),
     height: integer("height"),
     duration: real("duration"),
@@ -77,6 +83,8 @@ export const media = pgTable(
     note: text("note").notNull().default(""),
     meta: jsonb("meta"),
     searchText: text("search_text").notNull().default(""),
+    /** 软删除标记:扫描发现文件暂时消失时只打标记,连续缺失超过阈值才真正清理(issue §2.1) */
+    missingAt: timestamp("missing_at", { withTimezone: true }),
     uploadedBy: text("uploaded_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -86,6 +94,7 @@ export const media = pgTable(
     uniqueIndex("pgs_media_storage_uq").on(t.storage, t.storageKey),
     index("pgs_media_hash_idx").on(t.hash),
     index("pgs_media_status_idx").on(t.status),
+    index("pgs_media_missing_idx").on(t.missingAt),
   ],
 );
 
@@ -98,7 +107,7 @@ export const blocklist = pgTable(
   "pgs_blocklist",
   {
     id: text("id").primaryKey(),
-    /** 原媒体 id(仅用于追溯) */
+    /** 原媒体 id(仅用于追溯;解除黑名单时优先复用它,保证 /f/<id> 外链不失效) */
     mediaId: text("media_id"),
     albumId: text("album_id"),
     /** 删除时所属相册代码(相册被删后仍可读) */

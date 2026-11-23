@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { media } from "@/db/schema";
 import { can } from "../auth";
@@ -10,13 +10,16 @@ import { collectFiles, copyToTmp, ingestOne, resolveTarget, type IngestResult } 
 import { batchAction, getVisible, listMedia, mediaDetail, reprocessFailed, updateMedia } from "../media/service";
 import { parseUpload } from "../media/upload";
 import { deleteMediaByIds } from "../albums";
-import { enqueue, limiter } from "../queue";
+import { enqueue, idleIds, limiter } from "../queue";
+import { hit } from "../rate";
 import { route } from "../router";
 
 /** 媒体接口:列表/搜索、详情、上传、导入、修改、删除、批量、文件输出 */
 
-route("GET", "/media", "public", async (ctx) =>
-  listMedia({
+route("GET", "/media", "public", async (ctx) => {
+  // 匿名搜索限流:LIKE '%词%' 是相对昂贵的查询,也是便宜的 DoS 入口(issue §6.4)
+  if (!ctx.user && ctx.q.get("q")) hit(`search:${ctx.ip}`, config.searchRatePerMin);
+  return listMedia({
     user: ctx.user,
     album: ctx.q.get("album"),
     q: ctx.q.get("q"),
@@ -27,8 +30,8 @@ route("GET", "/media", "public", async (ctx) =>
     order: ctx.q.get("order") === "asc" ? "asc" : "desc",
     from: ctx.q.get("from"),
     to: ctx.q.get("to"),
-  }),
-);
+  });
+});
 
 route("GET", "/media/:id", "public", async (ctx) => mediaDetail(ctx.params.id, ctx.user, ctx.req));
 
@@ -40,7 +43,10 @@ route("PATCH", "/media/:id", "media.edit", async (ctx) => {
 route("DELETE", "/media/:id", "media.delete", async (ctx) => {
   await getVisible(ctx.params.id, ctx.user);
   const purge = boolParam(ctx.q.get("purge"));
-  await deleteMediaByIds([ctx.params.id], purge, { user: ctx.user });
+  // 物理删除源文件需要 media.purge(仅 admin);manager 的删除保持"排除/回收站"语义(issue §1.10)
+  if (purge && !can(ctx.user, "media.purge")) throw E.forbidden("物理删除源文件需要管理员权限");
+  const r = await deleteMediaByIds([ctx.params.id], purge, { user: ctx.user });
+  if (r.failed.length) throw E.conflict(`记录已删除,但源文件删除失败:${r.failed[0].error}`);
   return { deleted: ctx.params.id, purge, blocked: !purge };
 });
 
@@ -87,16 +93,38 @@ route("POST", "/media/upload", "upload", async (ctx) => {
       duplicate: results.filter((r) => r.status === "duplicate").length,
       failed: results.filter((r) => r.status === "error").length,
     };
-    return json(
-      { ok: true, data: { target: { album: target.album?.code ?? null, albumName: target.album?.name ?? null, storage: target.storage }, summary, results } },
-      { status: summary.created || summary.duplicate ? 200 : 422 },
-    );
+    // 可选:等本次上传的文件处理完(只等这些 id,不被后台扫描拖住)
+    if (boolParam(param("wait"), false)) {
+      const ids = results.map((r) => r.id).filter((v): v is string => !!v);
+      await idleIds(ids, Math.min(60_000, Math.max(1, Number(param("waitMs")) || 20_000)));
+    }
+    const body = { target: { album: target.album?.code ?? null, albumName: target.album?.name ?? null, storage: target.storage }, summary, results };
+    // 全部失败时返回 ok:false,避免客户端按 ok 判断误以为成功(issue §3.1)
+    if (!summary.created && !summary.duplicate) {
+      return json(
+        { ok: false, error: { code: "upload_failed", message: "所有文件都上传失败", details: body } },
+        { status: 422 },
+      );
+    }
+    return json({ ok: true, data: body });
   } catch (e) {
     // 参数错误时也要清理已写入的临时文件
     const fs = await import("node:fs/promises");
     await Promise.all(files.map((f) => fs.unlink(f.tmp).catch(() => undefined)));
     throw e;
   }
+});
+
+/** 批量查询 hash 是否已存在,供客户端做幂等同步(先查后传,issue §4.3) */
+route("POST", "/media/exists", "upload", async (ctx) => {
+  const b = await readJson(ctx.req);
+  const hashes = Array.isArray(b.hashes) ? b.hashes.map(String).slice(0, 5000) : [];
+  if (!hashes.length) throw E.badRequest("缺少 hashes");
+  const rows = await db
+    .select({ hash: media.hash, id: media.id, albumId: media.albumId })
+    .from(media)
+    .where(inArray(media.hash, hashes));
+  return { existing: rows.map((r) => ({ hash: r.hash, id: r.id, album: r.albumId })) };
 });
 
 /** 服务器本地路径导入(复制): {paths:[...], album|dir|storage, recursive, concurrency, duplicate, note} */
@@ -137,6 +165,6 @@ route("GET", "/media-timeline", "public", async (ctx) => {
   const { allowed } = await visibleIds(ctx.user);
   if (allowed && !allowed.size) return { months: [] };
   const cond = allowed ? sql`album_id IN (${sql.join([...allowed].map((i) => sql`${i}`), sql`, `)})` : sql`true`;
-  const rows = await db.execute(sql`SELECT to_char(sort_at, 'YYYY-MM') AS m, count(*)::int AS n FROM pgs_media WHERE ${cond} GROUP BY 1 ORDER BY 1 DESC`);
+  const rows = await db.execute(sql`SELECT to_char(sort_at, 'YYYY-MM') AS m, count(*)::int AS n FROM pgs_media WHERE ${cond} AND missing_at IS NULL GROUP BY 1 ORDER BY 1 DESC`);
   return { months: rows.rows };
 });

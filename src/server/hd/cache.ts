@@ -99,6 +99,8 @@ export async function getCached(id: string, ver: string, w: number): Promise<Buf
     return null;
   }
   try {
+    // 读成 Buffer 是必要的:水印合成需要完整图像。这里只读一次,响应时不再复制
+    // (旧实现响应阶段又 new Uint8Array(out) 复制一份,并发下内存翻倍,见 issue §6.7)
     const buf = await fs.readFile(e.file);
     e.lastAccess = Date.now();
     void fs.utimes(e.file, new Date(e.lastAccess), new Date(e.createdAt)).catch(() => undefined);

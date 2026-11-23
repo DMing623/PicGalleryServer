@@ -6,7 +6,7 @@ import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { albums, media } from "@/db/schema";
-import { invalidateAlbums, loadTree, assertMountAllowed, type AlbumRow } from "../albums";
+import { invalidateAlbums, invalidateMediaCaches, loadTree, assertMountAllowed, type AlbumRow } from "../albums";
 import type { AuthUser } from "../auth";
 import { dirs } from "../config";
 import { E } from "../http";
@@ -37,8 +37,7 @@ export async function resolveTarget(p: { album?: string | null; dir?: string | n
   const t = await loadTree();
 
   if (p.dir) {
-    const abs = path.resolve(p.dir);
-    assertMountAllowed(abs);
+    const abs = await assertMountAllowed(path.resolve(p.dir));
     const roots = t.rows
       .filter((a) => a.kind === "mounted" && a.rootPath && (abs === a.rootPath || abs.startsWith(a.rootPath + path.sep)))
       .sort((a, b) => b.rootPath!.length - a.rootPath!.length);
@@ -72,6 +71,7 @@ export async function resolveTarget(p: { album?: string | null; dir?: string | n
     if (!a) throw E.notFound(`相册不存在: ${p.album}`);
     if (a.kind === "mounted") {
       if (wantStorage && wantStorage !== "ext") throw E.badRequest("挂载相册的 storage 固定为 ext");
+      if (a.readonly) throw E.forbidden("该挂载相册是只读的,不能写入文件(可在相册设置里关闭只读)");
       return { album: a, storage: "ext", dirKey: a.rootPath! };
     }
     const st = a.storage as StorageCode;
@@ -184,7 +184,7 @@ export async function ingestOne(
         hintLocalCopy(id, file.tmp);
         keepTmp = true; // 派生任务完成后会清理该临时副本
       }
-      invalidateAlbums();
+      invalidateMediaCaches();
       enqueue(id, true);
       return { filename: file.name, status: "created", id, link: `/f/${id}`, album: target.album?.code ?? null, storage: target.storage };
     }
@@ -197,25 +197,23 @@ export async function ingestOne(
   }
 }
 
-/** 服务器本地路径导入(复制到目标): paths 可含文件或目录 */
+/** 服务器本地路径导入(复制到目标): paths 可含文件或目录。不跟随符号链接(issue §1.10) */
 export async function collectFiles(paths: string[], recursive: boolean): Promise<string[]> {
   const out: string[] = [];
   const walk = async (p: string, depth: number) => {
-    const st = await fs.stat(p).catch(() => null);
-    if (!st) return;
+    const st = await fs.lstat(p).catch(() => null);
+    if (!st || st.isSymbolicLink()) return;
     if (st.isFile()) {
       if (detectKind(p)) out.push(p);
     } else if (st.isDirectory() && depth < 12) {
       for (const e of await fs.readdir(p)) {
         if (e.startsWith(".")) continue;
-        const child = path.join(p, e);
-        if (recursive || !(await fs.stat(child).catch(() => null))?.isDirectory()) await walk(child, depth + 1);
+        await walk(path.join(p, e), depth + 1);
       }
     }
   };
   for (const p of paths) {
-    const abs = path.resolve(p);
-    assertMountAllowed(abs);
+    const abs = await assertMountAllowed(path.resolve(p));
     await walk(abs, 0);
   }
   return out;

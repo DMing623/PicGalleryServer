@@ -11,6 +11,7 @@ import { materialize } from "../storage";
 import { buildSearchText, extractImageMeta, grabVideoFrame, probeVideo, type MediaMeta } from "./metadata";
 import { invalidateHd } from "../hd/cache";
 import { isHeic } from "./types";
+import { limiter } from "../queue";
 
 /**
  * 派生图生成与元数据入库。由 queue 调度,并发受 THUMB_CONCURRENCY 限制。
@@ -36,6 +37,12 @@ const localHints = new Map<string, string>();
 export function hintLocalCopy(id: string, file: string) {
   localHints.set(id, file);
 }
+/** 丢弃本地副本提示(记录已被删除时调用,避免 Map 与临时文件泄漏,见 issue §2.7) */
+export async function dropLocalHint(id: string) {
+  const p = localHints.get(id);
+  localHints.delete(id);
+  if (p) await fs.unlink(p).catch(() => undefined);
+}
 
 async function writeAtomic(dst: string, buf: Buffer) {
   await fs.mkdir(path.dirname(dst), { recursive: true });
@@ -44,13 +51,16 @@ async function writeAtomic(dst: string, buf: Buffer) {
   await fs.rename(tmp, dst);
 }
 
+/** 解压炸弹防护 + 顺序读(降低内存峰值);不要从原图 clone 两次,见 issue §10.3 */
+const INPUT_OPTS = { failOn: "none" as const, limitInputPixels: 268_000_000, sequentialRead: true };
+
 async function makeDerived(id: string, input: string | Buffer) {
-  const previewBuf = await sharp(input, { failOn: "none" })
+  const previewBuf = await sharp(input, INPUT_OPTS)
     .rotate()
     .resize({ width: config.previewWidth, height: config.previewWidth, fit: "inside", withoutEnlargement: true })
     .webp({ quality: 84 }) // 不调用 keepMetadata/withMetadata:输出不含 EXIF/XMP/ICC 等元数据
     .toBuffer();
-  const thumbBuf = await sharp(previewBuf)
+  const thumbBuf = await sharp(previewBuf, INPUT_OPTS)
     .resize({ width: config.thumbWidth, height: config.thumbWidth * 2, fit: "inside", withoutEnlargement: true })
     .webp({ quality: 84 })
     .toBuffer();
@@ -60,21 +70,31 @@ async function makeDerived(id: string, input: string | Buffer) {
   return color;
 }
 
+/** HEIC 解码是最吃内存/CPU 的路径,单独限流(issue §6.1) */
+const heicGate = limiter(config.heicConcurrency);
+/** 视频探测/抽帧(ffmpeg 子进程)单独限流 */
+const videoGate = limiter(config.videoConcurrency);
+
 export async function heicToJpeg(file: string): Promise<Buffer> {
-  const convert = (await import("heic-convert")).default;
-  const input = await fs.readFile(file);
-  const out = await convert({ buffer: input as unknown as ArrayBufferLike, format: "JPEG", quality: 0.92 } as never);
-  return Buffer.from(out as unknown as ArrayBuffer);
+  return heicGate(async () => {
+    const convert = (await import("heic-convert")).default;
+    const input = await fs.readFile(file);
+    const out = await convert({ buffer: input as unknown as ArrayBufferLike, format: "JPEG", quality: 0.92 } as never);
+    return Buffer.from(out as unknown as ArrayBuffer);
+  });
 }
 
-const PLACEHOLDER = (label: string) =>
-  Buffer.from(
+const PLACEHOLDER = (label: string) =>  Buffer.from(
     `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#2b2a28"/><circle cx="320" cy="180" r="58" fill="none" stroke="#d97757" stroke-width="6"/><path d="M302 148 L352 180 L302 212 Z" fill="#d97757"/><text x="320" y="300" fill="#a8a69b" font-size="22" text-anchor="middle" font-family="sans-serif">${label}</text></svg>`,
   );
 
 export async function processMedia(id: string): Promise<void> {
   const [row] = await db.select().from(media).where(eq(media.id, id)).limit(1);
-  if (!row) return;
+  if (!row) {
+    // 记录已被删除:清掉本地副本与 Map 条目,避免泄漏(issue §2.7)
+    await dropLocalHint(id);
+    return;
+  }
   await invalidateHd(id); // 重新处理 = 原文件可能已变化,旧高清缓存作废
   const hint = localHints.get(id);
   let mat: { path: string; cleanup: () => Promise<void> } | null = null;
@@ -89,7 +109,7 @@ export async function processMedia(id: string): Promise<void> {
 
     if (row.kind === "image") {
       const input: string | Buffer = isHeic(row.filename) ? await heicToJpeg(file) : file;
-      const m = await sharp(input, { failOn: "none" }).metadata();
+      const m = await sharp(input, INPUT_OPTS).metadata();
       const swap = (m.orientation ?? 1) >= 5 && (m.orientation ?? 1) <= 8;
       const width = (swap ? m.height : m.width) ?? 0;
       const height = (swap ? m.width : m.height) ?? 0;
@@ -104,7 +124,7 @@ export async function processMedia(id: string): Promise<void> {
       meta = r.meta;
       takenAt = r.takenAt;
     } else {
-      const p = await probeVideo(file, row.mime, row.size);
+      const p = await videoGate(() => probeVideo(file, row.mime, row.size));
       meta = p.meta;
       takenAt = p.takenAt;
       patch.width = p.width;
@@ -113,7 +133,7 @@ export async function processMedia(id: string): Promise<void> {
       const tmpPng = path.join(dirs.tmp, `frame-${randomBytes(6).toString("hex")}.png`);
       try {
         await fs.mkdir(dirs.tmp, { recursive: true });
-        await grabVideoFrame(file, tmpPng, p.duration ? Math.min(1, p.duration / 2) : 0);
+        await videoGate(() => grabVideoFrame(file, tmpPng, p.duration ? Math.min(1, p.duration / 2) : 0));
         patch.color = await makeDerived(id, tmpPng);
       } catch {
         patch.color = await makeDerived(id, PLACEHOLDER("VIDEO"));
@@ -128,7 +148,7 @@ export async function processMedia(id: string): Promise<void> {
     }
     await db
       .update(media)
-      .set({ ...patch, meta, status: "ready", error: null, searchText: buildSearchText(row.filename, row.note, meta) })
+      .set({ ...patch, meta, status: "ready", error: null, searchText: buildSearchText(row.filename, meta) })
       .where(eq(media.id, id));
   } catch (e) {
     await db

@@ -113,7 +113,12 @@ function layerFor(W: number, H: number, siteText: string, userText: string | nul
     p = buildLayer(W, H, siteText, userText);
     layerCache.set(key, p);
     p.catch(() => layerCache.delete(key));
-    if (layerCache.size > 12) layerCache.delete(layerCache.keys().next().value as string);
+    // 变体数量上限(被伪造 Host 刷时也只保留最近 24 个,而不是每次重建)
+    while (layerCache.size > 24) {
+      const oldest = layerCache.keys().next();
+      if (oldest.done) break;
+      layerCache.delete(oldest.value);
+    }
   }
   return p;
 }

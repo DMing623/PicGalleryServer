@@ -187,7 +187,7 @@ export async function serveHd(req: Request, id: string, user: AuthUser | null, i
     wmOn = true;
   }
 
-  return new Response(new Uint8Array(out), {
+  return new Response(out as unknown as BodyInit, {
     headers: {
       "content-type": "image/webp",
       "content-length": String(out.length),

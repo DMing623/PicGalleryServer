@@ -3,10 +3,12 @@ import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import { Readable } from "node:stream";
 import { can, verifyStreamToken, type AuthUser } from "./auth";
+import { config } from "./config";
 import { ApiError, E } from "./http";
 import { verifyKey } from "./keys";
 import { derivedPath, type Variant } from "./media/derive";
 import { canSee } from "./media/service";
+import { count, overLimit } from "./rate";
 import { driverFor } from "./storage";
 import { db } from "@/db";
 import { media } from "@/db/schema";
@@ -60,8 +62,12 @@ async function serveDerived(req: Request, id: string, variant: Variant, filename
   const headers: Record<string, string> = {
     etag,
     "content-type": "image/webp",
-    "cache-control": publicCache ? "public, max-age=86400" : "private, max-age=3600",
+    // 5 分钟:内容变化后很快失效,同时保留 ETag/304 回源校验(issue §11.6)
+    "cache-control": publicCache ? "public, max-age=300" : "private, max-age=300",
     "x-content-type-options": "nosniff",
+    // 自托管相册不应被搜索引擎索引(issue §11.5)
+    "x-robots-tag": "noindex, noimageindex",
+    "referrer-policy": "no-referrer",
   };
   if (inlineName) headers["content-disposition"] = cd(inlineName, false);
   void filename;
@@ -70,7 +76,14 @@ async function serveDerived(req: Request, id: string, variant: Variant, filename
   return new Response(toWeb(createReadStream(p)), { headers });
 }
 
-async function serveOriginal(req: Request, row: typeof media.$inferSelect, attach: boolean) {
+interface FileRow {
+  storage: string;
+  storageKey: string;
+  mime: string;
+  filename: string;
+}
+
+async function serveOriginal(req: Request, row: FileRow, attach: boolean) {
   const driver = await driverFor(row.storage);
   const info = await driver.stat(row.storageKey);
   if (!info) throw E.notFound("原文件不存在或已被移除");
@@ -84,6 +97,8 @@ async function serveOriginal(req: Request, row: typeof media.$inferSelect, attac
     "content-disposition": cd(row.filename, attach),
     "cache-control": "private, no-store",
     "x-content-type-options": "nosniff",
+    "x-robots-tag": "noindex, noimageindex",
+    "referrer-policy": "no-referrer",
   };
   const out = await driver.open(row.storageKey, range ?? undefined);
   if (range) {
@@ -107,6 +122,18 @@ function looksLikeMediaElement(req: Request): boolean {
   }
 }
 
+/** 文件输出只需要这几列:避免每次缩略图请求都 select 整行(含大 jsonb meta),见 issue §6.2 */
+const FILE_COLS = {
+  id: media.id,
+  albumId: media.albumId,
+  kind: media.kind,
+  mime: media.mime,
+  filename: media.filename,
+  storage: media.storage,
+  storageKey: media.storageKey,
+  missingAt: media.missingAt,
+};
+
 export async function serveMedia(
   req: Request,
   id: string,
@@ -114,15 +141,23 @@ export async function serveMedia(
   user: AuthUser | null,
 ): Promise<Response> {
   const url = new URL(req.url);
-  const [row] = await db.select().from(media).where(eq(media.id, id)).limit(1);
-  if (!row) throw E.notFound("文件不存在");
+  const [row] = await db.select(FILE_COLS).from(media).where(eq(media.id, id)).limit(1);
+  if (!row || row.missingAt) throw E.notFound("文件不存在");
 
   const key = url.searchParams.get("key");
   const rangeStart = /^bytes=(\d+)-/.exec(req.headers.get("range") ?? "");
   let keyOk = false;
   if (key) {
+    // 无效密钥限流:只对「校验失败」计数,正常带 key 下载不受影响(issue §10.5)
+    const ip = req.headers.get("x-real-ip")?.trim() || "unknown";
+    if (overLimit(`key:${ip}`, config.keyRatePerMin)) {
+      throw E.tooMany("密钥校验失败次数过多,请稍后再试", 60);
+    }
     keyOk = await verifyKey(key, !rangeStart || rangeStart[1] === "0");
-    if (!keyOk) throw new ApiError(403, "invalid_key", "下载密钥无效或已过期");
+    if (!keyOk) {
+      count(`key:${ip}`);
+      throw new ApiError(403, "invalid_key", "下载密钥无效或已过期");
+    }
   }
   const privileged = can(user, "original");
   const visible = keyOk || (await canSee(row.albumId, user));

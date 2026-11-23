@@ -6,7 +6,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import Busboy from "busboy";
 import { config, dirs } from "../config";
-import { E } from "../http";
+import { ApiError, E } from "../http";
 
 /** 流式解析 multipart:文件边接收边写入临时文件并计算 SHA-256,不占用内存。 */
 
@@ -19,13 +19,24 @@ export interface UploadedTmp {
   truncated: boolean;
 }
 
-export async function parseUpload(req: Request): Promise<{ files: UploadedTmp[]; fields: Record<string, string> }> {
+export async function parseUpload(req: Request, maxBytesOverride?: number): Promise<{ files: UploadedTmp[]; fields: Record<string, string> }> {
   const ct = req.headers.get("content-type") ?? "";
   if (!req.body || !ct.toLowerCase().startsWith("multipart/form-data")) {
     throw E.badRequest("需要 multipart/form-data 请求体");
   }
   await fs.mkdir(dirs.tmp, { recursive: true });
-  const maxBytes = config.maxUploadMb > 0 ? config.maxUploadMb * 1024 * 1024 : undefined;
+  const maxBytes = maxBytesOverride ?? (config.maxUploadMb > 0 ? config.maxUploadMb * 1024 * 1024 : undefined);
+
+  // 上传前检查剩余磁盘空间,避免 uploader 一次写满磁盘(issue §1.8)
+  if (config.minFreeDiskMb > 0) {
+    const st = await fs.statfs(dirs.tmp).catch(() => null);
+    if (st) {
+      const freeMb = (Number(st.bavail) * Number(st.bsize)) / 1048576;
+      if (freeMb < config.minFreeDiskMb) {
+        throw new ApiError(507, "insufficient_storage", `服务器剩余空间不足(${Math.round(freeMb)}MB),已拒绝上传`);
+      }
+    }
+  }
 
   return new Promise((resolve, reject) => {
     const files: UploadedTmp[] = [];

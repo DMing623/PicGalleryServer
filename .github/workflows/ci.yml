@@ -1,0 +1,33 @@
+# 代码质量门禁(issue §5.5):类型检查 + ESLint + 构建。
+# 推送 main / PR 时运行;docker-publish.yml 只在构建镜像前跑,不替代这里。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: TypeScript 类型检查
+        run: npm run typecheck
+      - name: ESLint
+        run: npm run lint
+      - name: 构建
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          DATABASE_URL: postgresql://build:build@127.0.0.1:5432/build

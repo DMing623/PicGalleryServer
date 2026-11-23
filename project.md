@@ -39,10 +39,13 @@
 ├─ project.md / README.md          本文件(给开发者) / 用户说明(功能与部署)
 ├─ .env  .env.example              环境变量(私密);.env.example 为完整模板
 ├─ Dockerfile docker-compose.yml   容器化部署(含 ffmpeg、Postgres)
-├─ next.config.ts                  serverExternalPackages(sharp/exifr/heic-convert/busboy/aws-sdk 不打包)
+├─ next.config.ts                  serverExternalPackages + 全局安全响应头(nosniff/X-Frame/Referrer-Policy)
 ├─ drizzle.config.json             drizzle-kit 配置(仅开发期 push/export 使用)
 ├─ eslint.config.mjs               ESLint(关闭 react-hooks/set-state-in-effect)
-├─ cli/pgs.mjs                     命令行管理工具(零依赖,调用 REST API)
+├─ .github/workflows/ci.yml        CI:typecheck + lint + build
+├─ .github/workflows/docker-publish.yml  镜像构建与推送
+├─ public/robots.txt               默认 Disallow: /(自托管相册不被索引)
+├─ cli/pgs.mjs                     命令行管理工具(零依赖,util.parseArgs,调用 REST API)
 ├─ data/                           运行时数据目录(DATA_DIR,默认 ./data,git 忽略)
 │   ├─ albums/<albumCode>/         受管相册(local 存储)的原文件;albums/_inbox/ 为未归类收件箱
 │   ├─ derived/<id前2位>/<id>.thumb.webp|.preview.webp   派生图
@@ -61,7 +64,9 @@
    │   └─ meta-labels.ts           元数据字段中文标签表(决定 UI 显示哪些字段)
    ├─ server/                      **全部服务端逻辑**(详见 §6)
    │   ├─ config.ts                唯一的环境变量读取点,导出 config 与 dirs
-   │   ├─ http.ts                  ApiError / E 工厂 / json / ok / fail / readJson / str / intParam / boolParam
+   │   ├─ secret.ts                SESSION_SECRET 解析:env → DATA_DIR/secret.key → 自动生成
+   │   ├─ rate.ts                  通用内存限流(匿名搜索、无效密钥校验)
+   │   ├─ http.ts                  ApiError / E 工厂 / json / ok / fail / readJson(带体积上限) / str / intParam / boolParam
    │   ├─ router.ts                迷你路由器:route(method, pattern, access, handler)、dispatch()
    │   ├─ auth.ts                  角色权限矩阵、密码哈希、令牌、请求鉴权、env 管理员同步、登录限流
    │   ├─ settings.ts              站点设置(单 JSON,key="site")读写与校验、publicSite()
@@ -163,7 +168,7 @@
 - `GET /media?q=&album=<code>` → **只在该相册内**(默认 `recursive=0` 仅限该相册自身;显式 `recursive=1` 才把子相册一并纳入)。
 - 相册浏览同样默认只看本相册文件:父相册不会重复显示子相册里的图片/视频。
 - 前端:`Shell.tsx` 依据路径 `/albums/<code>` 自动把搜索限定为当前相册,并显示"当前相册/全局"标签。
-- 匹配:空格分词,每个词都必须出现(AND),对 `search_text`(小写的 文件名 + 备注 + 相机/镜头/软件 + 标题/描述/作者/关键词 + AI 提示词/模型)做 `LIKE %词%`。
+- 匹配:空格分词,每个词都必须出现(AND),对 `search_text`(小写的 文件名 + 相机/镜头/软件 + 标题/描述/作者/关键词 + AI 提示词/模型)做 `LIKE %词%`。**管理员备注不进 `search_text`**:登录用户搜索时额外匹配 `note` 列,游客无法通过搜索探测备注。
 
 ### 4.5 角色与权限矩阵
 
@@ -174,7 +179,8 @@
 | `browse.private` 浏览私有相册 | ✓ | ✓ | ✓ | ✓ | ✗ |
 | `upload` 上传 | ✓ | ✓ | ✓ | ✗ | ✗ |
 | `media.edit` 备注/移动/重处理 | ✓ | ✓ | ✗ | ✗ | ✗ |
-| `media.delete` 删除文件 | ✓ | ✓ | ✗ | ✗ | ✗ |
+| `media.delete` 删除文件(默认只排除,进黑名单) | ✓ | ✓ | ✗ | ✗ | ✗ |
+| `media.purge` 物理删除源文件 | ✓ | ✗ | ✗ | ✗ | ✗ |
 | `album.manage` 创建/改/删受管相册、改可见性 | ✓ | ✓ | ✗ | ✗ | ✗ |
 | `album.mount` 挂载绝对路径、目录浏览、扫描、服务器路径导入 | ✓ | ✗ | ✗ | ✗ | ✗ |
 | `original` 免密钥取原文件 | ✓ | ✓ | ✗ | ✗ | ✗ |
@@ -189,11 +195,11 @@
 
 所有表以 `pgs_` 为前缀。
 
-**pgs_users**:`id`(uuid 文本,PK) `username`(唯一) `password_hash`(`scrypt$salt$hash`) `role` `disabled` `source`(`env|api`) `created_at` `last_login_at`
+**pgs_users**:`id`(uuid 文本,PK) `username`(唯一) `password_hash`(`scrypt$salt$hash`) `role` `disabled` `source`(`env|api`) `token_version`(令牌版本,改密码/重置时自增) `created_at` `last_login_at`
 
-**pgs_albums**:`id`(PK) `code`(唯一,对外使用) `name` `description` `parent_id` `kind`(`managed|mounted`) `storage`(`local|s3|ext`) `root_path`(挂载目录,唯一) `visibility` `cover_media_id` `sort_order` `last_scan_at` `created_at` `updated_at`;索引:`parent_id`、`root_path` 唯一。
+**pgs_albums**:`id`(PK) `code`(唯一,对外使用) `name` `description` `parent_id` `kind`(`managed|mounted`) `storage`(`local|s3|ext`) `root_path`(挂载目录,唯一) `visibility` `readonly`(挂载相册默认 true) `cover_media_id` `sort_order` `last_scan_at` `created_at` `updated_at`;索引:`parent_id`、`root_path` 唯一。
 
-**pgs_media**:`id`(12 位随机,PK) `album_id`(null=未归类) `kind`(`image|video`) `filename` `mime` `size` `width` `height` `duration`(秒) `taken_at` `sort_at`(= taken_at ?? 文件时间/上传时间,排序与游标依据) `storage` `storage_key` `hash`(SHA-256,上传才有) `color`(平均色,占位用) `status`(`pending|ready|failed`) `error` `note`(管理员备注) `meta`(jsonb,见 §7.3) `search_text` `uploaded_by` `created_at`;索引:`(sort_at,id)`、`(album_id,sort_at,id)`、`(storage,storage_key)` 唯一、`hash`、`status`。
+**pgs_media**:`id`(12 位随机,PK) `album_id`(null=未归类) `kind`(`image|video`) `filename` `mime` `size` `mtime_ms`(源文件修改时间,变更检测/重命名配对) `width` `height` `duration`(秒) `taken_at` `sort_at`(= taken_at ?? 文件时间/上传时间,排序与游标依据) `storage` `storage_key` `hash`(SHA-256,上传才有) `color`(平均色,占位用) `status`(`pending|ready|failed`) `error` `note`(管理员备注,**不进 search_text**) `meta`(jsonb,见 §7.3) `search_text` `missing_at`(软删除标记) `uploaded_by` `created_at`;索引:`(sort_at,id)`、`(album_id,sort_at,id)`、`(storage,storage_key)` 唯一、`hash`、`status`、`missing_at`、`search_text` 的 GIN(trigram)、`status <> 'ready'` 部分索引。
 
 **pgs_blocklist**(删除黑名单):`id`(PK) `media_id`(原记录 id,仅追溯) `album_id` `album_code` `kind` `filename` `mime` `size` `storage` `storage_key` `hash` `taken_at` `sort_at` `meta` `note` `created_by` `created_at`;唯一索引 `(storage,storage_key)`、普通索引 `album_id`。记录"被排除但源文件仍在"的文件;扫描时按 `(ext, 绝对路径)` 跳过。
 
@@ -208,41 +214,44 @@
 > 只列"暴露的接口 + 契约",实现细节请直接读对应文件。
 
 ### 6.1 `config.ts`
-导出 `config`(只读,见 §10 全部环境变量)与 `dirs`(`albums/derived/tmp/branding` 绝对路径)。**其它文件不得直接读 `process.env`**。
+导出 `config`(只读,见 §10 全部环境变量)与 `dirs`(`albums/derived/tmp/branding/hdCache/logs` 绝对路径)。**其它文件不得直接读 `process.env`**。`SESSION_SECRET` 的解析在 `secret.ts`(env → `DATA_DIR/secret.key` → 生产环境自动生成),`config.sessionSecretSource` 会告诉你是哪一种。
 
 ### 6.2 `http.ts`
-- `ApiError(status, code, message)`,工厂 `E.badRequest/unauthorized/forbidden/notFound/conflict/tooMany`。
-- `ok(data, init?)` → `{ok:true,data}`;`fail(err)` → `{ok:false,error:{code,message}}`(非 ApiError 记录日志并返回 500 `internal_error`)。
-- 入参助手:`readJson(req)`、`str(v,name,{max,optional})`、`intParam(v,def,min,max)`、`boolParam(v,def)`。
+- `ApiError(status, code, message, headers?)`,工厂 `E.badRequest/unauthorized/forbidden/notFound/conflict/payloadTooLarge/tooMany`。
+- `ok(data, init?)` → `{ok:true,data}`;`fail(err, requestId?)` → `{ok:false,error:{code,message,requestId}}`(非 ApiError 记录日志并返回 500 `internal_error`)。
+- 入参助手:`readJson(req)`(流式读取 + `JSON_BODY_MAX_KB` 上限 + 校验 `application/json`)、`str(v,name,{max,optional})`、`intParam(v,def,min,max)`、`boolParam(v,def)`。
 
 ### 6.3 `router.ts`
 - `route(method, "/path/:param", access, handler)`;`access` ∈ `"public" | "user" | Perm`。
-- `handler(ctx)`,`ctx = {req, url, q(URLSearchParams), params, user|null, ip}`;返回 `Response` 原样输出,否则自动包装为 `ok(返回值)`。
-- `dispatch(req, pathParts)`:`await ensureReady()` → 匹配 → 鉴权 → 调用 → 统一错误处理;路径存在但方法不符返回 405。
+- `handler(ctx)`,`ctx = {req, url, q(URLSearchParams), params, user|null, ip, requestId}`;返回 `Response` 原样输出,否则自动包装为 `ok(返回值)`。
+- `dispatch(req, pathParts)`:`await ensureReady()` → 匹配 → 鉴权 → 调用 → 统一错误处理;路径存在但方法不符返回 405;`decodeURIComponent` 失败返回 400;每个请求生成 `X-Request-Id` 并写入响应头与错误体。
+- `clientIp(req)`:默认只信任反代覆盖写入的 `X-Real-IP`;`TRUST_PROXY=n` 时取 `X-Forwarded-For` 倒数第 n 段。
 - **新增接口只需在 `server/api/*.ts` 里 `route(...)`**,新文件要在 `api/index.ts` 里 import。
 
 ### 6.4 `auth.ts`
-- `can(user, perm)`、`permsOf(user)`、`ROLES`、`isRole`。
+- `can(user, perm)`、`permsOf(user)`、`ROLES`、`isRole`。权限新增 `media.purge`(物理删除源文件,仅 admin)。
 - `hashPassword / verifyPassword`(scrypt)、`validatePasswordStrength`(≥8 位)。
-- `signToken/verifyToken`(`base64url(payload).hmac`)、`issueSession(userId)`、`sessionCookie/clearCookie`、`issueStreamToken/verifyStreamToken`。
-- `authenticate(req)`:依次尝试 `Authorization: Bearer <token>` → `Authorization: Basic base64(user:pass)` → Cookie `pgs_session`;返回 `AuthUser|null`。Basic 成功结果缓存 60 秒,用户对象缓存 15 秒(`invalidateUserCache()` 清除)。
-- `syncEnvAdmin()`:启动时把 `ADMIN_USER/ADMIN_PASSWORD` 同步到 `source=env` 的账户(改 .env 重启即生效)。
-- `checkLoginRate / recordLoginFailure / clearLoginFailures`:按 IP,10 分钟内失败 10 次后 429。
+- `signToken/verifyToken`(`base64url(payload).hmac`)、`issueSession(userId, tokenVersion)`、`sessionCookie/clearCookie`、`issueStreamToken/verifyStreamToken`。
+- `authenticate(req, ip)`:依次尝试 `Authorization: Bearer <token>` → `Authorization: Basic base64(user:pass)` → Cookie `pgs_session`;返回 `AuthUser|null`。令牌带 `v`(token_version),与数据库不一致即视为失效。Basic 成功结果缓存 60 秒(上限 1000 条 LRU),用户对象缓存 15 秒(上限 2000 条)。
+- `verifyCredentials(username, password, ip)`:先查 IP 与用户名两个维度的失败限流,再校验;失败路径只跑 1 次 scrypt(时序均衡复用固定哈希);失败同时计入 IP 与用户名。
+- `bumpTokenVersion(userId)`:改密码/管理员重置时调用,使该用户所有旧令牌立即失效。
+- `syncEnvAdmin()`:启动时把 `ADMIN_USER/ADMIN_PASSWORD` 同步到 `source=env` 的账户(改 .env 重启即生效);**改名撞到已有用户名时抛错拒绝启动**,不会删除任何账户。
+- `checkLoginRate / checkUserRate / recordLoginFailure / clearLoginFailures`:IP 维度 10 次/10 分钟、用户名维度 20 次/10 分钟,超限 429。
 
 ### 6.5 `settings.ts`
 `getSite()`(5 秒内存缓存)、`patchSite(patch)`(校验:主题预设白名单、`#RRGGBB`、启动页 URL 必须 `https://`、时长 800~20000ms)、`setIcon(version,mime)`、`publicSite(s)`(面向游客的子集,含 `iconUrl`)。
 
 ### 6.6 `albums.ts`
-- 树缓存:`loadTree()`(10 秒 TTL,任何写操作后调用 `invalidateAlbums()`),`descendants / breadcrumbs / effectivelyPublic`。
+- 树缓存:`loadTree()`(10 秒 TTL,写操作后调用 `invalidateAlbums()`;有 in-flight 合并,并随树一起缓存游客可见集合 `publicIds`),`descendants / breadcrumbs / effectivelyPublic`。媒体数量变化用 `invalidateMediaCaches()`(2 秒防抖),不要用 `invalidateAlbums()`。
 - 可见性:`visibleIds(user)` → `{t, allowed: Set|null}`(`null`=不受限);`resolveAlbum(code,user)`(不可见抛 404);`scopeIds(t, album, recursive, allowed)`。
 - 展示:`listAlbums(user, parent?)`、`albumDetail(code,user)`、`albumStatus(code,user)`、`albumDtos`(含 5 秒统计缓存:每相册计数/体积/处理中/失败、封面)、`unsortedCount()`。`rootPath` 仅对具备 `album.mount` 的用户返回。
-- 变更:`createManaged`、`mountDir`、`updateAlbum`(`cascade:true` 时可见性级联到子孙)、`deleteAlbum({media:'move'|'delete', purge, user})`、`deleteMediaByIds(ids, purge, {user, block})`、`relocateExtFile(row, targetAlbumId)`。
-  - `deleteMediaByIds`:`purge=true` 才物理删除源文件;`block` 默认 `= !purge`,即未勾选删除源文件时把记录写入 `pgs_blocklist`(源文件保留)。扫描发现的"磁盘上已消失"的文件以 `block:false` 清理,不进黑名单。
-  - `relocateExtFile`:把挂载相册(ext)里的文件真正 `rename` 到目标相册目录并更新 `storage_key`,避免移动后父/子目录各存一份;跨设备(EXDEV)退化为复制+删除。
+- 变更:`createManaged`、`mountDir`、`updateAlbum`(`cascade:true` 时可见性级联到子孙;`readonly` 可改)、`deleteAlbum({media:'move'|'delete', purge, user})`、`deleteMediaByIds(ids, purge, {user, block})`、`relocateExtFile(row, targetAlbumId)`、`realPath`。
+  - `deleteMediaByIds`:`purge=true` 才物理删除源文件;`block` 默认 `= !purge`,即未勾选删除源文件时把记录写入 `pgs_blocklist`(源文件保留)。「写黑名单 + 删记录」在同一事务里,物理删除在提交后执行,失败以 `{removed, failed[]}` 返回。扫描发现的"磁盘上已消失"的文件以 `block:false` 清理,不进黑名单。
+  - `relocateExtFile`:把挂载相册(ext)里的文件真正移动到目标相册目录并返回新的 `{storageKey, filename}`,**由调用方在移动成功后再更新数据库**;用 `fs.link`+`unlink`(跨盘回落 `COPYFILE_EXCL`)保证不覆盖已有文件,失败直接抛错;目标或源相册为只读时抛 403。
   - 删除挂载相册:只删登记与记录,不动磁盘文件(`purge=true` 才物理删除)。
-  - 删除受管相册:`media=move` 把文件上移到父相册(根级则变未归类);`media=delete` 连文件删除;子相册上移。
-- 扫描:`scanAlbum(code, recursive)`:读取目录 → 子目录自动建嵌套相册(跳过 `.`/`@eaDir`/`#recycle`/`node_modules` 等)→ **跳过删除黑名单中的路径** → 新文件批量插入 `pending` 并入队 → 大小变化的文件重新入队 → 磁盘上已消失的文件删除记录(若根目录不可访问则中止并保留记录,防止卸载盘误删)。状态在 `scanStates`。
-- `browseDirs(path)`、`assertMountAllowed(abs)`(受 `ALLOWED_MOUNT_ROOTS` 约束)、`scanAllMounted()`(`SCAN_INTERVAL_MIN` 定时器调用)。
+  - 删除受管相册:`media=move` 把文件真正搬到父相册目录(根级则 `_inbox`)并更新 `storage_key`;`media=delete` 连文件删除;子相册上移。
+- 扫描:`scanAlbum(code, recursive)`:读取目录(文件 `stat` 8 路受限并发)→ 子目录自动建嵌套相册(跳过 `.`/`@eaDir`/`#recycle`/`node_modules` 等)→ **跳过删除黑名单中的路径** → 新文件批量插入 `pending` 并入队 → `(size, mtime)` 变化的文件重新入队 → 消失/新增按 `(size, mtime)` 配对识别重命名(只改 `storage_key`,保留 id 与备注)→ 其余消失文件先打 `missing_at` 软删除标记(超过 7 天宽限期才真正清理)→ **熔断**:消失比例超过 `SCAN_PRUNE_MAX_RATIO` 且记录数 ≥ `SCAN_PRUNE_MIN_COUNT` 时中止清理并报错(若根目录不可访问同样中止并保留记录)。状态在 `scanStates`(含 `added/removed/updated/renamed/missing/albumsCreated/error`)。
+- `browseDirs(path)`、`assertMountAllowed(abs)`(async,先 `realpath`;受 `ALLOWED_MOUNT_ROOTS` 约束,留空时只允许数据目录与 `/photos /mnt /media /srv /home /volume1`)、`scanAllMounted()`(`SCAN_INTERVAL_MIN` 定时器调用)。
 
 ### 6.7 `storage/index.ts`
 `driverFor(code)` 返回 `StorageDriver{put,open(range),stat,remove,localPath}`;`materialize(code,key)` 返回可读的本地路径(S3 会下载到 tmp,调用方负责 `cleanup()`);`moveFile` 处理跨设备 rename;`isStorageCode`、`s3Available`。
@@ -283,17 +292,18 @@
 ### 7.1 上传 / 入库
 ```
 POST /media/upload  (multipart)
-  parseUpload → 临时文件+sha256
-  resolveTarget(album|dir|storage)
+  parseUpload → 临时文件+sha256(体积上限 MAX_UPLOAD_MB,先查剩余磁盘)
+  resolveTarget(album|dir|storage)   ← 目标为只读挂载相册时直接 403
   对每个文件(limiter(concurrency)): ingestOne
      去重 → uniqueKey → driver.put → INSERT pending → enqueue(priority)
   返回 {target:{album,albumName,storage}, summary, results[]}
+  (wait=1 时用 idleIds 只等本次上传的文件处理完)
 后台: processMedia(id) → 生成派生图 + 元数据 → status=ready
 ```
-上传的文件落在哪:响应 `target` 明确给出相册与存储;前端上传对话框在选择相册时显示"将保存到"的路径,完成后提示"已上传到「相册名」"并提供跳转。未选择相册 → "未归类(收件箱)",登录用户在「全部」与「相册 → 未归类」中可见。
+上传的文件落在哪:响应 `target` 明确给出相册与存储;前端上传对话框在选择相册时显示"将保存到"的路径,完成后提示"已上传到「相册名」"并提供跳转。未选择相册 → "未归类(收件箱)",登录用户在「全部」与「相册 → 未归类」中可见。全部文件失败时响应为 `ok:false` + HTTP 422。
 
 ### 7.2 派生图
-`processMedia`:取得本地路径(`materialize`/本地副本提示)→ 图片:HEIC 先转 JPEG;`sharp.rotate()` 自动方向,生成 **preview**(宽≤`PREVIEW_WIDTH`,webp q82)与 **thumb**(宽≤`THUMB_WIDTH`,webp q78,由 preview 缩小得到,避免二次解码原图),并计算平均色;视频:`ffprobe` 取信息 → `ffmpeg` 抽帧(1s 或时长一半)→ 同样生成派生图,无 ffmpeg 时使用占位图。完成后写回尺寸/时长/拍摄时间(→ `sort_at`)/颜色/`meta`/`search_text`/`status=ready`;异常置 `failed` 并记录 `error`。
+`processMedia`:取得本地路径(`materialize`/本地副本提示)→ 图片:HEIC 先转 JPEG(单独限流);`sharp.rotate()` 自动方向,生成 **preview**(宽≤`PREVIEW_WIDTH`,webp q84)与 **thumb**(宽≤`THUMB_WIDTH`,webp q84,由 preview 缩小得到,避免二次解码原图),并计算平均色;输入统一带 `limitInputPixels`/`sequentialRead`。视频:`ffprobe` 取信息 → `ffmpeg` 抽帧(1s 或时长一半,直接 scale 到 1600 以内)→ 同样生成派生图,无 ffmpeg 时使用占位图。完成后写回尺寸/时长/拍摄时间(→ `sort_at`)/颜色/`meta`/`search_text`/`status=ready`;异常置 `failed` 并记录 `error`,队列按指数退避重试最多 3 次。
 
 ### 7.3 元数据结构(`pgs_media.meta`)
 ```ts
@@ -317,20 +327,20 @@ AI 参数来源:PNG `parameters`(Stable Diffusion WebUI)、`Comment`+`Software`(
 
 ### 7.4 删除与删除黑名单
 ```
-DELETE /media/:id?purge=0|1
-  purge=1 → 物理删除源文件 + 派生图 + 记录
-  purge=0 → 派生图删除、记录移入 pgs_blocklist、源文件保留
+DELETE /media/:id?purge=0|1     (purge=1 需要 media.purge,即仅 admin)
+  purge=1 → 事务删记录 → 提交后物理删除源文件 → 删派生图(源文件删失败会返回 409 并说明)
+  purge=0 → 事务内:记录移入 pgs_blocklist + 删除记录 → 删派生图;源文件保留
              (挂载目录重新扫描时按路径跳过,不会再入库)
-POST /blocklist/:id/restore → 重新插入记录(status=pending) + enqueue → 缩略图/预览图重新生成
-DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行
+POST /blocklist/:id/restore → 复用原 media_id 重新插入记录(status=pending) + enqueue → 缩略图/预览图重新生成
+DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(源文件删失败返回 409)
 ```
-前端 `Viewer.tsx` 用 `dlg.confirmCheck()` 弹出带勾选框的确认框:勾选"同时删除服务器上的原文件"才 `purge=1`,否则 `purge=0`。
+前端 `Viewer.tsx` 用 `dlg.confirmCheck()` 弹出带勾选框的确认框:勾选"同时删除服务器上的原文件"才 `purge=1`,否则 `purge=0`。批量删除走 `POST /media/batch {action:"delete"}`。
 
 ### 7.5 父子相册不产生重复文件
 - 列表:`GET /media?album=` 默认 `recursive=0`,父相册只显示自身文件;子相册文件只在子相册内出现。
-- 上传:`resolveTarget` 按所选相册决定落盘位置(父相册 → 父目录;子相册 → 子目录),一次上传只写一份。
-- 移动:`batchAction('move')` / `PATCH /media/:id {album}` 对 `storage='ext'` 的文件调用 `relocateExtFile` 真正搬移文件,避免父/子目录各留一份。
-- 扫描:每个目录只索引**本层**文件,子目录交给对应子相册;`(storage,storage_key)` 唯一索引兜底防重复记录。
+- 上传:`resolveTarget` 按所选相册决定落盘位置(父相册 → 父目录;子相册 → 子目录),一次上传只写一份;目标为只读挂载相册时拒绝。
+- 移动:`batchAction('move')` / `PATCH /media/:id {album}` 对 `storage='ext'` 的文件调用 `relocateExtFile` **先搬文件、成功后再改库**,避免父/子目录各留一份;搬失败时记录保持原归属并在逐项结果里返回原因。
+- 扫描:每个目录只索引**本层**文件,子目录交给对应子相册;`(storage,storage_key)` 唯一索引兜底防重复记录;消失/新增按 `(size,mtime)` 配对识别重命名,不产生"删一条+建一条"。
 
 ## 8. REST API(`/api/v1`)
 
@@ -368,7 +378,7 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行
 | GET `/fs/browse` | album.mount | `path` | `{path,parent,dirs[]}`,挂载对话框使用 |
 | GET `/albums/:code` | public | — | 详情:`breadcrumbs[]`、`children[]`、`counts`、`rootPath`(仅特权) |
 | GET `/albums/:code/status` | public | — | 相册状态:计数(`media/images/videos/size/mediaTotal/sizeTotal/pending/failed/children`)、`scan` 状态、`descendants` 数 |
-| PATCH `/albums/:code` | album.manage | `{name?, description?, visibility?, sortOrder?, cover?(mediaId), parent?(code|null), cascade?(bool, 与 visibility 同用→子孙同步)}` | 修改;移动到自己子孙下会 400 |
+| PATCH `/albums/:code` | album.manage | `{name?, description?, visibility?, sortOrder?, cover?(mediaId), parent?(code|null), cascade?(bool, 与 visibility 同用→子孙同步), readonly?(bool)}` | 修改;移动到自己子孙下会 400 |
 | DELETE `/albums/:code` | album.manage | `media=move|delete`(默认 move)、`purge=0|1` | 挂载相册仅管理员可删,只解除登记(`purge=1` 才删磁盘文件) |
 | POST `/albums/:code/scan` | album.mount | `recursive=1`、`wait=0|1` | 重新扫描挂载相册;`wait=1` 同步返回 `{added,removed,updated,albumsCreated}` |
 
@@ -379,13 +389,14 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行
 | 方法 路径 | 权限 | 参数 | 说明 |
 |---|---|---|---|
 | GET `/media` | public | `album`(相册代码或 `_unsorted`)、`q`(搜索)、`kind=image|video`、`recursive=1|0`(是否含子相册,默认 0)、`cursor`、`limit`(1-200,默认 60)、`order=desc|asc`、`from`/`to`(ISO 时间) | **列表 + 搜索**。无 `album` = 全局;有 `album` = 限定该相册。返回 `{items[], nextCursor}`(游标 = `(sort_at,id)` 键集分页) |
-| GET `/media/:id` | public | — | 详情:列表字段 + `note, error, meta, storage, createdAt, breadcrumbs, canEdit, canOriginal, links{file,thumb,preview,originalTemplate,html,markdown}, streamUrl`;`storageKey/hash` 仅特权可见 |
+| GET `/media/:id` | public | — | 详情:列表字段 + `note, error, meta, storage, createdAt, breadcrumbs, canEdit, canOriginal, links{file,thumb,preview,originalTemplate,html,markdown}, streamUrl`;`storageKey/hash` 仅特权可见。游客按 `GUEST_META` 裁剪 `meta`(去 GPS/序列号/作者邮箱/raw),`note` 默认置空、`error` 置空 |
 | PATCH `/media/:id` | media.edit | `{note?(≤5000), album?(code|null)}` | 改备注(只存库,不写原文件)/ 移动相册(ext 文件会真正搬移) |
-| DELETE `/media/:id` | media.delete | `purge=0|1` | `purge=1` 物理删除源文件;`purge=0`(默认)保留源文件并把记录移入删除黑名单。返回 `{deleted,purge,blocked}` |
-| POST `/media/batch` | media.edit(delete 需 media.delete) | `{action: delete|move|reprocess, ids[1..2000], album?, purge?}` | 批量 |
+| DELETE `/media/:id` | media.delete(物理删除另需 media.purge) | `purge=0|1` | `purge=1` 物理删除源文件(仅 admin);`purge=0`(默认)保留源文件并把记录移入删除黑名单。返回 `{deleted,purge,blocked}` |
+| POST `/media/batch` | media.edit(delete 需 media.delete) | `{action: delete|move|reprocess, ids[1..2000], album?, purge?}` | 批量;`move` 返回逐项结果 `{affected, results:[{id,ok,error?}]}` |
 | POST `/media/:id/reprocess` | media.edit | — | 重新生成派生图与元数据 |
 | POST `/system/reprocess` | media.edit | — | 重新入队所有 `failed/pending` |
-| POST `/media/upload` | upload | multipart(多文件,字段名任意)。参数可放 query 或表单字段:`album`、`dir`、`storage`(local|s3)、`concurrency`(1..THUMB_CONCURRENCY,默认 4)、`duplicate`(skip|keep,默认 skip)、`note`(需 media.edit) | 见 §7.1。全部失败返回 422;`dir` 须位于已挂载目录内 |
+| POST `/media/upload` | upload | multipart(多文件,字段名任意)。参数可放 query 或表单字段:`album`、`dir`、`storage`(local|s3)、`concurrency`(1..THUMB_CONCURRENCY,默认 4)、`duplicate`(skip|keep,默认 skip)、`note`(需 media.edit)、`wait`/`waitMs`(等本次上传处理完) | 见 §7.1。全部失败返回 `ok:false` + 422;`dir` 须位于已挂载且非只读的目录内 |
+| POST `/media/exists` | upload | `{hashes[]}`(≤5000) | 批量查询 hash 是否已存在,供客户端做幂等同步(先查后传) |
 | POST `/media/import` | album.mount | `{paths[]|path, album|dir|storage, recursive?=true, concurrency?, duplicate?, note?}` | 把**服务器本地**文件/目录**复制**导入目标;返回统计与前 200 条失败项 |
 | GET `/media-timeline` | public | — | 按月统计 `{months:[{m:"YYYY-MM",n}]}` |
 
@@ -403,10 +414,11 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行
 | 方法 路径 | 权限 | 参数 | 说明 |
 |---|---|---|---|
 | GET `/keys` | keys | — | `{keys:[{id,hint,label,expiresAt,createdAt,lastUsedAt,useCount,expired}]}`(不含明文) |
-| POST `/keys` | keys | `{key?(8-128位 [A-Za-z0-9_-],省略则自动生成), label?, expires: never|24h|custom, ttlHours?}` | **设置密钥**;明文仅在此响应返回一次;相同密钥重复提交 = 更新有效期。24h/custom 到期自动删除 |
+| POST `/keys` | keys | `{key?(16-128位 [A-Za-z0-9_-],省略则自动生成), label?, expires: never|24h|custom, ttlHours?}` | **设置密钥**;明文仅在此响应返回一次;相同密钥重复提交 = 更新有效期。24h/custom 到期自动删除 |
 | DELETE `/keys/:id` | keys | — | 按 id 删除 |
-| DELETE `/keys?key=<明文>` | keys | — | 按明文删除 |
-| GET `/keys/verify?key=` | keys | — | `{valid}`(不计数) |
+| DELETE `/keys?key=<明文>` | keys | — | 按明文删除(兼容旧写法,明文会进访问日志) |
+| POST `/keys/revoke` | keys | `{key}` | 按明文删除(推荐:密钥放 body,不进日志) |
+| GET `/keys/verify?key=` / POST `/keys/verify` | keys | `key` | `{valid}`(不计数) |
 
 ### 8.6 用户
 
@@ -421,9 +433,10 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行
 
 | 方法 路径 | 权限 | 说明 |
 |---|---|---|
-| GET `/health` | public | `{status:"ok",version}`(同时存在平台用 `/api/health`) |
-| GET `/status` | status | 版本、运行时长、计数(总数/图/视频/待处理/失败/未归类/字节/相册/用户/密钥)、队列、工具可用性(ffmpeg/ffprobe/s3)、内存、磁盘、关键配置 |
-| GET `/status/queue` | status | `{concurrency,running,waiting,done,failed}` |
+| GET `/health` | public | liveness:`{status:"ok",version}`,不查数据库(容器 HEALTHCHECK 用;平台用 `/api/health` 同为 liveness) |
+| GET `/health/ready` | public | readiness:数据库连通 + `DATA_DIR` 可写 + 磁盘剩余;不满足返回 503 |
+| GET `/status` | status | 版本、运行时长、计数、队列、工具可用性、内存、磁盘、关键配置(结果缓存 5 秒) |
+| GET `/status/queue` | status | `{concurrency,running,waiting,done,failed,retrying}` |
 
 ### 8.8 删除黑名单(仅 `media.delete`,即管理者及以上)
 
@@ -461,41 +474,54 @@ curl $A -X POST $B/blocklist/<bid>/restore        # 解除黑名单并重生成�
 |---|---|---|
 | `DATABASE_URL` | — | **必填** PostgreSQL 连接串 |
 | `PORT` | 3000 | 服务端口(`next start` 直接读取) |
-| `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / `admin123456` | 超级管理员;每次启动同步到数据库,改密码改这里重启即可 |
-| `SESSION_SECRET` | 由管理员密码派生 | 令牌签名密钥,生产务必设置 32+ 位随机串 |
+| `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / `admin123456` | 超级管理员;每次启动同步到数据库。**生产环境若仍是占位密码会拒绝启动** |
+| `SESSION_SECRET` | 自动生成 | 令牌签名密钥;留空时生产环境自动生成并持久化到 `DATA_DIR/secret.key`(0600) |
 | `SESSION_DAYS` | 30 | 登录令牌有效天数 |
 | `COOKIE_SECURE` | false | HTTPS 反代后设为 true |
-| `PUBLIC_BASE_URL` | 空 | 生成文件链接用的对外地址(空则取请求头 `x-forwarded-*`/`host`) |
+| `PUBLIC_BASE_URL` | 空 | 生成文件链接用的对外地址(空则取请求头,并受 `ALLOWED_HOSTS` 约束) |
+| `ALLOWED_HOSTS` | 空 | 可用于生成链接/水印的 Host 白名单,逗号分隔 |
+| `TRUST_PROXY` | 0 | 信任几层反代;0 = 只信反代覆盖写入的 `X-Real-IP` |
 | `DATA_DIR` | `./data` | 数据目录 |
-| `THUMB_CONCURRENCY` | 15 | 缩略图/预览图/元数据任务最大并发(1-128) |
+| `THUMB_CONCURRENCY` | `min(4,CPU)` | 图片处理并发(1-128) |
+| `VIDEO_CONCURRENCY` / `HEIC_CONCURRENCY` | 2 / 1 | 视频与 HEIC 解码单独限流 |
 | `THUMB_WIDTH` / `PREVIEW_WIDTH` | 480 / 1600 | 派生图最大宽度 |
-| `MAX_UPLOAD_MB` | 0 | 单文件上限,0=不限 |
-| `ALLOWED_MOUNT_ROOTS` | 空 | 逗号分隔白名单,限制可挂载/导入/`dir` 上传的路径 |
+| `EXIF_READ_BYTES` | 1048576 | EXIF 只读文件头字节数(读不到再放大到 8MB) |
+| `MAX_UPLOAD_MB` | 2048 | 单文件上限,0=不限 |
+| `MIN_FREE_DISK_MB` | 1024 | 上传前要求的最小剩余磁盘,0=不检查 |
+| `JSON_BODY_MAX_KB` | 1024 | JSON 请求体上限 |
+| `DB_POOL_MAX` / `DB_STATEMENT_TIMEOUT_MS` / `DB_CONNECT_TIMEOUT_MS` / `DATABASE_SSL` | 10 / 20000 / 5000 / false | 连接池与慢查询保护 |
+| `ALLOWED_MOUNT_ROOTS` | 空 | 逗号分隔白名单;留空时只允许数据目录与 `/photos /mnt /media /srv /home /volume1` |
 | `SCAN_INTERVAL_MIN` | 0 | 挂载相册自动重扫间隔(分钟),0=关闭 |
+| `SCAN_PRUNE_MAX_RATIO` / `SCAN_PRUNE_MIN_COUNT` | 0.3 / 20 | 扫描熔断:一次允许清理的最大消失比例与最小样本数 |
+| `GUEST_META` | `basic` | 游客元数据级别:`full` / `basic`(去 GPS/序列号/作者邮箱/raw)/ `none` |
+| `GUEST_NOTE` | false | 游客是否可见管理员备注 |
+| `SEARCH_RATE_PER_MIN` / `KEY_RATE_PER_MIN` | 60 / 30 | 匿名搜索与无效密钥校验的每 IP 每分钟上限 |
 | `FFMPEG_PATH` / `FFPROBE_PATH` | `ffmpeg` / `ffprobe` | 视频工具路径 |
 | `S3_BUCKET` `S3_REGION` `S3_ENDPOINT` `S3_ACCESS_KEY` `S3_SECRET_KEY` `S3_FORCE_PATH_STYLE` `S3_PREFIX` | — | 配置 `S3_BUCKET` 即启用对象存储 |
 | `HD_*` | 见 `.env.example` | 高清预览:宽度/质量/缓存/令牌/限流;水印 `HD_WM_ENABLED` `HD_WM_TEXT` `HD_WM_OPACITY`(默认 8) `HD_WM_FONT_SIZE` `HD_WM_ANGLE` `HD_WM_DENSITY` `HD_WM_USER` `HD_WM_FONT_FILE` |
 
 ## 11. 命令行(`cli/pgs.mjs`)
 
-零依赖,Node ≥ 18。认证:`PGS_URL` `PGS_USER` `PGS_PASSWORD`(或 `--url --user --password`)。
+零依赖,Node ≥ 22。认证:`PGS_URL` + (`PGS_TOKEN` 或 `PGS_USER`/`PGS_PASSWORD`);`pgs login` 会把令牌存到 `~/.config/pgs/credentials.json`(0600)。参数解析用 `util.parseArgs`,未知参数直接报错。
 
 ```
-node cli/pgs.mjs status
+node cli/pgs.mjs login [--user 名] [--password-stdin] | logout
+node cli/pgs.mjs status | status queue [--watch]
 node cli/pgs.mjs album list [--tree] | info <code> | status <code>
 node cli/pgs.mjs album create <名称> [--parent 代码] [--public] [--storage local|s3]
-node cli/pgs.mjs album mount <绝对路径> [--name 名] [--parent 代码] [--public] [--no-recursive]
-node cli/pgs.mjs album set <code> [--name] [--public|--private] [--cascade] [--parent 代码|root]
+node cli/pgs.mjs album mount <绝对路径> [--name 名] [--parent 代码] [--public] [--no-recursive] [--no-readonly]
+node cli/pgs.mjs album set <code> [--name] [--public|--private] [--cascade] [--readonly|--no-readonly] [--parent 代码|root]
 node cli/pgs.mjs album rm <code> [--delete-media] [--purge]      |  album scan <code> [--wait]
-node cli/pgs.mjs upload <文件/目录...> [--album 代码|--dir /绝对路径] [--storage local|s3] [-c 并发] [--duplicate skip|keep] [--note 文本] [-r]
+node cli/pgs.mjs upload <文件/目录...> [--album 代码|--dir /绝对路径] [--storage local|s3] [-c 并发] [--duplicate skip|keep] [--note 文本] [-r] [--dry-run]
 node cli/pgs.mjs import <服务器路径...> [--album|--dir|--storage] [-c 并发]
-node cli/pgs.mjs media list|get|note|rm|move|reprocess ...
+node cli/pgs.mjs media list [--all] [--cursor C] [--json] | get <id> [--links] | note | rm | move | reprocess
+node cli/pgs.mjs blocklist list | restore <id> | purge <id>
 node cli/pgs.mjs key list | key set [--key K] [--ttl never|24h|<小时>] [--label L] | key rm <id> | key rm --key K
 node cli/pgs.mjs user list | add <名> --pw 密码 [--role r] | set <名> [--role r] [--pw p] [--disable|--enable] | rm <名>
 node cli/pgs.mjs settings get | set '<JSON>' | icon <文件> | icon-reset
-node cli/pgs.mjs reprocess
+node cli/pgs.mjs reprocess | regenerate-derived
 ```
-`upload -c N` 为客户端并发请求数(每请求一个文件),服务端另有 `THUMB_CONCURRENCY` 兜底。新增 API 后,同步在 CLI 的 `main()` switch 里加子命令。
+`upload` 会先流式计算 SHA-256 调 `POST /media/exists` 跳过已存在文件,因此可反复执行做幂等同步;请求带 120 秒超时与 429/5xx 指数退避重试。新增 API 后,同步在 CLI 的 `main()` switch 里加子命令。
 
 ## 12. 常见改动速查
 
@@ -509,6 +535,11 @@ node cli/pgs.mjs reprocess
 | 支持新的 AI 工具参数格式 | `media/ai.ts#detectAi` |
 | 改原文件/视频保护策略 | `server/files.ts#serveMedia` 与 `server/keys.ts` |
 | 改可见性规则 | `server/albums.ts`(`effectivelyPublic/visibleIds`)与 `media/service.ts#canSee` |
+| 改扫描熔断阈值 / 软删除宽限期 | `SCAN_PRUNE_MAX_RATIO`、`SCAN_PRUNE_MIN_COUNT`;宽限期在 `albums.ts#MISSING_GRACE_MS` |
+| 改游客可见元数据 | `GUEST_META` / `GUEST_NOTE`;裁剪逻辑在 `media/service.ts#guestMetaView` |
+| 改限流阈值 | 登录:`auth.ts` 的 `FAIL_MAX_IP/FAIL_MAX_USER`;匿名搜索与密钥:`SEARCH_RATE_PER_MIN`、`KEY_RATE_PER_MIN`(`server/rate.ts`) |
+| 改令牌有效期 / 强制下线 | `SESSION_DAYS`;强制下线调用 `auth.ts#bumpTokenVersion(userId)` |
+| 改挂载目录白名单 / 只读 | `ALLOWED_MOUNT_ROOTS`;`albums.ts#assertMountAllowed`、`pgs_albums.readonly` |
 | 新增主题预设 | `lib/theme.ts#PRESETS`(自动出现在设置页) |
 | 改启动页 | `components/Splash.tsx`;动画 CSS 在 `app/globals.css`;配置项在 `server/settings.ts` |
 | 改图库布局 | `components/Gallery.tsx#justify` |
@@ -531,12 +562,15 @@ node cli/pgs.mjs reprocess
 
 ## 14. 性能与安全设计要点
 
-- 上传全程流式,不进内存;SHA-256 边写边算;派生任务受 `THUMB_CONCURRENCY` 约束;`sharp.cache(false)` 避免缓存膨胀;缩略图由预览图再缩小,避免二次解码大图。
-- 列表走键集分页 `(sort_at,id)` 与复合索引;相册树与统计在内存短时缓存,写操作主动失效;游客可见性判断为内存集合运算。
-- 派生图 `ETag` + 缓存头,原文件 `no-store`;所有 S3 访问懒加载 SDK。
-- 密码 scrypt;下载密钥只存哈希;令牌 HMAC 常量时间比较;登录按 IP 限流;`local` 存储路径防穿越;自定义图标光栅化重编码、SVG 以 `sandbox` CSP 输出;媒体 `Content-Type` 来自扩展名白名单且附带 `nosniff`。
-- 水印在服务端合成进最终 WebP 像素(默认透明度 8%),前端不会先展示无水印大图;高清缓存目录不对外暴露,只能经带令牌与权限校验的 `/media/:id/hd` 读取。
-- 已知边界:播放令牌 + `Sec-Fetch-Dest` 校验只能防"直接下载",无法阻止录屏/抓包;进程内队列在多实例部署时各自独立(多实例需外置队列);限流与缓存为单进程内存。
+- 上传全程流式,不进内存;SHA-256 边写边算;派生任务按类型分池限流(图片 `THUMB_CONCURRENCY`、视频 `VIDEO_CONCURRENCY`、HEIC `HEIC_CONCURRENCY`);`sharp.cache(false)` 避免缓存膨胀;缩略图由预览图再缩小,避免二次解码大图;输入统一加 `limitInputPixels` 与 `sequentialRead` 防解压炸弹。
+- EXIF 只读文件头(`EXIF_READ_BYTES`,默认 1MB,读不到再放大到 8MB),不再整文件读入。
+- 列表走键集分页 `(sort_at,id)` 与复合索引;相册树、统计与游客可见集合在内存短时缓存,`loadTree/loadStats` 有 in-flight 合并;媒体入库只做 2 秒防抖失效,避免批量上传期间反复全表聚合;搜索走 `pg_trgm` GIN 索引。
+- 文件输出只 select 必要列(不含 `meta`/`search_text`);派生图 `ETag` + `max-age=300`,原文件 `no-store`;所有 S3 访问懒加载 SDK。
+- 密码 scrypt;失败路径只跑 1 次 scrypt(时序均衡复用固定哈希);Basic 与登录共用 IP + 用户名双维度限流;下载密钥只存哈希、最小长度 16、校验单条 SQL 完成并限流;令牌 HMAC 常量时间比较并携带 `token_version`(改密码即失效);`local` 存储路径防穿越;挂载路径 `realpath` 后比对白名单并检查重叠;自定义图标光栅化重编码、SVG 以 `sandbox` CSP 输出;媒体 `Content-Type` 来自扩展名白名单且附带 `nosniff`。
+- 全局安全响应头在 `next.config.ts` 统一注入;`/f/*` 与 `/api/v1/media/*` 带 `X-Robots-Tag: noindex`;`public/robots.txt` 默认 `Disallow: /`;游客元数据按 `GUEST_META` 裁剪(GPS/序列号/作者邮箱/raw 不返回),备注不进公开搜索、`error` 对游客置空。
+- 水印在服务端合成进最终 WebP 像素(默认透明度 8%),前端不会先展示无水印大图;高清缓存目录不对外暴露,只能经带令牌与权限校验的 `/media/:id/hd` 读取;水印层缓存变体上限 24 且 LRU 淘汰。
+- 数据库连接池无条件缓存到 `globalThis` 并监听 `error` 事件(避免空闲连接出错杀死进程),带 `statement_timeout`。
+- 已知边界:播放令牌 + `Sec-Fetch-Dest` 校验只能防"直接下载",无法阻止录屏/抓包;进程内队列、限流与缓存均为单进程内存,**仅支持单实例部署**;`/media/import` 仍是同步长请求。
 
 ## 15. 开发与验证
 
@@ -544,6 +578,31 @@ node cli/pgs.mjs reprocess
 npm install
 cp .env.example .env            # 填写 DATABASE_URL 等
 npm run dev                     # 开发
-npx next typegen && npx tsc --noEmit && npm run build   # 提交前校验
+npm run typecheck && npm run lint && npm run build   # 提交前校验(CI 同样执行)
 ```
 端到端冒烟:启动后依次验证 `POST /albums` → `POST /media/upload` → `GET /media?q=` → `GET /f/:id`(无 key=预览,有 key=原图)→ `POST /keys` → 游客访问私有相册应 404。
+
+## 16. 本轮优化(v1.3.0 / v1.3.1,2026-11-23)与遗留项
+
+按 `issue.md` §0.3 的优先清单完成 41 项,详见 `issue.md` 顶部「优化执行记录」以及各条目标题下的 `✅ 已解决` 标注。要点:
+
+- 数据安全:扫描熔断 + `missing_at` 软删除、先搬文件后改库、`(size,mtime)` 变更与重命名识别、删除事务化、黑名单复用原 id。
+- 认证:Basic 与登录共用限流、`TRUST_PROXY`、生产环境拒绝占位密码、`token_version`。
+- 隐私:游客元数据裁剪、备注不进搜索、`error` 置空、`robots.txt`。
+- 性能:分池并发、EXIF 只读头部、只选必要列、可见集合缓存、失效防抖、`pg_trgm`、队列游标。
+- 部署:tini + 非 root + healthcheck + jemalloc、连接池 `error` 监听、CI 工作流。
+
+**明确未做**(issue.md 中标注 `⏳ 本次未处理`):视频转码预览(§1.6)、`/media/import` 异步 Job(§2.8)、列表接口统一分页(§3.2)、个人访问令牌 PAT(§3.3)、drizzle 迁移体系与 FK/CHECK(§5.3)、ext 文件 hash 与感知哈希(§6.5)、前端虚拟列表与 SSE(§6.8),以及 §7 的功能扩展、§8 的自动化测试、§9 的文档补充。
+
+**升级注意**:新增字段由 `bootstrap.ts` 的 `ALTER TABLE ... IF NOT EXISTS` 自动补齐,老库直接启动即可;`pg_trgm` 索引在数据库无权限时只告警不影响启动。挂载相册新增 `readonly` 且**默认 true**,升级后向挂载相册上传/移动会被拒绝,需要时用 `PATCH /albums/:code {readonly:false}` 或 `pgs album set <code> --no-readonly` 关闭。
+
+### 16.1 v1.3.1 复查修补(2026-11-23)
+
+对 v1.3.0 的改动做代码复查时发现并修掉 4 处问题,均为「文档声称的行为」与「实际实现」不一致:
+
+1. 只读挂载可被物理删除:`deleteMediaByIds(ids, purge=true)` 与 `blocklist.purgeBlocked()` 原先不检查 `readonly`,管理员对只读挂载相册执行 `purge` 仍会 `unlink` 用户原文件。现改为逐条校验归属相册,只读时跳过并在 `failed[]` 里返回原因(黑名单彻底删除直接 403)。
+2. 扫描熔断误判:`gone` 原先包含「上次扫描已标记 `missing_at`」的记录,一次合法的大批量删除会让比例长期超阈值,导致此后每次扫描都抛错、软删除永远无法推进到清理。现熔断只统计本次新消失的文件,且判断前移到任何写库动作之前(先熔断,后重命名/插入/软删除)。
+3. 前端无法感知只读:上传对话框不显示只读状态,用户上传后才收到 403。现 `UploadDialog` 在选择只读挂载相册时禁用「开始上传」并给出说明,相册下拉标注「目录(只读)」;`AlbumActions` 增加「只读 ↔ 允许写入」切换(需 `album.mount`);挂载对话框增加「只读挂载(推荐)」勾选项;设置页相册列表显示「挂载·只读 / 挂载·可写」。
+4. CLI 无法关闭只读:`util.parseArgs` 的 boolean 不接受 `--readonly=false`,新增 `--no-readonly`(`album mount` 与 `album set` 均支持),并修正帮助文本。
+
+版本号同步升到 `1.3.1`(`package.json`、`package-lock.json`、`config.ts`、`cli/pgs.mjs` 四处一致)。`tsc --noEmit`、`eslint .`、`node --check cli/pgs.mjs` 均通过。

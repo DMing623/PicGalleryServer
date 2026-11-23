@@ -23,6 +23,8 @@
 
 * **高清预览与防盗图**:点击图片按屏幕分辨率加载无元数据的高清 WebP(最大 2560px,按需生成 + LRU 临时缓存),支持滚轮/双击/双指缩放;服务端合成来源水印(`Source: {域名} · github.com/DMing623/PicGalleryServer`,登录用户另有动态标识),短期令牌 + 独立限流 + 异常检测,不影响原图下载密钥体系。配置见 `.env.example` 的 `HD_*`。
 * **PWA**:可安装到手机主屏幕;**免责声明**:首次进入需阅读并同意后才显示相册。
+* **隐私与索引控制**:游客默认只看到基础元数据(GPS、机身序列号、作者邮箱等不下发,可用 `GUEST_META` 调整);管理员备注不参与公开搜索;自带 `robots.txt`(默认禁止索引)且图片响应带 `X-Robots-Tag: noindex`。
+* **挂载目录只读**:挂载相册默认只读,本系统不会上传/移动/删除其中的文件;路径会先 `realpath` 再校验白名单,并拒绝嵌套重叠挂载。
 * **删除黑名单(可反悔的删除)**:详情页删除时默认只把文件"排除"出本项目(源文件留在服务器上,挂载目录重新扫描也不会再入库);只有勾选"同时删除服务器上的原文件"才会真正删除。被排除的记录集中在 设置 → 删除黑名单,可一键解除(恢复记录并重新生成缩略图)或彻底删除源文件。该页面仅管理者及以上可见。
 
 > 反向代理请对 `/api/v1/media/*/hd*` 关闭缓存并透传真实 IP,示例见下方「反向代理(HTTPS)」。
@@ -35,16 +37,20 @@
 
 ```bash
 git clone <本仓库地址> picgalleryserver && cd picgalleryserver
-# 编辑 docker-compose.yml,修改管理员密码、SESSION_SECRET、数据库密码
-docker compose pull        # 拉取 ghcr.io/dming623/picgalleryserver:latest
-docker compose up -d      # 启动服务
+cp .env.example .env       # 填 PGS_DB_PASSWORD / PGS_ADMIN_PASSWORD / PGS_SESSION_SECRET
+docker compose pull        # 拉取 ghcr.io/dming623/picgalleryserver:<PGS_TAG>
+docker compose up -d       # 启动服务
 ```
 浏览器打开 `http://服务器IP:3000`,用你设置的管理员账号登录。
 
-> 后续更新版本时,只需在服务器执行 `docker compose pull && docker compose up -d` 即可获取最新镜像。
+> compose 默认只监听 `127.0.0.1:3000`(由反向代理对外),直接对外暴露请把 `ports` 改成 `"3000:3000"`。
+> `PGS_ADMIN_PASSWORD`、`PGS_SESSION_SECRET`、`PGS_DB_PASSWORD` 未设置时 compose 会直接报错退出,不会用默认弱密码启动;生产环境若 `ADMIN_PASSWORD` 仍是占位值,应用本身也会拒绝启动。
 
-想使用 VPS 上已有的图片目录:在 `docker-compose.yml` 的 `volumes` 里加入 `- /srv/photos:/photos`,然后在 **设置 → 相册管理 → 挂载服务器目录** 里选择 `/photos`。
+> 后续更新版本:把 `.env` 里的 `PGS_TAG` 改成目标版本号,再执行 `docker compose pull && docker compose up -d`。示例固定版本号,避免 `up` 时被动升级到未测试版本。
 
+想使用 VPS 上已有的图片目录:在 `docker-compose.yml` 的 `volumes` 里加入 `- /srv/photos:/photos:ro`,然后在 **设置 → 相册管理 → 挂载服务器目录** 里选择 `/photos`。
+
+> 挂载相册默认是**只读**的(不允许通过本系统上传/移动/物理删除其中的文件),需要写入时在相册设置里关闭只读。
 > 若服务器为私有网络环境,需先执行 `docker login ghcr.io -u <GitHub用户名> --password-stdin` 并输入具备 `read:packages` 权限的 Personal Access Token。
 
 ### 方式二:在服务器本地自行构建镜像
@@ -88,6 +94,24 @@ npm start                # 端口由 .env 中的 PORT 决定,默认 3000
 
 放在 Nginx/Caddy 之后时,请在 `.env` 设置 `PUBLIC_BASE_URL=https://你的域名` 与 `COOKIE_SECURE=true`,并转发 `X-Forwarded-Proto`/`X-Forwarded-For`。
 
+**真实 IP**:应用默认(`TRUST_PROXY=0`)只信任反向代理**覆盖写入**的 `X-Real-IP`。请务必用 `proxy_set_header X-Real-IP $remote_addr;`(**不要**用 `$proxy_add_x_forwarded_for`,那会把客户端自带的值排在最前,限流可被绕过)。若确实要信任多层代理,设 `TRUST_PROXY=n` 取 `X-Forwarded-For` 的倒数第 n 段。
+
+**上传相关**(Nginx 默认 `client_max_body_size` 只有 1MB,不配会直接 413):
+
+```nginx
+client_max_body_size 0;                 # 或一个足够大的值,如 20g
+proxy_read_timeout 3600s;
+proxy_send_timeout 3600s;
+
+location /api/v1/media/upload {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_request_buffering off;        # 流式转发,不先落盘
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Host $host;
+}
+```
+
 高清预览(HD)接口带短期令牌且按用户鉴权,**必须关闭缓存**并透传真实 IP(Nginx 示例):
 
 ```nginx
@@ -102,6 +126,30 @@ location ~ ^/api/v1/media/[^/]+/hd {
 
 使用 CDN 时请把 `/api/*` 设为「绕过缓存」。
 
+### 上线前安全清单
+
+1. 改 `ADMIN_PASSWORD`(生产环境用占位值会拒绝启动)、设置 `SESSION_SECRET`(留空会自动生成并保存到 `DATA_DIR/secret.key`)。
+2. 设 `PUBLIC_BASE_URL` 与 `COOKIE_SECURE=true`,全站走 HTTPS。
+3. 反代用 `X-Real-IP $remote_addr` 覆盖真实 IP;`TRUST_PROXY` 保持 0,除非你确实有多层代理。
+4. 用 `ALLOWED_MOUNT_ROOTS` 收窄可挂载目录;照片目录以 `:ro` 挂进容器,挂载相册保持只读。
+5. 数据库端口不要对外;`docker compose` 里 app 默认只监听 `127.0.0.1`。
+6. 定期备份:`pg_dump` 数据库 + `DATA_DIR/{albums,branding}`;`derived/`、`cache/` 可重建,不必备份。
+7. 需要时用 `GUEST_META=none` 彻底不给游客元数据、`GUEST_NOTE=false` 隐藏管理员备注。
+
+### 资源建议
+
+| 规格 | 建议配置 |
+|---|---|
+| 1C1G | `THUMB_CONCURRENCY=2`、`VIDEO_CONCURRENCY=1`、`HEIC_CONCURRENCY=1`、`HD_CONCURRENCY=1`、`HD_CACHE_MAX_MB=256` |
+| 2C4G | `THUMB_CONCURRENCY=3`、`VIDEO_CONCURRENCY=2`、`HD_CONCURRENCY=2`、`HD_CACHE_MAX_MB=1024` |
+| 8C16G | `THUMB_CONCURRENCY=6`、`VIDEO_CONCURRENCY=3`、`HD_CONCURRENCY=4`、`HD_CACHE_MAX_MB=4096` |
+
+> 容器部署时请同时设 `NODE_OPTIONS=--max-old-space-size=...`,让 V8 堆上限与容器内存限制匹配,否则可能被 OOM Killer 直接杀掉。
+
+### 单实例说明
+
+任务队列、限流计数、相册树与 HD 缓存索引都在**进程内存**里,因此本项目**只支持单实例部署**。不要对同一个数据库同时运行多个容器,否则会出现重复扫描与重复处理。
+
 ## ⚙️ 配置(.env)
 
 私密与运行参数都在 `.env`(完整说明见 `.env.example`):
@@ -109,14 +157,22 @@ location ~ ^/api/v1/media/[^/]+/hd {
 | 变量 | 说明 |
 |---|---|
 | `PORT` | 服务端口 |
-| `ADMIN_USER` / `ADMIN_PASSWORD` | 管理员账号密码(改密码改这里并重启) |
-| `SESSION_SECRET` | 登录令牌签名密钥,请设置为随机长字符串 |
+| `ADMIN_USER` / `ADMIN_PASSWORD` | 管理员账号密码(改密码改这里并重启;生产环境不允许占位密码) |
+| `SESSION_SECRET` | 登录令牌签名密钥;留空时生产环境自动生成并保存到 `DATA_DIR/secret.key` |
 | `DATABASE_URL` | PostgreSQL 连接 |
 | `DATA_DIR` | 数据目录 |
-| `THUMB_CONCURRENCY` | 缩略图/预览图生成并发数,默认 15 |
-| `ALLOWED_MOUNT_ROOTS` | 限制可挂载的目录范围(可选) |
+| `THUMB_CONCURRENCY` | 图片处理并发,默认 `min(4, CPU)` |
+| `VIDEO_CONCURRENCY` / `HEIC_CONCURRENCY` | 视频与 HEIC 解码的独立并发上限(默认 2 / 1) |
+| `MAX_UPLOAD_MB` | 单文件上传上限,默认 2048,0 = 不限 |
+| `MIN_FREE_DISK_MB` | 剩余磁盘低于该值拒绝上传,默认 1024 |
+| `ALLOWED_MOUNT_ROOTS` | 限制可挂载的目录范围(留空时只允许数据目录与 `/photos /mnt /media /srv /home /volume1`) |
+| `TRUST_PROXY` | 信任几层反向代理,默认 0(只信反代覆盖的 `X-Real-IP`) |
+| `ALLOWED_HOSTS` | 生成链接/水印时可用的 Host 白名单 |
+| `GUEST_META` / `GUEST_NOTE` | 游客可见的元数据级别(`full|basic|none`)与是否可见管理员备注 |
 | `S3_*` | 对象存储(可选) |
 | `HD_WM_OPACITY` | 高清预览水印透明度(默认 8,数值越大越明显) |
+
+完整清单(含数据库连接池、扫描熔断、限流、EXIF 读取上限等)见 [`.env.example`](./.env.example)。
 
 ## 🖥️ 使用
 
@@ -127,13 +183,16 @@ location ~ ^/api/v1/media/[^/]+/hd {
 - **允许别人下载原图**:设置 → 原文件下载密钥 → 创建密钥,然后把 `文件链接?key=密钥` 发给对方。
 - **命令行**:
   ```bash
-  export PGS_URL=http://127.0.0.1:3000 PGS_USER=admin PGS_PASSWORD=你的密码
+  export PGS_URL=http://127.0.0.1:3000
+  node cli/pgs.mjs login --user admin --password-stdin   # 输入密码,令牌存到 ~/.config/pgs/credentials.json
   node cli/pgs.mjs album create 旅行 --public
-  node cli/pgs.mjs album mount /srv/photos
+  node cli/pgs.mjs album mount /srv/photos               # 默认只读
   node cli/pgs.mjs upload ./照片目录 --album alb_xxxxxxxx -c 8 -r
   node cli/pgs.mjs key set --ttl 24h
+  node cli/pgs.mjs blocklist list
   node cli/pgs.mjs help
   ```
+  `upload` 会先比对 hash 跳过已存在的文件,可反复执行做幂等同步;`--dry-run` 只看计划不发送。
 
 ## 📜 许可证
 

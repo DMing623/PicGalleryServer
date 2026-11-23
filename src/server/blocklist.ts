@@ -108,29 +108,42 @@ export async function unblock(id: string) {
     const [a] = await db.select({ id: albums.id }).from(albums).where(eq(albums.id, b.albumId)).limit(1);
     albumId = a?.id ?? null;
   }
-  const newId = randomId(12);
+  // 复用原 id:删除→反悔后 /f/<id> 外链仍然有效(issue §2.5)
+  const reuseId = b.mediaId;
+  let newId = reuseId && reuseId.length ? reuseId : randomId(12);
+  const values = {
+    albumId,
+    kind: b.kind,
+    filename: b.filename,
+    mime: b.mime,
+    size: info.size,
+    hash: b.hash,
+    takenAt: b.takenAt,
+    sortAt: b.sortAt ?? new Date(),
+    storage: b.storage,
+    storageKey: b.storageKey,
+    status: "pending" as const,
+    note: b.note,
+    meta: b.meta,
+    searchText: b.filename.toLowerCase(),
+  };
   try {
-    await db.insert(media).values({
-      id: newId,
-      albumId,
-      kind: b.kind,
-      filename: b.filename,
-      mime: b.mime,
-      size: info.size,
-      hash: b.hash,
-      takenAt: b.takenAt,
-      sortAt: b.sortAt ?? new Date(),
-      storage: b.storage,
-      storageKey: b.storageKey,
-      status: "pending",
-      note: b.note,
-      meta: b.meta,
-      searchText: b.filename.toLowerCase(),
-    });
+    await db.insert(media).values({ id: newId, ...values });
   } catch (e) {
     const code = (e as { code?: string; cause?: { code?: string } }).code ?? (e as { cause?: { code?: string } }).cause?.code;
-    if (code === "23505") throw E.conflict("该文件已存在于相册中,无需恢复");
-    throw e;
+    if (code === "23505") {
+      // id 已被占用(极少见):换新 id 再试一次
+      newId = randomId(12);
+      try {
+        await db.insert(media).values({ id: newId, ...values });
+      } catch (e2) {
+        const c2 = (e2 as { code?: string; cause?: { code?: string } }).code ?? (e2 as { cause?: { code?: string } }).cause?.code;
+        if (c2 === "23505") throw E.conflict("该文件已存在于相册中,无需恢复");
+        throw e2;
+      }
+    } else {
+      throw e;
+    }
   }
   await db.delete(blocklist).where(eq(blocklist.id, id));
   invalidateBlocklist();
@@ -141,10 +154,16 @@ export async function unblock(id: string) {
 /** 彻底删除:移除服务器上的源文件并删除黑名单记录 */
 export async function purgeBlocked(id: string) {
   const b = await getEntry(id);
+  // 只读挂载目录里的文件不归本系统管,拒绝物理删除(issue §1.10)
+  if (b.storage === "ext" && b.albumId) {
+    const [owner] = await db.select({ readonly: albums.readonly }).from(albums).where(eq(albums.id, b.albumId)).limit(1);
+    if (owner?.readonly) throw E.forbidden("该文件位于只读挂载目录,不能物理删除");
+  }
   try {
     await (await driverFor(b.storage)).remove(b.storageKey);
   } catch (e) {
     console.error("[blocklist] remove source failed", b.storageKey, e);
+    throw E.conflict(`删除源文件失败:${(e as Error)?.message ?? e}`);
   }
   await db.delete(blocklist).where(eq(blocklist.id, id));
   invalidateBlocklist();

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { albums, media } from "@/db/schema";
+import { albums, blocklist, media } from "@/db/schema";
 import { can, type AuthUser } from "./auth";
-import { addToBlocklist, blockedExtKeys } from "./blocklist";
+import { blockedExtKeys, invalidateBlocklist } from "./blocklist";
 import { config, dirs } from "./config";
 import { E } from "./http";
 import { removeDerived } from "./media/derive";
@@ -27,30 +28,65 @@ interface Tree {
   byId: Map<string, AlbumRow>;
   byCode: Map<string, AlbumRow>;
   children: Map<string | null, AlbumRow[]>;
+  /** 游客可见(自身及全部祖先 public)的相册 id 集合,随树一起缓存(issue §6.2) */
+  publicIds: Set<string>;
   at: number;
 }
 
 let tree: Tree | null = null;
-let stats: { at: number; counts: Map<string, AlbumCounts>; covers: Map<string, string> } | null = null;
+let treeInflight: Promise<Tree> | null = null;
+let stats: Stats | null = null;
+let statsInflight: Promise<Stats> | null = null;
 
+interface Stats {
+  at: number;
+  counts: Map<string, AlbumCounts>;
+  covers: Map<string, string>;
+}
+
+/** 相册结构变化(建/改/删/挂载):立即失效 */
 export function invalidateAlbums() {
   tree = null;
   stats = null;
 }
 
+/**
+ * 媒体数量变化(每个文件入库都会调用):防抖失效,避免批量上传期间
+ * 每个文件都触发一次全表聚合(issue §6.3)。
+ */
+let statsTimer: NodeJS.Timeout | null = null;
+export function invalidateMediaCaches() {
+  if (statsTimer) return;
+  statsTimer = setTimeout(() => {
+    statsTimer = null;
+    stats = null;
+  }, 2000);
+  statsTimer.unref?.();
+}
+
+const collator = new Intl.Collator("zh");
+
 export async function loadTree(): Promise<Tree> {
   if (tree && Date.now() - tree.at < 10_000) return tree;
-  const rows = await db.select().from(albums);
-  rows.sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "zh"));
-  const byId = new Map(rows.map((r) => [r.id, r]));
-  const byCode = new Map(rows.map((r) => [r.code, r]));
-  const children = new Map<string | null, AlbumRow[]>();
-  for (const r of rows) {
-    const k = r.parentId && byId.has(r.parentId) ? r.parentId : null;
-    (children.get(k) ?? children.set(k, []).get(k)!).push(r);
-  }
-  tree = { rows, byId, byCode, children, at: Date.now() };
-  return tree;
+  if (treeInflight) return treeInflight; // 惊群合并:并发请求共用同一次查询
+  treeInflight = (async () => {
+    const rows = await db.select().from(albums);
+    rows.sort((a, b) => a.sortOrder - b.sortOrder || collator.compare(a.name, b.name));
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const byCode = new Map(rows.map((r) => [r.code, r]));
+    const children = new Map<string | null, AlbumRow[]>();
+    for (const r of rows) {
+      const k = r.parentId && byId.has(r.parentId) ? r.parentId : null;
+      (children.get(k) ?? children.set(k, []).get(k)!).push(r);
+    }
+    const t: Tree = { rows, byId, byCode, children, publicIds: new Set(), at: Date.now() };
+    for (const r of rows) if (effectivelyPublic(t, r)) t.publicIds.add(r.id);
+    tree = t;
+    return t;
+  })().finally(() => {
+    treeInflight = null;
+  });
+  return treeInflight;
 }
 
 export function effectivelyPublic(t: Tree, a: AlbumRow): boolean {
@@ -90,9 +126,11 @@ export async function visibleIds(user: AuthUser | null): Promise<{ t: Tree; allo
   const t = await loadTree();
   if (user) return { t, allowed: null };
   const site = await getSite();
-  if (!site.guestBrowse) return { t, allowed: new Set() };
-  return { t, allowed: new Set(t.rows.filter((r) => effectivelyPublic(t, r)).map((r) => r.id)) };
+  if (!site.guestBrowse) return { t, allowed: EMPTY_SET };
+  return { t, allowed: t.publicIds };
 }
+
+const EMPTY_SET: Set<string> = new Set();
 
 /** 按代码取相册并校验可见性;不可见一律 404(不泄露存在性) */
 export async function resolveAlbum(code: string, user: AuthUser | null): Promise<{ t: Tree; album: AlbumRow }> {
@@ -119,37 +157,44 @@ interface AlbumCounts {
   videos: number;
 }
 
-async function loadStats() {
+async function loadStats(): Promise<Stats> {
   if (stats && Date.now() - stats.at < 5000) return stats;
-  const rows = await db.execute(sql`
-    SELECT album_id,
-           count(*)::int AS media,
-           coalesce(sum(size),0)::float8 AS size,
-           count(*) FILTER (WHERE status='pending')::int AS pending,
-           count(*) FILTER (WHERE status='failed')::int AS failed,
-           count(*) FILTER (WHERE kind='image')::int AS images,
-           count(*) FILTER (WHERE kind='video')::int AS videos
-    FROM pgs_media WHERE album_id IS NOT NULL GROUP BY album_id`);
-  const counts = new Map<string, AlbumCounts>();
-  for (const r of rows.rows as Array<Record<string, unknown>>) {
-    counts.set(String(r.album_id), {
-      media: Number(r.media), size: Number(r.size), pending: Number(r.pending), failed: Number(r.failed),
-      images: Number(r.images), videos: Number(r.videos),
-    });
-  }
-  const cov = await db.execute(sql`
-    SELECT DISTINCT ON (album_id) album_id, id FROM pgs_media
-    WHERE album_id IS NOT NULL AND status='ready' ORDER BY album_id, sort_at DESC`);
-  const covers = new Map<string, string>();
-  for (const r of cov.rows as Array<Record<string, unknown>>) covers.set(String(r.album_id), String(r.id));
-  stats = { at: Date.now(), counts, covers };
-  return stats;
+  if (statsInflight) return statsInflight;
+  statsInflight = (async () => {
+    const rows = await db.execute(sql`
+      SELECT album_id,
+             count(*)::int AS media,
+             coalesce(sum(size),0)::float8 AS size,
+             count(*) FILTER (WHERE status='pending')::int AS pending,
+             count(*) FILTER (WHERE status='failed')::int AS failed,
+             count(*) FILTER (WHERE kind='image')::int AS images,
+             count(*) FILTER (WHERE kind='video')::int AS videos
+      FROM pgs_media WHERE album_id IS NOT NULL AND missing_at IS NULL GROUP BY album_id`);
+    const counts = new Map<string, AlbumCounts>();
+    for (const r of rows.rows as Array<Record<string, unknown>>) {
+      counts.set(String(r.album_id), {
+        media: Number(r.media), size: Number(r.size), pending: Number(r.pending), failed: Number(r.failed),
+        images: Number(r.images), videos: Number(r.videos),
+      });
+    }
+    const cov = await db.execute(sql`
+      SELECT DISTINCT ON (album_id) album_id, id FROM pgs_media
+      WHERE album_id IS NOT NULL AND status='ready' AND missing_at IS NULL ORDER BY album_id, sort_at DESC`);
+    const covers = new Map<string, string>();
+    for (const r of cov.rows as Array<Record<string, unknown>>) covers.set(String(r.album_id), String(r.id));
+    const v = { at: Date.now(), counts, covers };
+    stats = v;
+    return v;
+  })().finally(() => {
+    statsInflight = null;
+  });
+  return statsInflight;
 }
 
 const ZERO: AlbumCounts = { media: 0, size: 0, pending: 0, failed: 0, images: 0, videos: 0 };
 
 export async function unsortedCount(): Promise<number> {
-  const r = await db.execute(sql`SELECT count(*)::int AS n FROM pgs_media WHERE album_id IS NULL`);
+  const r = await db.execute(sql`SELECT count(*)::int AS n FROM pgs_media WHERE album_id IS NULL AND missing_at IS NULL`);
   return Number((r.rows[0] as { n: number }).n);
 }
 
@@ -193,6 +238,7 @@ export async function albumDtos(
       storage: a.storage,
       rootPath: showPath ? a.rootPath : null,
       visibility: a.visibility,
+      readonly: a.readonly,
       effectivePublic: effectivelyPublic(t, a),
       coverId: coverOf(a),
       sortOrder: a.sortOrder,
@@ -272,29 +318,67 @@ export async function createManaged(input: {
   return code;
 }
 
-export function assertMountAllowed(abs: string) {
+/** 解析真实路径(消除符号链接),失败时回落到原路径 */
+export async function realPath(p: string): Promise<string> {
+  return fs.realpath(p).catch(() => path.resolve(p));
+}
+
+/** 判断 child 是否位于 parent 之内(含相等) */
+function within(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(parent + path.sep);
+}
+
+/**
+ * 挂载路径白名单校验(issue §1.10):
+ *  - 先 realpath,避免用符号链接逃出白名单;
+ *  - 白名单为空时不再"完全不限制",而是只允许 DATA_DIR 与约定目录(/photos、/mnt、/media、/srv、/home、/volume1)
+ *    以及它们的子目录;确实需要更宽范围请显式配置 ALLOWED_MOUNT_ROOTS。
+ */
+export async function assertMountAllowed(abs: string): Promise<string> {
   if (!path.isAbsolute(abs)) throw E.badRequest("路径必须是服务器上的绝对路径");
-  if (config.mountRoots.length) {
-    const okRoot = config.mountRoots.some((r) => abs === r || abs.startsWith(r + path.sep));
-    if (!okRoot) throw E.forbidden("该路径不在 ALLOWED_MOUNT_ROOTS 允许范围内");
+  const real = await realPath(abs);
+  const roots = config.mountRoots.length
+    ? await Promise.all(config.mountRoots.map((r) => realPath(r)))
+    : [config.dataDir, "/photos", "/mnt", "/media", "/srv", "/home", "/volume1"];
+  if (!roots.some((r) => within(real, r))) {
+    throw E.forbidden(
+      config.mountRoots.length
+        ? "该路径不在 ALLOWED_MOUNT_ROOTS 允许范围内"
+        : "该路径不在默认允许范围(数据目录、/photos、/mnt、/media、/srv、/home、/volume1);如需其它目录请配置 ALLOWED_MOUNT_ROOTS",
+    );
+  }
+  return real;
+}
+
+/** 检查是否与已挂载目录存在祖先/后代重叠(两棵树会互相抢文件,见 issue §1.10) */
+async function assertNoOverlap(real: string) {
+  const rows = await db.select({ rootPath: albums.rootPath, name: albums.name }).from(albums).where(eq(albums.kind, "mounted"));
+  for (const r of rows) {
+    if (!r.rootPath) continue;
+    const other = await realPath(r.rootPath);
+    if (within(real, other) || within(other, real)) {
+      throw E.conflict(`该目录与已挂载相册「${r.name}」(${r.rootPath})存在重叠,请勿嵌套挂载`);
+    }
   }
 }
 
 export async function mountDir(input: {
-  path: unknown; name?: unknown; parent?: string | null; recursive?: boolean; visibility?: unknown; scan?: boolean;
+  path: unknown; name?: unknown; parent?: string | null; recursive?: boolean; visibility?: unknown; scan?: boolean; readonly?: unknown;
 }) {
   if (typeof input.path !== "string" || !input.path.trim()) throw E.badRequest("缺少 path");
-  const abs = path.resolve(input.path.trim());
-  assertMountAllowed(abs);
+  const abs = await assertMountAllowed(path.resolve(input.path.trim()));
   const st = await fs.stat(abs).catch(() => null);
   if (!st?.isDirectory()) throw E.badRequest("目录不存在或不是文件夹");
   const t = await loadTree();
   if (t.rows.some((r) => r.rootPath === abs)) throw E.conflict("该目录已挂载为相册");
+  await assertNoOverlap(abs);
   const parent = parentOf(t, input.parent);
   const code = `dir_${randomId(8)}`;
   await db.insert(albums).values({
     id: randomId(14), code, name: input.name ? cleanName(input.name) : path.basename(abs) || abs, parentId: parent?.id ?? null,
     kind: "mounted", storage: "ext", rootPath: abs, visibility: cleanVisibility(input.visibility),
+    // 默认只读:挂载的是用户自己的照片目录,不应被本系统改写
+    readonly: input.readonly === undefined ? true : !!input.readonly,
   });
   invalidateAlbums();
   if (input.scan !== false) void scanAlbum(code, input.recursive !== false).catch((e) => console.error("[scan]", e));
@@ -310,6 +394,7 @@ export async function updateAlbum(code: string, patch: Record<string, unknown>) 
   if (patch.description !== undefined) set.description = String(patch.description).slice(0, 500);
   if (patch.visibility !== undefined) set.visibility = cleanVisibility(patch.visibility);
   if (patch.sortOrder !== undefined) set.sortOrder = Number(patch.sortOrder) || 0;
+  if (patch.readonly !== undefined) set.readonly = !!patch.readonly;
   if (patch.cover !== undefined) set.coverMediaId = patch.cover ? String(patch.cover) : null;
   if (patch.parent !== undefined) {
     const p = parentOf(t, patch.parent as string | null);
@@ -329,74 +414,118 @@ export async function deleteMediaByIds(
   purge: boolean,
   opts: { user?: AuthUser | null; block?: boolean } = {},
 ) {
-  if (!ids.length) return;
+  if (!ids.length) return { removed: 0, failed: [] as Array<{ id: string; error: string }> };
   // 未勾选「同时删除源文件」时,默认把记录移入黑名单(源文件保留在服务器上)
   const block = opts.block ?? !purge;
+  const failed: Array<{ id: string; error: string }> = [];
+  // 只读挂载目录里的文件不属于本系统,即使管理员勾了 purge 也不能物理删除(issue §1.10)
+  const t = await loadTree();
   for (let i = 0; i < ids.length; i += 500) {
     const chunk = ids.slice(i, i + 500);
-    const rows = await db.select().from(media).where(inArray(media.id, chunk));
-    if (block && rows.length) await addToBlocklist(rows, opts.user ?? null);
+    const all = await db.select().from(media).where(inArray(media.id, chunk));
+    if (!all.length) continue;
+    const rows = all.filter((r) => {
+      if (!purge || r.storage !== "ext") return true;
+      const owner = r.albumId ? t.byId.get(r.albumId) : undefined;
+      if (!owner?.readonly) return true;
+      failed.push({ id: r.id, error: "源相册是只读挂载目录,已跳过物理删除" });
+      return false;
+    });
+    if (!rows.length) continue;
+    const keepIds = rows.map((r) => r.id);
+    // 1) 先把「黑名单 + 删除记录」放进同一事务:任何一步失败都不会留下半截状态(issue §2.4)
+    await db.transaction(async (tx) => {
+      if (block) {
+        const values: Array<typeof blocklist.$inferInsert> = rows.map((r) => ({
+          id: randomId(14), mediaId: r.id, albumId: r.albumId, albumCode: null, kind: r.kind, filename: r.filename,
+          mime: r.mime, size: r.size, storage: r.storage, storageKey: r.storageKey, hash: r.hash,
+          takenAt: r.takenAt, sortAt: r.sortAt, meta: r.meta, note: r.note, createdBy: opts.user?.id ?? null,
+        }));
+        const albumIds = [...new Set(rows.map((r) => r.albumId).filter((v): v is string => !!v))];
+        if (albumIds.length) {
+          const codes = await tx.select({ id: albums.id, code: albums.code }).from(albums);
+          const byId = new Map(codes.map((a) => [a.id, a.code]));
+          for (const v of values) v.albumCode = v.albumId ? byId.get(v.albumId) ?? null : null;
+        }
+        await tx.insert(blocklist).values(values).onConflictDoNothing();
+      }
+      await tx.delete(media).where(inArray(media.id, keepIds));
+    });
+    // 2) 事务提交后再动物理文件:失败只记录并返回,不再"静默继续"(issue §2.4)
     for (const r of rows) {
-      // 只有 purge=true 才物理删除源文件;进入黑名单时源文件保留在服务器上,便于解除后恢复
       if (purge) {
         try {
           await (await driverFor(r.storage)).remove(r.storageKey);
         } catch (e) {
+          failed.push({ id: r.id, error: String((e as Error)?.message ?? e) });
           console.error("[delete] remove original failed", r.id, e);
         }
       }
-      await removeDerived(r.id);
+      await removeDerived(r.id).catch(() => undefined);
     }
-    await db.delete(media).where(inArray(media.id, chunk));
   }
+  if (block) invalidateBlocklist();
   invalidateAlbums();
+  return { removed: ids.length - failed.length, failed };
 }
 
 /**
- * 把挂载相册(ext)里的文件真正移动到目标相册所在目录,并更新 storage_key。
- * 用于「移动文件」操作:避免父相册与子相册目录各存一份同一张图片。
- * 目标不是挂载目录(或目标目录不可写)时只改数据库归属,不动文件。
+ * 把挂载相册(ext)里的文件真正移动到目标相册所在目录。
+ * 返回新的 storageKey/filename;不需要移动时返回 null;移动失败会抛错(issue §2.2)。
+ *
+ * 顺序很重要:先移动文件,成功后才由调用方更新数据库。旧实现先改库后搬文件,
+ * 搬失败时库里指向旧目录,下一次扫描会把记录当成"消失"而删掉。
  */
 export async function relocateExtFile(
   row: typeof media.$inferSelect,
   targetAlbumId: string | null,
-): Promise<void> {
-  if (row.storage !== "ext" || !path.isAbsolute(row.storageKey)) return;
+): Promise<{ storageKey: string; filename: string } | null> {
+  if (row.storage !== "ext" || !path.isAbsolute(row.storageKey)) return null;
   const t = await loadTree();
   const target = targetAlbumId ? t.byId.get(targetAlbumId) : undefined;
-  if (!target || target.kind !== "mounted" || !target.rootPath) return;
+  if (!target || target.kind !== "mounted" || !target.rootPath) return null;
+  if (target.readonly) throw E.forbidden("目标相册是只读挂载目录,不能写入文件");
+  const srcAlbum = row.albumId ? t.byId.get(row.albumId) : undefined;
+  if (srcAlbum?.readonly) throw E.forbidden("源相册是只读挂载目录,不能移动其中的文件");
+
   const dstDir = target.rootPath;
   const src = row.storageKey;
-  if (path.dirname(src) === dstDir) return;
-  if (!src.startsWith(dstDir + path.sep) && !dstDir.startsWith(path.dirname(src) + path.sep)) {
-    // 两个挂载目录互不包含(不同磁盘/不同挂载点):仍允许移动,但需确认目标可写
-  }
+  if (path.dirname(src) === dstDir) return null;
+
   const base = path.basename(src);
   const ext = path.extname(base);
   const stem = base.slice(0, base.length - ext.length);
+  await fs.mkdir(dstDir, { recursive: true });
   let dst = path.join(dstDir, base);
   for (let i = 0; i < 50; i++) {
-    const exists = await fs.stat(dst).catch(() => null);
-    if (!exists) break;
-    dst = path.join(dstDir, `${stem}-${randomId(4)}${ext}`);
-  }
-  try {
-    await fs.mkdir(dstDir, { recursive: true });
-    await fs.rename(src, dst);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "EXDEV") {
-      console.error("[move] rename failed, keep record only", src, dst, e);
-      return;
-    }
+    // 用 link/copyFile(EXCL) 保证"目标已存在就失败",彻底消除 stat→rename 的 TOCTOU 覆盖窗口
     try {
-      await fs.copyFile(src, dst);
-      await fs.unlink(src);
-    } catch (e2) {
-      console.error("[move] copy+unlink failed, keep record only", src, dst, e2);
-      return;
+      await moveNoOverwrite(src, dst);
+      return { storageKey: dst, filename: path.basename(dst) };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      dst = path.join(dstDir, `${stem}-${randomId(4)}${ext}`);
     }
   }
-  await db.update(media).set({ storageKey: dst, filename: path.basename(dst) }).where(eq(media.id, row.id));
+  throw E.conflict("目标目录重名文件过多,无法移动");
+}
+
+/** 不覆盖已有文件的移动:优先硬链接(同盘,原子),跨盘时用 COPYFILE_EXCL 复制 */
+async function moveNoOverwrite(src: string, dst: string): Promise<void> {
+  try {
+    await fs.link(src, dst);
+    await fs.unlink(src);
+    return;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") throw e;
+    if (code === "EXDEV" || code === "EPERM" || code === "ENOTSUP" || code === "EACCES" || code === "EMLINK") {
+      await fs.copyFile(src, dst, fsConstants.COPYFILE_EXCL);
+      await fs.unlink(src);
+      return;
+    }
+    throw e;
+  }
 }
 
 export async function deleteAlbum(code: string, opts: { media: "move" | "delete"; purge: boolean; user?: AuthUser | null }) {
@@ -417,7 +546,26 @@ export async function deleteAlbum(code: string, opts: { media: "move" | "delete"
       // 受管相册的文件属于本系统自己的数据,删除相册时一并物理删除(不进入黑名单)
       await deleteMediaByIds(rows.map((r) => r.id), true, { user: opts.user, block: false });
     } else {
-      await db.update(media).set({ albumId: parent }).where(eq(media.albumId, a.id));
+      // 媒体移交父相册:受管相册(local)必须真正搬文件,否则目录与归属脱节且永远无法清理(issue §2.6)
+      const rows = await db.select().from(media).where(eq(media.albumId, a.id));
+      for (const r of rows) {
+        let storageKey = r.storageKey;
+        let filename = r.filename;
+        if (r.storage === "local") {
+          const dstDir = parent ? path.join(dirs.albums, t.byId.get(parent)?.code ?? "") : path.join(dirs.albums, "_inbox");
+          await fs.mkdir(dstDir, { recursive: true });
+          const dst = path.join(dstDir, path.basename(r.storageKey));
+          try {
+            await moveNoOverwrite(r.storageKey, dst);
+            storageKey = dst;
+            filename = path.basename(dst);
+          } catch (e) {
+            console.error("[album] 移交文件失败,记录保持原归属", r.id, e);
+            continue;
+          }
+        }
+        await db.update(media).set({ albumId: parent, storageKey, filename }).where(eq(media.id, r.id));
+      }
     }
     await db.update(albums).set({ parentId: parent }).where(eq(albums.parentId, a.id));
     await db.delete(albums).where(eq(albums.id, a.id));
@@ -442,6 +590,8 @@ interface ScanState {
   added: number;
   removed: number;
   updated: number;
+  renamed: number;
+  missing: number;
   albumsCreated: number;
   error: string | null;
 }
@@ -451,25 +601,187 @@ export const scanStates: Map<string, ScanState> = (g.__pgsScan ??= new Map());
 
 const SKIP_DIR = /^(\.|@eaDir|#recycle|\$RECYCLE\.BIN|System Volume Information|node_modules$|lost\+found)/i;
 
-async function scanOne(a: AlbumRow, recursive: boolean, s: ScanState, depth: number): Promise<void> {
+/** 软删除宽限期:文件连续缺失超过该时长才真正清理记录(issue §2.1) */
+const MISSING_GRACE_MS = 7 * 86_400_000;
+
+interface ScannedFile {
+  abs: string;
+  name: string;
+  size: number;
+  mtimeMs: number;
+  kind: string;
+  mime: string;
+}
+
+/** 受限并发地 stat 一批文件(网络文件系统上串行 stat 是扫描最慢的部分) */
+async function statAll(paths: string[], concurrency = 8): Promise<Array<{ abs: string; size: number; mtimeMs: number }>> {
+  const out: Array<{ abs: string; size: number; mtimeMs: number }> = [];
+  let i = 0;
+  const worker = async () => {
+    while (i < paths.length) {
+      const p = paths[i++];
+      const st = await fs.stat(p).catch(() => null);
+      if (st?.isFile()) out.push({ abs: p, size: st.size, mtimeMs: Math.round(st.mtimeMs) });
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, paths.length) }, worker));
+  return out;
+}
+
+async function scanOne(a: AlbumRow, recursive: boolean, s: ScanState, depth: number, blocked: Set<string>): Promise<void> {
   if (!a.rootPath) return;
-  const blocked = await blockedExtKeys();
   const entries = await fs.readdir(a.rootPath, { withFileTypes: true });
-  const files: Array<{ abs: string; name: string; size: number; mtime: Date; kind: string; mime: string }> = [];
+  const candidates: Array<{ abs: string; name: string; kind: string; mime: string }> = [];
+  const subdirs: string[] = [];
   for (const e of entries) {
     const abs = path.join(a.rootPath, e.name);
-    if (e.isDirectory() && recursive && depth < 12 && !SKIP_DIR.test(e.name)) {
-      const t = await loadTree();
-      let child = (t.children.get(a.id) ?? []).find((c) => c.rootPath === abs);
+    if (e.isDirectory()) {
+      if (recursive && depth < 12 && !SKIP_DIR.test(e.name)) subdirs.push(abs);
+    } else if (e.isFile() && !e.name.startsWith(".")) {
+      const k = detectKind(e.name);
+      if (!k) continue;
+      // 已加入删除黑名单的文件:扫描时跳过,不会被重新入库
+      if (blocked.has(abs)) continue;
+      candidates.push({ abs, name: e.name, kind: k.kind, mime: k.mime });
+    }
+  }
+
+  const stats = await statAll(candidates.map((c) => c.abs));
+  const statByPath = new Map(stats.map((x) => [x.abs, x]));
+  const files: ScannedFile[] = [];
+  for (const c of candidates) {
+    const st = statByPath.get(c.abs);
+    if (st) files.push({ ...c, size: st.size, mtimeMs: st.mtimeMs });
+  }
+
+  const existing = await db
+    .select({ id: media.id, key: media.storageKey, size: media.size, mtimeMs: media.mtimeMs, missingAt: media.missingAt })
+    .from(media)
+    .where(and(eq(media.albumId, a.id), eq(media.storage, "ext")));
+  const known = new Map(existing.map((r) => [r.key, r]));
+  const seen = new Set<string>();
+  const fresh: Array<typeof media.$inferInsert> = [];
+  const changed: string[] = [];
+  const revived: string[] = [];
+  for (const f of files) {
+    seen.add(f.abs);
+    const old = known.get(f.abs);
+    if (!old) {
+      fresh.push({
+        id: randomId(12), albumId: a.id, kind: f.kind, filename: f.name, mime: f.mime, size: f.size, mtimeMs: f.mtimeMs,
+        sortAt: new Date(f.mtimeMs), storage: "ext", storageKey: f.abs, searchText: f.name.toLowerCase(), status: "pending",
+      });
+    } else if (old.missingAt) {
+      revived.push(old.id);
+    } else if (old.size !== f.size || (old.mtimeMs !== null && old.mtimeMs !== f.mtimeMs)) {
+      // 变更检测用 (size, mtime):同尺寸覆盖也能被发现(issue §2.3)
+      changed.push(old.id);
+      await db.update(media).set({ size: f.size, mtimeMs: f.mtimeMs, status: "pending" }).where(eq(media.id, old.id));
+    }
+  }
+  if (revived.length) {
+    // 文件重新出现:清掉缺失标记,记录与备注都保留
+    await db.update(media).set({ missingAt: null }).where(inArray(media.id, revived));
+  }
+
+  // 重命名识别:消失的与新增的按 (size, mtime) 一对一配对,命中就改 storage_key 而不是删+建
+  const goneRows = existing.filter((r) => !seen.has(r.key));
+  const paired = new Set<string>();
+  const renamePairs: Array<{ id: string; from: string; to: string; name: string }> = [];
+  if (goneRows.length && fresh.length) {
+    const bySig = new Map<string, typeof fresh>();
+    for (const f of fresh) {
+      const sig = `${f.size}:${f.mtimeMs}`;
+      (bySig.get(sig) ?? bySig.set(sig, []).get(sig)!).push(f);
+    }
+    for (const r of goneRows) {
+      if (r.mtimeMs === null) continue;
+      const bucket = bySig.get(`${r.size}:${r.mtimeMs}`);
+      const hit = bucket?.find((f) => !paired.has(f.storageKey as string));
+      if (!hit) continue;
+      paired.add(hit.storageKey as string);
+      renamePairs.push({ id: r.id, from: r.key, to: hit.storageKey as string, name: path.basename(hit.storageKey as string) });
+    }
+  }
+
+  // 消失的文件:先做熔断判断(在写入任何改动之前),再软删除,超过宽限期才真正清理。
+  // 熔断只统计「本次新消失」的文件:已标记 missing_at 的记录属于既有状态,
+  // 若把它们算进比例,一次合法的大批量删除会让后续每次扫描都超阈值而永久失败。
+  const gone = goneRows.filter((r) => !renamePairs.some((p) => p.id === r.id));
+  const newlyGone = gone.filter((r) => !r.missingAt);
+  if (newlyGone.length) {
+    const total = existing.length;
+    const ratio = total ? newlyGone.length / total : 0;
+    if (total >= config.scanPruneMinCount && ratio > config.scanPruneMaxRatio) {
+      // 目录暂时为空 / 盘没挂上:中止清理,保留全部记录,让管理员确认(issue §2.1)
+      throw new Error(
+        `检测到 ${newlyGone.length}/${total} 个文件消失(${Math.round(ratio * 100)}%),已中止清理并保留现有记录。` +
+          `若确属预期(如批量删除),请调大 SCAN_PRUNE_MAX_RATIO 或手动删除后再扫描。`,
+      );
+    }
+  }
+
+  for (const p of renamePairs) {
+    await db.update(media).set({ storageKey: p.to, filename: p.name }).where(eq(media.id, p.id));
+    s.renamed++;
+  }
+
+  const toInsert = fresh.filter((f) => !paired.has(f.storageKey as string));
+  for (let i = 0; i < toInsert.length; i += 500) {
+    const ins = await db.insert(media).values(toInsert.slice(i, i + 500)).onConflictDoNothing().returning({ id: media.id });
+    s.added += ins.length;
+    ins.forEach((r) => enqueue(r.id));
+  }
+  changed.forEach((id) => enqueue(id));
+  s.updated += changed.length;
+
+  // 软删除:首次缺失只打标记,超过宽限期才真正清理
+  if (gone.length) {
+    const now = Date.now();
+    const expired: string[] = [];
+    const newlyMissing: string[] = [];
+    for (const r of gone) {
+      if (r.missingAt && now - r.missingAt.getTime() > MISSING_GRACE_MS) expired.push(r.id);
+      else if (!r.missingAt) newlyMissing.push(r.id);
+    }
+    if (newlyMissing.length) {
+      await db.update(media).set({ missingAt: new Date() }).where(inArray(media.id, newlyMissing));
+      s.missing += newlyMissing.length;
+    }
+    if (expired.length) {
+      // 超过宽限期仍缺失:仅清理记录,不进入删除黑名单
+      await deleteMediaByIds(expired, false, { block: false });
+      s.removed += expired.length;
+    }
+  }
+
+  // 子目录:递归扫描存在的,消失的连同记录一起软/硬清理(避免幽灵相册)
+  if (recursive) {
+    const t = await loadTree();
+    const kids = t.children.get(a.id) ?? [];
+    const seenDirs = new Set(subdirs);
+    for (const child of kids) {
+      if (child.kind === "mounted" && child.rootPath && !seenDirs.has(child.rootPath)) {
+        const st = await fs.stat(child.rootPath).catch(() => null);
+        if (!st?.isDirectory()) {
+          const rows = await db.select({ id: media.id }).from(media).where(eq(media.albumId, child.id));
+          if (rows.length) await db.update(media).set({ missingAt: new Date() }).where(inArray(media.id, rows.map((r) => r.id)));
+          s.missing += rows.length;
+          continue;
+        }
+      }
+    }
+    for (const dir of subdirs) {
+      let child = kids.find((c) => c.rootPath === dir);
       if (!child) {
-        const [dup] = await db.select().from(albums).where(eq(albums.rootPath, abs)).limit(1);
+        const [dup] = await db.select().from(albums).where(eq(albums.rootPath, dir)).limit(1);
         if (dup) child = dup;
         else {
           const [created] = await db
             .insert(albums)
             .values({
-              id: randomId(14), code: `dir_${randomId(8)}`, name: e.name, parentId: a.id, kind: "mounted", storage: "ext",
-              rootPath: abs, visibility: a.visibility,
+              id: randomId(14), code: `dir_${randomId(8)}`, name: path.basename(dir), parentId: a.id, kind: "mounted", storage: "ext",
+              rootPath: dir, visibility: a.visibility, readonly: a.readonly,
             })
             .returning();
           child = created;
@@ -477,50 +789,8 @@ async function scanOne(a: AlbumRow, recursive: boolean, s: ScanState, depth: num
           invalidateAlbums();
         }
       }
-      await scanOne(child, recursive, s, depth + 1);
-    } else if (e.isFile() && !e.name.startsWith(".")) {
-      const k = detectKind(e.name);
-      if (!k) continue;
-      const abs = path.join(a.rootPath, e.name);
-      // 已加入删除黑名单的文件:扫描时跳过,不会被重新入库
-      if (blocked.has(abs)) continue;
-      const st = await fs.stat(abs).catch(() => null);
-      if (st) files.push({ abs, name: e.name, size: st.size, mtime: st.mtime, kind: k.kind, mime: k.mime });
+      await scanOne(child, recursive, s, depth + 1, blocked);
     }
-  }
-  const existing = await db
-    .select({ id: media.id, key: media.storageKey, size: media.size })
-    .from(media)
-    .where(and(eq(media.albumId, a.id), eq(media.storage, "ext")));
-  const known = new Map(existing.map((r) => [r.key, r]));
-  const seen = new Set<string>();
-  const fresh: Array<typeof media.$inferInsert> = [];
-  const changed: string[] = [];
-  for (const f of files) {
-    seen.add(f.abs);
-    const old = known.get(f.abs);
-    if (!old) {
-      fresh.push({
-        id: randomId(12), albumId: a.id, kind: f.kind, filename: f.name, mime: f.mime, size: f.size, sortAt: f.mtime,
-        storage: "ext", storageKey: f.abs, searchText: f.name.toLowerCase(), status: "pending",
-      });
-    } else if (old.size !== f.size) {
-      changed.push(old.id);
-      await db.update(media).set({ size: f.size, status: "pending" }).where(eq(media.id, old.id));
-    }
-  }
-  for (let i = 0; i < fresh.length; i += 500) {
-    const ins = await db.insert(media).values(fresh.slice(i, i + 500)).onConflictDoNothing().returning({ id: media.id });
-    s.added += ins.length;
-    ins.forEach((r) => enqueue(r.id));
-  }
-  changed.forEach((id) => enqueue(id));
-  s.updated += changed.length;
-  const gone = existing.filter((r) => !seen.has(r.key)).map((r) => r.id);
-  if (gone.length) {
-    // 磁盘上已消失的文件:仅清理记录,不进入删除黑名单
-    await deleteMediaByIds(gone, false, { block: false });
-    s.removed += gone.length;
   }
   await db.update(albums).set({ lastScanAt: new Date() }).where(eq(albums.id, a.id));
 }
@@ -532,13 +802,16 @@ export async function scanAlbum(code: string, recursive = true): Promise<ScanSta
   if (a.kind !== "mounted" || !a.rootPath) throw E.badRequest("只有挂载的目录相册可以扫描");
   if (scanStates.get(a.id)?.running) throw E.conflict("该相册正在扫描中");
   const s: ScanState = {
-    running: true, startedAt: new Date().toISOString(), finishedAt: null, added: 0, removed: 0, updated: 0, albumsCreated: 0, error: null,
+    running: true, startedAt: new Date().toISOString(), finishedAt: null, added: 0, removed: 0, updated: 0, renamed: 0,
+    missing: 0, albumsCreated: 0, error: null,
   };
   scanStates.set(a.id, s);
   try {
     const st = await fs.stat(a.rootPath).catch(() => null);
     if (!st?.isDirectory()) throw new Error(`目录不可访问: ${a.rootPath}(为避免误删,已保留现有记录)`);
-    await scanOne(a, recursive, s, 0);
+    // 扫描开始时一次性取黑名单,避免长扫描里反复过期重查
+    const blocked = await blockedExtKeys();
+    await scanOne(a, recursive, s, 0, blocked);
   } catch (e) {
     s.error = String((e as Error).message ?? e);
   } finally {
@@ -552,15 +825,14 @@ export async function scanAlbum(code: string, recursive = true): Promise<ScanSta
 
 /** 目录浏览(挂载对话框用):列出子目录 */
 export async function browseDirs(p: string) {
-  const abs = path.resolve(p || "/");
-  assertMountAllowed(abs);
+  const abs = await assertMountAllowed(path.resolve(p || "/"));
   const entries = await fs.readdir(abs, { withFileTypes: true }).catch(() => {
     throw E.badRequest("无法读取该目录");
   });
   return {
     path: abs,
     parent: path.dirname(abs) === abs ? null : path.dirname(abs),
-    dirs: entries.filter((e) => e.isDirectory() && !e.name.startsWith(".")).map((e) => e.name).sort((a, b) => a.localeCompare(b)),
+    dirs: entries.filter((e) => e.isDirectory() && !e.name.startsWith(".")).map((e) => e.name).sort((a, b) => collator.compare(a, b)),
   };
 }
 

@@ -17,6 +17,7 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
   const [name, setName] = useState("");
   const [parentAlbum, setParentAlbum] = useState("");
   const [recursive, setRecursive] = useState(true);
+  const [readonly, setReadonly] = useState(true);
   const [visibility, setVisibility] = useState("private");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -40,7 +41,7 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
   async function mount() {
     setBusy(true);
     try {
-      await api("/albums/mount", { method: "POST", json: { path, name: name || undefined, parent: parentAlbum || null, recursive, visibility } });
+      await api("/albums/mount", { method: "POST", json: { path, name: name || undefined, parent: parentAlbum || null, recursive, visibility, readonly } });
       onDone();
       onClose();
     } catch (e) {
@@ -89,6 +90,9 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
           </label>
           <label className="mt-5 flex items-center gap-2 text-sm">
             <input type="checkbox" checked={recursive} onChange={(e) => setRecursive(e.target.checked)} /> 子目录生成嵌套相册
+          </label>
+          <label className="mt-5 flex items-center gap-2 text-sm" title="只读时本系统不会写入、移动或删除该目录下的文件">
+            <input type="checkbox" checked={readonly} onChange={(e) => setReadonly(e.target.checked)} /> 只读挂载(推荐)
           </label>
         </div>
         {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
@@ -203,7 +207,7 @@ export function AlbumManager() {
                 )}
                 <span className="font-medium">{a.name}</span>
                 <span className="chip">{a.visibility === "public" ? "公开" : "私有"}</span>
-                <span className="chip">{a.kind === "mounted" ? "挂载" : a.storage === "s3" ? "受管·S3" : "受管·本地"}</span>
+                <span className="chip">{a.kind === "mounted" ? (a.readonly ? "挂载·只读" : "挂载·可写") : a.storage === "s3" ? "受管·S3" : "受管·本地"}</span>
                 <code className="muted text-xs">{a.code}</code>
                 <span className="muted text-xs">{a.counts.media} 项 · {bytes(a.counts.size)}</span>
                 {kids > 0 && (

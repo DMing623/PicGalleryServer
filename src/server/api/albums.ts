@@ -42,7 +42,7 @@ route("POST", "/albums/mount", "album.mount", async (ctx) => {
   const b = await readJson(ctx.req);
   const code = await mountDir({
     path: b.path, name: b.name, parent: (b.parent as string) || null, recursive: b.recursive !== false, visibility: b.visibility,
-    scan: b.scan !== false,
+    scan: b.scan !== false, readonly: b.readonly,
   });
   return new Response(JSON.stringify({ ok: true, data: await albumDetail(code, ctx.user) }), {
     status: 201,

@@ -31,7 +31,7 @@ route("DELETE", "/keys/:id", "keys", async (ctx) => {
   return { deleted: true };
 });
 
-/** 按明文密钥删除: DELETE /keys?key=xxxx */
+/** 按明文密钥删除: DELETE /keys?key=xxxx(兼容旧写法) */
 route("DELETE", "/keys", "keys", async (ctx) => {
   const k = ctx.q.get("key");
   if (!k) throw E.badRequest("缺少 key 参数");
@@ -39,7 +39,21 @@ route("DELETE", "/keys", "keys", async (ctx) => {
   return { deleted: true };
 });
 
+/** 推荐写法:密钥放 body,避免明文进访问日志(issue §1.5) */
+route("POST", "/keys/revoke", "keys", async (ctx) => {
+  const b = await readJson(ctx.req);
+  const k = typeof b.key === "string" ? b.key : "";
+  if (!k) throw E.badRequest("缺少 key");
+  if (!(await deleteKeyByValue(k))) throw E.notFound("密钥不存在");
+  return { deleted: true };
+});
+
 route("GET", "/keys/verify", "keys", async (ctx) => ({ valid: await verifyKey(ctx.q.get("key"), false) }));
+
+route("POST", "/keys/verify", "keys", async (ctx) => {
+  const b = await readJson(ctx.req);
+  return { valid: await verifyKey(typeof b.key === "string" ? b.key : null, false) };
+});
 
 /* ---------- 用户 ---------- */
 
@@ -48,7 +62,6 @@ const USERNAME = /^[A-Za-z0-9_.-]{3,32}$/;
 const userDto = (u: typeof users.$inferSelect) => ({
   id: u.id, username: u.username, role: u.role, disabled: u.disabled, source: u.source, createdAt: u.createdAt, lastLoginAt: u.lastLoginAt,
 });
-
 route("GET", "/users", "users", async () => {
   const rows = await db.select().from(users).orderBy(users.createdAt);
   return { users: rows.map(userDto), roles: ROLES };
@@ -87,6 +100,8 @@ route("PATCH", "/users/:id", "users", async (ctx) => {
     const pw = str(b.password, "password");
     validatePasswordStrength(pw);
     set.passwordHash = await hashPassword(pw);
+    // 管理员重置密码后,该用户的所有旧令牌立即失效(issue §1.4)
+    set.tokenVersion = (row.tokenVersion ?? 0) + 1;
   }
   if (!Object.keys(set).length) throw E.badRequest("没有可更新的字段");
   await db.update(users).set(set).where(eq(users.id, row.id));
@@ -106,9 +121,34 @@ route("DELETE", "/users/:id", "users", async (ctx) => {
 
 /* ---------- 系统 ---------- */
 
-route("GET", "/health", "public", async () => {
-  await db.execute(sql`select 1`);
-  return { status: "ok", version: config.version };
+/**
+ * 健康检查(issue §3.1/§10.6):
+ *  - /health       liveness:进程活着就返回 ok(供容器 HEALTHCHECK 用,不依赖数据库)
+ *  - /health/ready readiness:数据库连通 + DATA_DIR 可写 + 磁盘剩余空间
+ */
+route("GET", "/health", "public", async () => ({ status: "ok", version: config.version }));
+
+route("GET", "/health/ready", "public", async () => {
+  const checks: Record<string, { ok: boolean; detail?: string }> = {};
+  try {
+    await db.execute(sql`select 1`);
+    checks.db = { ok: true };
+  } catch (e) {
+    checks.db = { ok: false, detail: String((e as Error)?.message ?? e).slice(0, 200) };
+  }
+  try {
+    await fs.access(config.dataDir, fs.constants.W_OK);
+    checks.dataDir = { ok: true };
+  } catch {
+    checks.dataDir = { ok: false, detail: "DATA_DIR 不可写" };
+  }
+  const disk = await fs.statfs(config.dataDir).catch(() => null);
+  if (disk) {
+    const freeMb = Math.round((Number(disk.bavail) * Number(disk.bsize)) / 1048576);
+    checks.disk = { ok: freeMb > 64, detail: `剩余 ${freeMb}MB` };
+  }
+  const ok = Object.values(checks).every((c) => c.ok);
+  return json({ ok, data: { status: ok ? "ready" : "degraded", version: config.version, checks } }, { status: ok ? 200 : 503 });
 });
 
 let ffCache: { at: number; ffmpeg: boolean; ffprobe: boolean } | null = null;
@@ -116,7 +156,11 @@ function probeBin(bin: string): Promise<boolean> {
   return new Promise((r) => execFile(bin, ["-version"], { timeout: 5000 }, (e) => r(!e)));
 }
 
+let statusCache: { at: number; value: Record<string, unknown> } | null = null;
+
 route("GET", "/status", "status", async () => {
+  // 系统页每 3 秒轮询一次,全表聚合很贵:缓存 5 秒(issue §6.3)
+  if (statusCache && Date.now() - statusCache.at < 5000) return statusCache.value;
   if (!ffCache || Date.now() - ffCache.at > 60_000) {
     ffCache = { at: Date.now(), ffmpeg: await probeBin(config.ffmpeg), ffprobe: await probeBin(config.ffprobe) };
   }
@@ -132,7 +176,7 @@ route("GET", "/status", "status", async () => {
     FROM pgs_media`);
   const disk = await fs.statfs(config.dataDir).catch(() => null);
   const mem = process.memoryUsage();
-  return {
+  const value = {
     app: config.appName,
     version: config.version,
     uptimeSec: Math.round(process.uptime()),
@@ -143,8 +187,16 @@ route("GET", "/status", "status", async () => {
     tools: { ffmpeg: ffCache.ffmpeg, ffprobe: ffCache.ffprobe, s3: s3Available() },
     memory: { rss: mem.rss, heapUsed: mem.heapUsed },
     disk: disk ? { freeBytes: Number(disk.bavail) * Number(disk.bsize), totalBytes: Number(disk.blocks) * Number(disk.bsize) } : null,
-    config: { dataDir: config.dataDir, thumbConcurrency: config.thumbConcurrency, thumbWidth: config.thumbWidth, previewWidth: config.previewWidth, hdWidth: config.hd.width, hdCacheMaxMb: Math.round(config.hd.cacheMaxBytes / 1048576), hdCacheTtlDays: config.hd.cacheTtlMs / 86400000, hdConcurrency: config.hd.concurrency, maxUploadMb: config.maxUploadMb, scanIntervalMin: config.scanIntervalMin },
+    config: {
+      dataDir: config.dataDir, thumbConcurrency: config.thumbConcurrency, videoConcurrency: config.videoConcurrency,
+      heicConcurrency: config.heicConcurrency, thumbWidth: config.thumbWidth, previewWidth: config.previewWidth,
+      hdWidth: config.hd.width, hdCacheMaxMb: Math.round(config.hd.cacheMaxBytes / 1048576), hdCacheTtlDays: config.hd.cacheTtlMs / 86400000,
+      hdConcurrency: config.hd.concurrency, maxUploadMb: config.maxUploadMb, scanIntervalMin: config.scanIntervalMin,
+      guestMeta: config.guestMeta, trustProxy: config.trustProxy, sessionSecretSource: config.sessionSecretSource,
+    },
   };
+  statusCache = { at: Date.now(), value };
+  return value;
 });
 
 route("GET", "/status/queue", "status", async () => queueStats());

@@ -14,6 +14,7 @@ interface AlbumLite {
   kind: string;
   storage: string;
   rootPath: string | null;
+  readonly?: boolean;
 }
 
 interface Job {
@@ -88,9 +89,11 @@ export default function UploadDialog({ defaultAlbum, onClose }: { defaultAlbum: 
   }, [albums]);
 
   const target = albums.find((a) => a.code === album);
+  // 只读挂载目录不允许写入,提前禁用上传按钮并给出说明,避免用户上传后才收到 403
+  const readOnlyTarget = !!target?.readonly;
   const where = target
     ? target.kind === "mounted"
-      ? `服务器目录 ${target.rootPath ?? "(挂载目录)"}`
+      ? `服务器目录 ${target.rootPath ?? "(挂载目录)"}${target.readonly ? "(只读)" : ""}`
       : target.storage === "s3"
         ? "对象存储 (S3)"
         : `数据目录 albums/${target.code}/`
@@ -149,7 +152,7 @@ export default function UploadDialog({ defaultAlbum, onClose }: { defaultAlbum: 
               <option value="">未归类(收件箱)</option>
               {options.map(({ a, d }) => (
                 <option key={a.code} value={a.code}>
-                  {"　".repeat(d)}{a.name} {a.kind === "mounted" ? "· 目录" : a.storage === "s3" ? "· S3" : ""}
+                  {"　".repeat(d)}{a.name} {a.kind === "mounted" ? (a.readonly ? "· 目录(只读)" : "· 目录") : a.storage === "s3" ? "· S3" : ""}
                 </option>
               ))}
             </select>
@@ -170,6 +173,11 @@ export default function UploadDialog({ defaultAlbum, onClose }: { defaultAlbum: 
           )}
         </div>
         <p className="muted mt-2 text-xs">📍 文件将保存到:{where}</p>
+        {readOnlyTarget && (
+          <p className="mt-2 rounded-xl p-2 text-xs" style={{ background: "rgba(220,38,38,.12)", color: "#b91c1c" }}>
+            该挂载相册为只读,无法上传。如需写入,请让管理员在相册设置里关闭「只读」。
+          </p>
+        )}
         <label className="mt-2 flex items-center gap-2 text-sm">
           <input type="checkbox" checked={dupSkip} onChange={(e) => setDupSkip(e.target.checked)} disabled={running} /> 跳过同一相册内的重复文件(按内容哈希)
         </label>
@@ -236,7 +244,7 @@ export default function UploadDialog({ defaultAlbum, onClose }: { defaultAlbum: 
         <div className="mt-4 flex items-center gap-2">
           <span className="muted text-xs">{jobs.length ? `共 ${jobs.length} 个文件` : "支持图片与视频,可多选"}</span>
           <button className="btn ml-auto" onClick={() => setJobs([])} disabled={running || !jobs.length}>清空</button>
-          <button className="btn btn-primary" onClick={start} disabled={running || !pendingCount}>
+          <button className="btn btn-primary" onClick={start} disabled={running || !pendingCount || readOnlyTarget}>
             {running ? "上传中…" : `开始上传${pendingCount ? ` (${pendingCount})` : ""}`}
           </button>
         </div>

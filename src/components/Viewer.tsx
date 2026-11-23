@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import { bytes, dateTime } from "@/lib/format";
+import { useApp } from "./AppProvider";
 import { useDialog } from "./DialogProvider";
 import type { MediaItem } from "./Gallery";
 import MetaPanel, { type Meta } from "./MetaPanel";
@@ -335,6 +336,7 @@ export default function Viewer({
   hasMore: boolean;
 }) {
   const dlg = useDialog();
+  const { can } = useApp();
   const cur = items[index];
   const root = useRef<HTMLDivElement>(null);
   const [d, setD] = useState<Detail | null>(null);
@@ -420,18 +422,24 @@ export default function Viewer({
 
   async function remove() {
     if (!d) return;
+    // 物理删除源文件需要 media.purge(仅 admin);其它角色只能"排除"(进删除黑名单)
+    const canPurge = can("media.purge");
     const pick = await dlg.confirmCheck({
       title: "删除文件",
       message: `即将删除「${d.filename}」。`,
-      checkLabel: "同时删除服务器上的原文件(彻底删除,不可恢复)",
+      checkLabel: canPurge ? "同时删除服务器上的原文件(彻底删除,不可恢复)" : "同时删除服务器上的原文件(需要管理员权限)",
       checkHint:
         "不勾选时:仅把该文件从本项目排除(加入删除黑名单),服务器上的源文件保持原样;之后可在 设置 → 删除黑名单 中解除并恢复。",
       confirmText: "删除",
       danger: true,
     });
     if (!pick) return;
+    if (pick.checked && !canPurge) {
+      setErr("物理删除源文件需要管理员权限;已按「仅排除」处理");
+    }
+    const purge = pick.checked && canPurge;
     try {
-      await api(`/media/${cur.id}?purge=${pick.checked ? 1 : 0}`, { method: "DELETE" });
+      await api(`/media/${cur.id}?purge=${purge ? 1 : 0}`, { method: "DELETE" });
       onRemoved(cur.id);
     } catch (e) {
       setErr((e as Error).message);

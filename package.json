@@ -1,6 +1,6 @@
 {
   "name": "picgalleryserver",
-  "version": "1.2.0",
+  "version": "1.3.1",
   "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
   "description": "自托管的图片与视频相册服务:嵌套相册、缩略图生成、EXIF/AI 绘图元数据解析、原文件密钥保护、多用户权限与完整 API",
@@ -8,6 +8,12 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/DMing623/PicGalleryServer.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "pgs": "cli/pgs.mjs"
   },
   "scripts": {
     "dev": "next dev",
@@ -18,8 +24,6 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1175.0",
-    "@types/busboy": "^1.5.5",
-    "@types/heic-convert": "^2.1.1",
     "busboy": "^1.6.0",
     "dejavu-fonts-ttf": "^2.37.3",
     "dotenv": "17.3.1",
@@ -34,6 +38,8 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.17",
+    "@types/busboy": "^1.5.5",
+    "@types/heic-convert": "^2.1.1",
     "@types/node": "22.19.15",
     "@types/pg": "8.18.0",
     "@types/react": "19.2.14",

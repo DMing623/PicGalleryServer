@@ -114,15 +114,23 @@ export interface ImageMetaResult {
 const EXIF_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
- * 读取待解析的图片内容。
- * 直接把路径交给 exifr 时,exifr 会自行打开 FileHandle 且不显式关闭,
- * 在 Node 24+(GC 时抛 ERR_INVALID_STATE)会打断入库流程;这里统一读成 Buffer 再解析。
+ * 读取待解析的图片内容(issue §6.1)。
+ * EXIF/XMP/IPTC/ICC 都在文件头部,只需读前面一段;读不到再按需放大到 8MB,
+ * 避免每张图都把整文件(手机原片 3~8MB、扫描件几十 MB)读进内存。
  */
-async function readExifInput(file: string): Promise<Buffer | null> {
+async function readExifInput(file: string, limit = config.exifReadBytes): Promise<Buffer | null> {
   try {
     const st = await fs.stat(file);
     if (!st.isFile() || st.size > EXIF_MAX_BYTES) return null;
-    return await fs.readFile(file);
+    const want = Math.min(st.size, limit);
+    const fh = await fs.open(file, "r");
+    try {
+      const buf = Buffer.allocUnsafe(want);
+      const { bytesRead } = await fh.read(buf, 0, want, 0);
+      return buf.subarray(0, bytesRead);
+    } finally {
+      await fh.close();
+    }
   } catch {
     return null;
   }
@@ -130,17 +138,24 @@ async function readExifInput(file: string): Promise<Buffer | null> {
 
 export async function extractImageMeta(file: string, facts: ImageFacts): Promise<ImageMetaResult> {
   let parsed: Record<string, Seg> = {};
+  const parseOpts = {
+    tiff: true, ifd0: true, exif: true, gps: true, interop: true, xmp: true, iptc: true, icc: true,
+    jfif: true, ihdr: true, makerNote: false, userComment: true, multiSegment: true,
+    mergeOutput: false, translateKeys: true, translateValues: true, reviveValues: true,
+    sanitize: true, chunked: true,
+  } as unknown as Parameters<typeof exifr.parse>[1];
   try {
-    const input = await readExifInput(file);
-    const out = input
-      ? ((await exifr.parse(input, {
-          tiff: true, ifd0: true, exif: true, gps: true, interop: true, xmp: true, iptc: true, icc: true,
-          jfif: true, ihdr: true, makerNote: false, userComment: true, multiSegment: true,
-          mergeOutput: false, translateKeys: true, translateValues: true, reviveValues: true,
-          sanitize: true, chunked: true,
-        } as unknown as Parameters<typeof exifr.parse>[1])) as Record<string, Seg> | undefined)
-      : undefined;
-    if (out && typeof out === "object") parsed = out;
+    // 先读文件头;解析不到任何段时再放大到 8MB(部分格式的 XMP/ICC 位置靠后)
+    for (const limit of [config.exifReadBytes, 8 * 1024 * 1024]) {
+      const input = await readExifInput(file, limit);
+      if (!input) break;
+      const out = (await exifr.parse(input, parseOpts)) as Record<string, Seg> | undefined;
+      if (out && typeof out === "object" && Object.keys(out).length) {
+        parsed = out;
+        break;
+      }
+      if (limit >= 8 * 1024 * 1024) break;
+    }
   } catch {
     /* 无元数据或格式不支持 */
   }
@@ -347,11 +362,16 @@ export async function probeVideo(file: string, mime: string, size: number): Prom
   }
 }
 
-/** 用 ffmpeg 抽取一帧到 outPng。失败抛错。 */
+/** 用 ffmpeg 抽取一帧到 outPng(直接缩放,避免 4K 全分辨率 PNG 占内存)。失败抛错。 */
 export async function grabVideoFrame(file: string, outPng: string, atSec: number): Promise<void> {
   const r = await run(
     config.ffmpeg,
-    ["-nostdin", "-hide_banner", "-loglevel", "error", "-ss", String(Math.max(0, atSec)), "-i", file, "-frames:v", "1", "-an", "-threads", "1", "-y", outPng],
+    [
+      "-nostdin", "-hide_banner", "-loglevel", "error", "-ss", String(Math.max(0, atSec)),
+      "-i", file, "-frames:v", "1", "-an", "-threads", "1",
+      "-vf", `scale=${Math.min(config.previewWidth, 1600)}:-2`,
+      "-y", outPng,
+    ],
     60_000,
   );
   if (!r.ok) throw new Error("ffmpeg 抽帧失败(请确认已安装 ffmpeg 并配置 FFMPEG_PATH)");
@@ -359,8 +379,14 @@ export async function grabVideoFrame(file: string, outPng: string, atSec: number
 
 /* ---------- 搜索文本 ---------- */
 
-export function buildSearchText(filename: string, note: string, meta: MediaMeta | null): string {
-  const parts: string[] = [filename, note];
+/**
+ * 生成搜索文本。
+ * 注意:这里**不包含管理员备注**——`GET /media?q=` 是公开接口,
+ * 若把 note 拼进 search_text,游客就能用关键词逐字探测备注内容(issue §11.3)。
+ * 备注搜索改由 listMedia 在登录用户查询时单独匹配 note 列。
+ */
+export function buildSearchText(filename: string, meta: MediaMeta | null): string {
+  const parts: string[] = [filename];
   if (meta) {
     const s = meta.summary;
     parts.push(

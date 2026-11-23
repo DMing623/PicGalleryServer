@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import fs from "node:fs/promises";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { db } from "@/db";
 import { runBootstrap } from "@/db/bootstrap";
 import { media } from "@/db/schema";
@@ -20,15 +20,43 @@ import { enqueue, setRunner } from "./queue";
 
 const g = globalThis as typeof globalThis & { __pgsReady?: Promise<void> };
 
+/**
+ * 启动安全校验(issue §1.3):生产环境不允许用仓库里公开的占位密码上线。
+ * SESSION_SECRET 缺失/占位时会自动生成并持久化(见 secret.ts),这里只拦管理员密码。
+ */
+function assertSecureConfig() {
+  if (process.env.NODE_ENV !== "production") return;
+  if (process.env.NEXT_PHASE === "phase-production-build") return;
+  const pw = config.adminPassword;
+  const weak = ["admin123456", "change-this-password", "changeme", "admin", "password"].includes(pw.toLowerCase());
+  if (weak || pw.length < 8) {
+    throw new Error(
+      "ADMIN_PASSWORD 仍是默认/占位值,拒绝在生产环境启动。请在 .env 中设置一个足够强的管理员密码后重启。",
+    );
+  }
+  if (config.sessionSecretSource === "derived") {
+    console.warn("[ready] 未能持久化 SESSION_SECRET,当前使用由管理员密码派生的密钥(修改密码会使所有会话失效)");
+  }
+}
+
 async function init() {
+  assertSecureConfig();
   await runBootstrap();
   await Promise.all(Object.values(dirs).map((d) => fs.mkdir(d, { recursive: true })));
   await syncEnvAdmin();
   setRunner(processMedia);
 
-  // 恢复上次未处理完的任务
-  const pending = await db.select({ id: media.id }).from(media).where(eq(media.status, "pending")).limit(50_000);
+  // 恢复上次未处理完的任务:分批入队,避免一次性把几十万 id 塞进内存(issue §2.9)
+  const pending = await db
+    .select({ id: media.id })
+    .from(media)
+    .where(eq(media.status, "pending"))
+    .orderBy(desc(media.createdAt))
+    .limit(20_000);
   pending.forEach((r) => enqueue(r.id));
+  if (pending.length >= 20_000) {
+    console.warn("[ready] pending 任务超过 20000 条,已优先恢复最近的 20000 条;其余请用「重新处理」触发");
+  }
 
   const hourly = setInterval(() => {
     void purgeExpiredKeys().catch(() => undefined);

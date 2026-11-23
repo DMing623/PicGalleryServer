@@ -11,7 +11,8 @@ import { E } from "./http";
  */
 
 const hashKey = (k: string) => createHash("sha256").update(k).digest("hex");
-const KEY_RE = /^[A-Za-z0-9_-]{8,128}$/;
+/** 密钥最小长度:挡住低熵爆破(issue §1.5/§10.5) */
+const KEY_RE = /^[A-Za-z0-9_-]{16,128}$/;
 
 export async function createKey(input: {
   key?: unknown; label?: unknown; expires?: unknown; ttlHours?: unknown; createdBy: string;
@@ -19,7 +20,7 @@ export async function createKey(input: {
   let key: string;
   if (input.key === undefined || input.key === null || input.key === "") key = randomBytes(18).toString("base64url");
   else if (typeof input.key === "string" && KEY_RE.test(input.key)) key = input.key;
-  else throw E.badRequest("自定义密钥只能含字母数字 _ -,长度 8~128");
+  else throw E.badRequest("自定义密钥只能含字母数字 _ -,长度 16~128");
 
   const mode = input.expires === undefined || input.expires === "" ? "never" : String(input.expires);
   let expiresAt: Date | null = null;
@@ -62,23 +63,29 @@ export async function deleteKeyByValue(key: string): Promise<boolean> {
   return r.length > 0;
 }
 
-/** 验证密钥。countUse=false 用于 Range 续传请求,避免重复计数 */
+/** 验证密钥。countUse=false 用于 Range 续传请求,避免重复计数。一次往返同时完成校验与计数(issue §1.5) */
 export async function verifyKey(key: string | null | undefined, countUse = true): Promise<boolean> {
   if (!key || key.length > 200) return false;
-  const [row] = await db.select().from(downloadKeys).where(eq(downloadKeys.keyHash, hashKey(key))).limit(1);
-  if (!row) return false;
-  if (row.expiresAt && row.expiresAt.getTime() < Date.now()) {
-    void db.delete(downloadKeys).where(eq(downloadKeys.id, row.id)).catch(() => undefined);
-    return false;
-  }
+  const hash = hashKey(key);
   if (countUse) {
-    void db
-      .update(downloadKeys)
-      .set({ useCount: sql`${downloadKeys.useCount} + 1`, lastUsedAt: new Date() })
-      .where(eq(downloadKeys.id, row.id))
-      .catch(() => undefined);
+    const r = await db.execute(sql`
+      UPDATE pgs_download_keys
+         SET use_count = use_count + 1, last_used_at = now()
+       WHERE key_hash = ${hash} AND (expires_at IS NULL OR expires_at > now())
+      RETURNING id`);
+    if (r.rows.length) return true;
+  } else {
+    const r = await db.execute(sql`
+      SELECT id FROM pgs_download_keys
+       WHERE key_hash = ${hash} AND (expires_at IS NULL OR expires_at > now()) LIMIT 1`);
+    if (r.rows.length) return true;
   }
-  return true;
+  // 未命中:若是过期密钥则顺手清理
+  void db
+    .delete(downloadKeys)
+    .where(and(eq(downloadKeys.keyHash, hash), isNotNull(downloadKeys.expiresAt), lt(downloadKeys.expiresAt, new Date())))
+    .catch(() => undefined);
+  return false;
 }
 
 export async function purgeExpiredKeys(): Promise<number> {

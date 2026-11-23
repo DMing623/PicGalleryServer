@@ -6,8 +6,8 @@ import sharp from "sharp";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import {
-  can, checkLoginRate, clearCookie, clearLoginFailures, hashPassword, invalidateUserCache, issueSession, permsOf,
-  recordLoginFailure, sessionCookie, validatePasswordStrength, verifyCredentials, verifyPassword,
+  bumpTokenVersion, can, clearCookie, hashPassword, invalidateUserCache, issueSession, permsOf,
+  sessionCookie, validatePasswordStrength, verifyCredentials, verifyPassword,
 } from "../auth";
 import { config, dirs } from "../config";
 import { E, ok, readJson, str } from "../http";
@@ -19,16 +19,12 @@ import { s3Available } from "../storage";
 /** 认证、站点公开配置、品牌图标、站点设置 */
 
 route("POST", "/auth/login", "public", async (ctx) => {
-  checkLoginRate(ctx.ip);
   const body = await readJson(ctx.req);
-  const user = await verifyCredentials(str(body.username, "username", { max: 64 }), str(body.password, "password", { max: 200 }));
-  if (!user) {
-    recordLoginFailure(ctx.ip);
-    throw E.unauthorized("用户名或密码错误");
-  }
-  clearLoginFailures(ctx.ip);
+  // 限流在 verifyCredentials 内部完成(IP + 用户名双维度),Basic 认证走同一条路径
+  const user = await verifyCredentials(str(body.username, "username", { max: 64 }), str(body.password, "password", { max: 200 }), ctx.ip);
+  if (!user) throw E.unauthorized("用户名或密码错误");
   await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
-  const { token, maxAge } = issueSession(user.id);
+  const { token, maxAge } = issueSession(user.id, user.tokenVersion);
   return ok({ user, perms: permsOf(user), token, expiresInSec: maxAge }, { headers: { "set-cookie": sessionCookie(token, maxAge) } });
 });
 
@@ -52,7 +48,8 @@ route("POST", "/auth/password", "user", async (ctx) => {
   const np = str(body.newPassword, "newPassword");
   validatePasswordStrength(np);
   await db.update(users).set({ passwordHash: await hashPassword(np) }).where(eq(users.id, row.id));
-  invalidateUserCache();
+  // 改密码后让所有旧令牌失效(issue §1.4)
+  await bumpTokenVersion(row.id);
   return { changed: true };
 });
 
@@ -77,7 +74,8 @@ route("GET", "/branding/icon", "public", async () => {
 });
 
 route("POST", "/settings/icon", "settings", async (ctx) => {
-  const { files } = await parseUpload(ctx.req);
+  // 边收边截断:图标上限 2MB,不先写完整文件再检查(issue §1.8)
+  const { files } = await parseUpload(ctx.req, 2 * 1024 * 1024);
   const f = files[0];
   if (!f) throw E.badRequest("缺少图标文件(multipart 字段名任意)");
   try {

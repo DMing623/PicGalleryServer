@@ -16,6 +16,7 @@ export interface AlbumDto {
   rootPath: string | null;
   visibility: "public" | "private";
   effectivePublic: boolean;
+  readonly?: boolean;
   coverId: string | null;
   counts: { media: number; mediaTotal: number; images: number; videos: number; size: number; sizeTotal: number; pending: number; failed: number; children: number };
   lastScanAt: string | null;
@@ -87,6 +88,28 @@ export default function AlbumActions({ album, onChanged, onDeleted }: { album: A
       >
         {album.visibility === "public" ? "🌐 公开 → 设为私有" : "🔒 私有 → 设为公开"}
       </button>
+      {mount && album.kind === "mounted" && (
+        <button
+          className="btn !py-1 text-xs"
+          disabled={busy}
+          onClick={async () => {
+            const next = !album.readonly;
+            if (
+              !next &&
+              !(await dlg.confirm({
+                title: "允许写入该挂载目录",
+                message: `关闭只读后,本系统可以向「${album.name}」所在的服务器目录写入、移动和删除文件。确认允许吗?`,
+                confirmText: "允许写入",
+                danger: true,
+              }))
+            )
+              return;
+            void run(() => api(`/albums/${album.code}`, { method: "PATCH", json: { readonly: next } }));
+          }}
+        >
+          {album.readonly ? "🔒 只读 → 允许写入" : "🔓 可写 → 设为只读"}
+        </button>
+      )}
       {mount && album.kind === "mounted" && (
         <button className="btn !py-1 text-xs" disabled={busy} onClick={() => void run(() => api(`/albums/${album.code}/scan?wait=1`, { method: "POST" }))}>
           ⟳ 重新扫描
