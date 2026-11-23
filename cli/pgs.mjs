@@ -13,7 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-const VERSION = "1.3.4";
+const VERSION = "1.3.5";
 
 /* ---------- 参数解析(util.parseArgs:未知参数直接报错,支持 --k=v 与 -- 结束符) ---------- */
 
@@ -40,6 +40,8 @@ const OPTIONS = {
   json: { type: "boolean" },
   wait: { type: "boolean" },
   tree: { type: "boolean" },
+  links: { type: "boolean" },
+  watch: { type: "boolean" },
   disable: { type: "boolean" },
   enable: { type: "boolean" },
   name: { type: "string" },
@@ -392,7 +394,7 @@ async function main() {
       switch (sub) {
         case undefined:
         case "list": {
-          const r = await call("GET", `/albums${flags.tree ? "?tree=1" : ""}`);
+          const r = await call("GET", `/albums${flags.tree ? "?tree=1" : flags.parent !== undefined ? `?parent=${encodeURIComponent(flags.parent)}` : ""}`);
           if (flags.tree) {
             const walk = (list, d) =>
               list.forEach((a) => {

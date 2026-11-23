@@ -50,6 +50,11 @@ export interface ImageFacts {
 function fmt(v: unknown): string | null {
   if (v === null || v === undefined) return null;
   if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString();
+  // XMP 的多语言字段是 { lang, value } 结构(dc:title / dc:description 等),取 value 而不是整段 JSON
+  if (typeof v === "object" && !Array.isArray(v) && !(v instanceof Uint8Array)) {
+    const lang = (v as { lang?: unknown; value?: unknown }).value;
+    if (typeof lang === "string") return fmt(lang);
+  }
   if (typeof v === "number") return Number.isFinite(v) ? String(Math.round(v * 1e6) / 1e6) : null;
   if (typeof v === "boolean") return v ? "true" : "false";
   if (typeof v === "string") {
@@ -114,6 +119,21 @@ export interface ImageMetaResult {
 const EXIF_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
+ * 判断 exifr 的返回值是否真的解析出了内容。
+ * exifr 在缓冲区被截断时返回 `{ errors: [...] }` 这种"空壳"结果,
+ * 旧实现用 `Object.keys(out).length` 判断成功,会把空壳当成功而停止放大读取,
+ * 导致 TIFF(条带偏移表在文件后部)几乎全部丢元数据。
+ */
+function hasSegments(out: unknown): out is Record<string, Seg> {
+  if (!out || typeof out !== "object") return false;
+  for (const [k, v] of Object.entries(out as Record<string, unknown>)) {
+    if (k === "errors") continue;
+    if (v && typeof v === "object" && Object.keys(v as object).length) return true;
+  }
+  return false;
+}
+
+/**
  * 读取待解析的图片内容(issue §6.1)。
  * EXIF/XMP/IPTC/ICC 都在文件头部,只需读前面一段;读不到再按需放大到 8MB,
  * 避免每张图都把整文件(手机原片 3~8MB、扫描件几十 MB)读进内存。
@@ -136,6 +156,22 @@ async function readExifInput(file: string, limit = config.exifReadBytes): Promis
   }
 }
 
+/** EXIF ColorSpace 码 → 人类可读名称(issue:详情页直接显示 "1" 难以理解) */
+function colorSpaceName(v: unknown, fallback?: string): string | null {
+  const raw = fmt(v);
+  const map: Record<string, string> = { "1": "sRGB", "2": "Adobe RGB", "65535": "未校准", "65534": "未校准" };
+  if (raw && map[raw]) return map[raw];
+  return raw ?? fallback ?? null;
+}
+
+/** sharp 的位深表示 → 人类可读(uchar/ushort/float → 8-bit/16-bit/32-bit) */
+function bitDepthName(v: unknown): string | null {
+  const raw = fmt(v);
+  const map: Record<string, string> = { uchar: "8-bit", ushort: "16-bit", short: "16-bit", uint: "32-bit", int: "32-bit", float: "32-bit", double: "64-bit" };
+  if (raw && map[raw]) return map[raw];
+  return raw;
+}
+
 export async function extractImageMeta(file: string, facts: ImageFacts): Promise<ImageMetaResult> {
   let parsed: Record<string, Seg> = {};
   const parseOpts = {
@@ -145,23 +181,40 @@ export async function extractImageMeta(file: string, facts: ImageFacts): Promise
     sanitize: true, chunked: true,
   } as unknown as Parameters<typeof exifr.parse>[1];
   try {
-    // 先读文件头;解析不到任何段时再放大到 8MB(部分格式的 XMP/ICC 位置靠后)
-    for (const limit of [config.exifReadBytes, 8 * 1024 * 1024]) {
+    // 先读文件头;解析不到任何段时逐级放大(部分格式的 XMP/ICC 位置靠后)。
+    // TIFF 的条带偏移表等结构在文件后部,截断缓冲区会让 exifr 返回只含 errors 的空壳,
+    // 因此 TIFF 直接读到整文件(仍受 EXIF_MAX_BYTES 约束)。
+    const isTiff = /^tiff?$/i.test(facts.format ?? "") || /\.tiff?$/i.test(file);
+    const limits = isTiff
+      ? [config.exifReadBytes, 8 * 1024 * 1024, EXIF_MAX_BYTES]
+      : [config.exifReadBytes, 8 * 1024 * 1024];
+    for (const limit of limits) {
       const input = await readExifInput(file, limit);
       if (!input) break;
       const out = (await exifr.parse(input, parseOpts)) as Record<string, Seg> | undefined;
-      if (out && typeof out === "object" && Object.keys(out).length) {
+      if (hasSegments(out)) {
         parsed = out;
         break;
       }
-      if (limit >= 8 * 1024 * 1024) break;
+      // 已经读到整文件(或到达上限)仍无内容:不必再放大
+      if (input.length < limit) break;
     }
   } catch {
     /* 无元数据或格式不支持 */
   }
 
-  const segs: Seg[] = [parsed.ifd0, parsed.exif, parsed.gps, parsed.xmp, parsed.iptc, parsed.interop, parsed.icc, parsed.jfif]
-    .filter((x): x is Seg => !!x && typeof x === "object");
+  // exifr 把 XMP 按命名空间拆成独立段(dc / photoshop / aux / crs ...),
+  // 只读 parsed.xmp 会漏掉 dc:title、dc:subject、photoshop:DateCreated 等字段。
+  const segOrder = ["ifd0", "exif", "gps", "iptc", "xmp", "dc", "photoshop", "aux", "interop", "icc", "jfif"];
+  const segs: Seg[] = [];
+  for (const k of segOrder) {
+    const s = parsed[k];
+    if (s && typeof s === "object") segs.push(s);
+  }
+  for (const [k, s] of Object.entries(parsed)) {
+    if (segOrder.includes(k) || k === "errors" || k === "ihdr") continue;
+    if (s && typeof s === "object") segs.push(s);
+  }
   const g = (...n: string[]) => pick(segs, ...n);
 
   // PNG 文本块 + 可能的隐写
@@ -204,9 +257,9 @@ export async function extractImageMeta(file: string, facts: ImageFacts): Promise
         width: facts.width,
         height: facts.height,
         megapixels: Math.round((facts.width * facts.height) / 1e4) / 100,
-        colorSpace: fmt(g("ColorSpace")) ?? facts.space ?? null,
+        colorSpace: colorSpaceName(g("ColorSpace"), facts.space),
         iccProfile: fmt(g("ProfileDescription", "DeviceModelDesc")),
-        bitDepth: facts.depth ?? null,
+        bitDepth: bitDepthName(facts.depth ?? g("BitsPerSample")),
         hasAlpha: facts.hasAlpha === undefined ? null : facts.hasAlpha ? "是" : "否",
         density: facts.density ? `${facts.density} DPI` : null,
         orientation: fmt(g("Orientation")) ?? (facts.orientation ? String(facts.orientation) : null),
@@ -262,6 +315,7 @@ export async function extractImageMeta(file: string, facts: ImageFacts): Promise
 
   const sectionNames: Record<string, string> = {
     ifd0: "IFD0", exif: "EXIF", gps: "GPS", interop: "Interop", xmp: "XMP", iptc: "IPTC", icc: "ICC", jfif: "JFIF", ihdr: "PNG-IHDR",
+    dc: "XMP-dc", photoshop: "XMP-photoshop", aux: "XMP-aux",
   };
   for (const [key, label] of Object.entries(sectionNames)) {
     const seg = parsed[key];

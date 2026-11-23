@@ -66,6 +66,9 @@ async function init() {
   void sweepHdCache().catch(() => undefined);
   hourly.unref();
   void purgeExpiredKeys().catch(() => undefined);
+  // 启动时清理上次进程遗留的临时文件:进程刚启动时不可能有正在进行的上传,
+  // tmp/ 里的文件必然是异常中断(崩溃、kill -9)留下的残骸
+  void cleanTmp(0).catch(() => undefined);
 
   if (config.scanIntervalMin > 0) {
     const t = setInterval(() => void scanAllMounted().catch(() => undefined), config.scanIntervalMin * 60_000);
@@ -73,14 +76,22 @@ async function init() {
   }
 }
 
-/** 清理 6 小时前遗留的临时文件(异常中断的上传等) */
-async function cleanTmp() {
+/**
+ * 清理遗留的临时文件(异常中断的上传等)。
+ * @param olderThanMs 只清理修改时间早于该阈值的文件;0 = 全部清理(启动时用)
+ */
+async function cleanTmp(olderThanMs = 6 * 3600_000) {
   const now = Date.now();
+  let removed = 0;
   for (const f of await fs.readdir(dirs.tmp).catch(() => [] as string[])) {
     const p = path.join(dirs.tmp, f);
     const st = await fs.stat(p).catch(() => null);
-    if (st?.isFile() && now - st.mtimeMs > 6 * 3600_000) await fs.unlink(p).catch(() => undefined);
+    if (st?.isFile() && now - st.mtimeMs > olderThanMs) {
+      await fs.unlink(p).catch(() => undefined);
+      removed++;
+    }
   }
+  if (removed) console.log(`[ready] 已清理 ${removed} 个遗留临时文件`);
 }
 
 export function ensureReady(): Promise<void> {

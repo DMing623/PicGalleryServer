@@ -62,7 +62,7 @@ const s3Bucket = process.env.S3_BUCKET?.trim();
 
 export const config = {
   appName: "PicGalleryServer",
-  version: "1.3.4",
+  version: "1.3.5",
   adminUser: process.env.ADMIN_USER?.trim() || "admin",
   adminPassword,
   /** 会话/令牌签名密钥来源:env | file | generated | derived(见 secret.ts) */

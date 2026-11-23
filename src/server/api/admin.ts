@@ -145,7 +145,10 @@ route("GET", "/health/ready", "public", async () => {
   const disk = await fs.statfs(config.dataDir).catch(() => null);
   if (disk) {
     const freeMb = Math.round((Number(disk.bavail) * Number(disk.bsize)) / 1048576);
-    checks.disk = { ok: freeMb > 64, detail: `剩余 ${freeMb}MB` };
+    // 与上传保护同一阈值:低于 MIN_FREE_DISK_MB 时上传已被拒绝(507),
+    // readiness 也应随之降级,否则编排系统无法感知"服务已无法接收新文件"
+    const floor = Math.max(64, config.minFreeDiskMb);
+    checks.disk = { ok: freeMb > floor, detail: `剩余 ${freeMb}MB(阈值 ${floor}MB)` };
   }
   const ok = Object.values(checks).every((c) => c.ok);
   return json({ ok, data: { status: ok ? "ready" : "degraded", version: config.version, checks } }, { status: ok ? 200 : 503 });

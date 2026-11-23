@@ -98,6 +98,30 @@ function isUniqueViolation(e: unknown): boolean {
   return false;
 }
 
+/**
+ * 按 (hash, 相册) 串行化入库,消除"先查后插"的竞态。
+ * 并发上传同一文件时,多个请求会同时查到"不存在"然后各插一条,导致重复记录。
+ * 数据库层没有 (hash, album_id) 唯一约束(album_id 可为 NULL,历史数据也可能已有重复),
+ * 因此在进程内用键控互斥把同一 hash 的入库串起来;跨进程场景仍建议依赖单实例部署。
+ */
+const ingestLocks = new Map<string, Promise<unknown>>();
+
+async function withHashLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = ingestLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const next = prev.then(() => gate).catch(() => gate);
+  ingestLocks.set(key, next);
+  await prev.catch(() => undefined);
+  try {
+    return await fn();
+  } finally {
+    release();
+    // 队尾清理:避免 Map 随上传量无限增长
+    if (ingestLocks.get(key) === next) ingestLocks.delete(key);
+  }
+}
+
 async function uniqueKey(storage: StorageCode, dirKey: string, name: string): Promise<string> {
   const ext = path.extname(name);
   const stem = name.slice(0, name.length - ext.length);
@@ -124,6 +148,16 @@ export interface IngestResult {
 }
 
 export async function ingestOne(
+  file: UploadedTmp,
+  target: IngestTarget,
+  opts: { user: AuthUser; note?: string; duplicate: "skip" | "keep" },
+): Promise<IngestResult> {
+  // 同一 (hash, 相册) 的入库串行执行:否则并发上传同一文件会各自"查不到"而重复入库
+  const lockKey = `${file.hash}:${target.album?.id ?? "-"}`;
+  return withHashLock(lockKey, () => ingestOneInner(file, target, opts));
+}
+
+async function ingestOneInner(
   file: UploadedTmp,
   target: IngestTarget,
   opts: { user: AuthUser; note?: string; duplicate: "skip" | "keep" },

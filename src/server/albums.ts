@@ -35,6 +35,13 @@ interface Tree {
 
 let tree: Tree | null = null;
 let treeInflight: Promise<Tree> | null = null;
+/**
+ * 缓存代数:每次 invalidateAlbums() 自增。
+ * loadTree 在查询开始时记录代数,写回缓存前比对 —— 若期间发生过失效(例如并发建相册),
+ * 旧查询的结果不再写回,避免"过期树覆盖新缓存"导致刚创建的相册查不到(幽灵 404)。
+ */
+let treeGen = 0;
+let treeInflightGen = -1;
 let stats: Stats | null = null;
 let statsInflight: Promise<Stats> | null = null;
 
@@ -48,6 +55,7 @@ interface Stats {
 export function invalidateAlbums() {
   tree = null;
   stats = null;
+  treeGen++; // 让所有"进行中"的树查询结果作废
 }
 
 /**
@@ -68,8 +76,11 @@ const collator = new Intl.Collator("zh");
 
 export async function loadTree(): Promise<Tree> {
   if (tree && Date.now() - tree.at < 10_000) return tree;
-  if (treeInflight) return treeInflight; // 惊群合并:并发请求共用同一次查询
-  treeInflight = (async () => {
+  // 惊群合并:并发请求共用同一次查询。但若这次查询开始后缓存被失效过(代数变化),
+  // 它返回的树可能缺少刚写入的相册,不能复用,必须重新查一次。
+  if (treeInflight && treeInflightGen === treeGen) return treeInflight;
+  const gen = treeGen;
+  const p = (async () => {
     const rows = await db.select().from(albums);
     rows.sort((a, b) => a.sortOrder - b.sortOrder || collator.compare(a.name, b.name));
     const byId = new Map(rows.map((r) => [r.id, r]));
@@ -81,12 +92,15 @@ export async function loadTree(): Promise<Tree> {
     }
     const t: Tree = { rows, byId, byCode, children, publicIds: new Set(), at: Date.now() };
     for (const r of rows) if (effectivelyPublic(t, r)) t.publicIds.add(r.id);
-    tree = t;
+    // 只有查询期间没有发生过失效才写回缓存:否则这次结果是过期的,写回会把新相册"盖掉"
+    if (gen === treeGen) tree = t;
     return t;
   })().finally(() => {
-    treeInflight = null;
+    if (treeInflight === p) treeInflight = null;
   });
-  return treeInflight;
+  treeInflight = p;
+  treeInflightGen = gen;
+  return p;
 }
 
 export function effectivelyPublic(t: Tree, a: AlbumRow): boolean {
@@ -286,8 +300,10 @@ function parentOf(t: Tree, code: string | null | undefined): AlbumRow | null {
 }
 
 function cleanName(v: unknown): string {
-  if (typeof v !== "string" || !v.trim()) throw E.badRequest("相册名称不能为空");
-  const n = v.trim();
+  if (typeof v !== "string") throw E.badRequest("相册名称不能为空");
+  // 去掉控制字符(含 NUL):PostgreSQL 的 text 不接受 \x00,会让 insert 抛 22021 并留下孤儿目录
+  const n = v.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  if (!n) throw E.badRequest("相册名称不能为空");
   if (n.length > 80) throw E.badRequest("相册名称过长(最多 80 字符)");
   return n;
 }
@@ -312,8 +328,15 @@ export async function createManaged(input: {
     visibility: cleanVisibility(input.visibility), description: typeof input.description === "string" ? input.description.slice(0, 500) : "",
     sortOrder: Number.isFinite(Number(input.sortOrder)) ? Number(input.sortOrder) : 0,
   };
-  if (storage === "local") await fs.mkdir(path.join(dirs.albums, code), { recursive: true });
-  await db.insert(albums).values(row);
+  const dir = storage === "local" ? path.join(dirs.albums, code) : null;
+  if (dir) await fs.mkdir(dir, { recursive: true });
+  try {
+    await db.insert(albums).values(row);
+  } catch (e) {
+    // 建目录成功但入库失败:回滚目录,避免磁盘上留下数据库不可见的孤儿目录
+    if (dir) await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    throw e;
+  }
   invalidateAlbums();
   return code;
 }
@@ -486,6 +509,13 @@ export async function relocateLocalFile(
   row: typeof media.$inferSelect,
   targetAlbumId: string | null,
 ): Promise<{ storageKey: string; filename: string } | null> {
+  return withMoveLock(row.id, () => relocateLocalFileInner(row, targetAlbumId));
+}
+
+async function relocateLocalFileInner(
+  row: typeof media.$inferSelect,
+  targetAlbumId: string | null,
+): Promise<{ storageKey: string; filename: string } | null> {
   if (row.storage !== "local") return null;
   const t = await loadTree();
   const target = targetAlbumId ? t.byId.get(targetAlbumId) : undefined;
@@ -534,6 +564,13 @@ export async function relocateExtFile(
   row: typeof media.$inferSelect,
   targetAlbumId: string | null,
 ): Promise<{ storageKey: string; filename: string } | null> {
+  return withMoveLock(row.id, () => relocateExtFileInner(row, targetAlbumId));
+}
+
+async function relocateExtFileInner(
+  row: typeof media.$inferSelect,
+  targetAlbumId: string | null,
+): Promise<{ storageKey: string; filename: string } | null> {
   if (row.storage !== "ext" || !path.isAbsolute(row.storageKey)) return null;
   const t = await loadTree();
   const target = targetAlbumId ? t.byId.get(targetAlbumId) : undefined;
@@ -568,17 +605,45 @@ export async function relocateExtFile(
 async function moveNoOverwrite(src: string, dst: string): Promise<void> {
   try {
     await fs.link(src, dst);
-    await fs.unlink(src);
+    // 链接已建立,源文件的删除失败不应让整个移动失败:
+    // 并发搬同一文件时另一个请求可能已经删掉了源(ENOENT),此时目标文件是有效的
+    await fs.unlink(src).catch((e) => {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    });
     return;
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "EEXIST") throw e;
     if (code === "EXDEV" || code === "EPERM" || code === "ENOTSUP" || code === "EACCES" || code === "EMLINK") {
       await fs.copyFile(src, dst, fsConstants.COPYFILE_EXCL);
-      await fs.unlink(src);
+      await fs.unlink(src).catch((e2) => {
+        if ((e2 as NodeJS.ErrnoException).code !== "ENOENT") throw e2;
+      });
       return;
     }
     throw e;
+  }
+}
+
+/**
+ * 同一媒体的搬移串行化(键控互斥)。
+ * 并发请求同时搬同一个文件时,link→unlink 会互相穿插:一方 link 成功后另一方 unlink 掉源,
+ * 结果旧目录残留硬链接(nlink=2)而数据库已指向新路径,形成看不见的孤儿文件。
+ */
+const moveLocks = new Map<string, Promise<unknown>>();
+
+export async function withMoveLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const prev = moveLocks.get(id) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const next = prev.then(() => gate).catch(() => gate);
+  moveLocks.set(id, next);
+  await prev.catch(() => undefined);
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (moveLocks.get(id) === next) moveLocks.delete(id);
   }
 }
 

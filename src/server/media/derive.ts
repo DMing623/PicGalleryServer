@@ -88,6 +88,22 @@ const PLACEHOLDER = (label: string) =>  Buffer.from(
     `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#2b2a28"/><circle cx="320" cy="180" r="58" fill="none" stroke="#d97757" stroke-width="6"/><path d="M302 148 L352 180 L302 212 Z" fill="#d97757"/><text x="320" y="300" fill="#a8a69b" font-size="22" text-anchor="middle" font-family="sans-serif">${label}</text></svg>`,
   );
 
+/**
+ * 判断抽出的帧是否接近纯色(片头黑场/白场)。
+ * 用 1x1 缩放取不到方差,改用极小尺寸的统计量:标准差极低即视为纯色。
+ */
+async function isBlankFrame(file: string): Promise<boolean> {
+  try {
+    const st = await sharp(file).resize(64, 64, { fit: "inside" }).stats();
+    const maxStd = Math.max(...st.channels.slice(0, 3).map((c) => c.stdev));
+    const maxMean = Math.max(...st.channels.slice(0, 3).map((c) => c.mean));
+    const minMean = Math.min(...st.channels.slice(0, 3).map((c) => c.mean));
+    return maxStd < 3 || (maxMean < 8 && minMean < 8);
+  } catch {
+    return false;
+  }
+}
+
 export async function processMedia(id: string): Promise<void> {
   const [row] = await db.select().from(media).where(eq(media.id, id)).limit(1);
   if (!row) {
@@ -125,6 +141,11 @@ export async function processMedia(id: string): Promise<void> {
       takenAt = r.takenAt;
     } else {
       const p = await videoGate(() => probeVideo(file, row.mime, row.size));
+      // ffprobe 失败(伪造/损坏的视频)时不应标记 ready:没有时长、没有分辨率,
+      // 封面也只是占位图,对用户是"看起来正常但打不开"的坏数据
+      if (p.width === null && p.height === null && p.duration === null) {
+        throw new Error("无法解析视频(ffprobe 失败,文件可能已损坏或不是有效视频)");
+      }
       meta = p.meta;
       takenAt = p.takenAt;
       patch.width = p.width;
@@ -133,8 +154,18 @@ export async function processMedia(id: string): Promise<void> {
       const tmpPng = path.join(dirs.tmp, `frame-${randomBytes(6).toString("hex")}.png`);
       try {
         await fs.mkdir(dirs.tmp, { recursive: true });
-        await videoGate(() => grabVideoFrame(file, tmpPng, p.duration ? Math.min(1, p.duration / 2) : 0));
-        patch.color = await makeDerived(id, tmpPng);
+        // 取第 1 秒的帧可能正好是黑场(片头黑帧),检测到纯黑就换时间点重试
+        const candidates = [p.duration ? Math.min(1, p.duration / 2) : 0, 0];
+        if (p.duration && p.duration > 4) candidates.push(p.duration * 0.25, p.duration * 0.75);
+        let got = false;
+        for (const at of candidates) {
+          await videoGate(() => grabVideoFrame(file, tmpPng, at));
+          if (!(await isBlankFrame(tmpPng))) {
+            got = true;
+            break;
+          }
+        }
+        patch.color = await makeDerived(id, got ? tmpPng : PLACEHOLDER("VIDEO"));
       } catch {
         patch.color = await makeDerived(id, PLACEHOLDER("VIDEO"));
       } finally {
