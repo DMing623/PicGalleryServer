@@ -478,6 +478,9 @@ export async function deleteMediaByIds(
  *
  * 与 relocateExtFile 同理:必须先搬文件、成功后再由调用方更新数据库,
  * 否则库里指向旧目录,原目录被清理后记录就成了孤儿。
+ *
+ * 注意:local 存储的 storageKey 是【相对 DATA_DIR 的路径】(如 albums/<code>/x.jpg),
+ * 不能直接当文件系统路径用,必须经 localAbs() 解析。
  */
 export async function relocateLocalFile(
   row: typeof media.$inferSelect,
@@ -486,10 +489,10 @@ export async function relocateLocalFile(
   if (row.storage !== "local") return null;
   const t = await loadTree();
   const target = targetAlbumId ? t.byId.get(targetAlbumId) : undefined;
-  // 目标是挂载相册时文件类型不变,仍留在数据目录,交给 relocateExtFile 之外的路径处理
+  // 目标是挂载相册:文件仍留在数据目录内,不跨存储搬动
   if (target && target.kind === "mounted") return null;
   const dstDir = target ? path.join(dirs.albums, target.code) : path.join(dirs.albums, "_inbox");
-  const src = row.storageKey;
+  const src = localAbs(row.storageKey);
   if (path.dirname(src) === dstDir) return null;
   await fs.mkdir(dstDir, { recursive: true });
   const base = path.basename(src);
@@ -499,13 +502,25 @@ export async function relocateLocalFile(
   for (let i = 0; i < 50; i++) {
     try {
       await moveNoOverwrite(src, dst);
-      return { storageKey: dst, filename: path.basename(dst) };
+      return { storageKey: localKey(dst), filename: path.basename(dst) };
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
       dst = path.join(dstDir, `${stem}-${randomId(4)}${ext}`);
     }
   }
   throw E.conflict("目标目录重名文件过多,无法移动");
+}
+
+/** local 存储的相对 key → 绝对路径(与 storage/index.ts 的 localDriver 保持同一规则) */
+function localAbs(key: string): string {
+  const abs = path.resolve(config.dataDir, key);
+  if (abs !== config.dataDir && !abs.startsWith(config.dataDir + path.sep)) throw E.badRequest("非法存储路径");
+  return abs;
+}
+
+/** 绝对路径 → local 存储的相对 key */
+function localKey(abs: string): string {
+  return path.relative(config.dataDir, abs).split(path.sep).join("/");
 }
 
 /**
@@ -593,7 +608,9 @@ export async function deleteAlbum(code: string, opts: { media: "move" | "delete"
         if (r.storage === "local") {
           const dstDir = parent ? path.join(dirs.albums, t.byId.get(parent)?.code ?? "") : path.join(dirs.albums, "_inbox");
           await fs.mkdir(dstDir, { recursive: true });
-          const base = path.basename(r.storageKey);
+          // storageKey 是相对 DATA_DIR 的路径,必须先解析成绝对路径
+          const srcAbs = localAbs(r.storageKey);
+          const base = path.basename(srcAbs);
           const ext = path.extname(base);
           const stem = base.slice(0, base.length - ext.length);
           let dst = path.join(dstDir, base);
@@ -601,8 +618,8 @@ export async function deleteAlbum(code: string, opts: { media: "move" | "delete"
           // 目标已有同名文件时换名重试,避免 moveNoOverwrite 抛 EEXIST 导致整个移交中断
           for (let i = 0; i < 50 && !done; i++) {
             try {
-              await moveNoOverwrite(r.storageKey, dst);
-              storageKey = dst;
+              await moveNoOverwrite(srcAbs, dst);
+              storageKey = localKey(dst);
               filename = path.basename(dst);
               done = true;
             } catch (e) {

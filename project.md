@@ -607,5 +607,6 @@ v1.3.0 的改动在代码复查与 InstaBox 真机部署中暴露出 7 处问题
 5. **升级后数据目录不可写(实测发现)**:旧版本容器以 root 运行,`DATA_DIR` 下的 `albums/derived/tmp` 属主为 root;v1.3.0 改为 `USER node` 后,这些目录对新容器只读,上传直接 `EACCES`(表现为 500)。现改为「容器以 root 启动入口脚本 → 仅修正本系统管理的子目录属主 → `setpriv` 降权到 uid 1000 再启动应用」,进程本身仍非 root,且不触碰用户自行挂载的照片目录。
 6. 生产环境弱口令拦截生效(实测):`ADMIN_PASSWORD=admin123456` 会被拒绝启动。升级时若沿用旧测试口令需同步更换。
 7. **受管相册移动不搬文件(实测发现)**:`batchAction('move')` 与 `PATCH /media/:id` 原先只对 `storage='ext'` 调 `relocateExtFile`,受管相册(`local`)的文件只改了 `album_id`,文件仍留在原相册目录——接口返回 `affected:6` 但磁盘上 `A=6 / B=0`。现新增 `relocateLocalFile()`,受管相册移动同样先搬文件后改库;`deleteAlbum` 的移交逻辑也改为同名冲突自动换名重试,不再因 `EEXIST` 中断整个移交。
+8. **`local` 存储的 `storageKey` 是相对路径(实测发现)**:第一版 `relocateLocalFile` 直接把 `albums/<code>/x.jpg` 当绝对路径做 `fs.link`,全部 `ENOENT`。现统一经 `localAbs()` / `localKey()` 在「相对 DATA_DIR 的 key」与「绝对路径」之间转换,与 `storage/index.ts` 的 `localDriver` 保持同一规则;`deleteAlbum` 的移交路径同样修正。
 
-版本号 `1.3.3`(`package.json`、`package-lock.json`、`config.ts`、`cli/pgs.mjs`、`.env.example` 的 `PGS_TAG` 一致)。`tsc --noEmit`、`eslint .`、`node --check cli/pgs.mjs` 均通过;InstaBox 真机 `scripts/test-hd.mjs` **46/46 通过**。
+版本号 `1.3.4`(`package.json`、`package-lock.json`、`config.ts`、`cli/pgs.mjs`、`.env.example` 的 `PGS_TAG` 一致)。`tsc --noEmit`、`eslint .`、`node --check cli/pgs.mjs` 均通过;InstaBox 真机 `scripts/test-hd.mjs` **46/46 通过**。
