@@ -1,6 +1,6 @@
 {
   "name": "picgalleryserver",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
   "description": "自托管的图片与视频相册服务:嵌套相册、缩略图生成、EXIF/AI 绘图元数据解析、原文件密钥保护、多用户权限与完整 API",

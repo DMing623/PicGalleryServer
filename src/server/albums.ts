@@ -759,18 +759,20 @@ interface ScannedFile {
 }
 
 /**
- * 目录的"内容指纹":直接子文件数量 + 每个文件的 (size:mtime) 多重集。
+ * 目录的"内容指纹":直接子文件的 (size:mtime) 多重集(排序后的数组)。
  * 用于识别"目录被改名"——改名不会改变文件大小与 mtime,因此指纹完全一致。
+ * 注意必须用数组而不是 Set:同一目录里常有多个同尺寸同 mtime 的文件,
+ * 用 Set 去重会让指纹数量对不上而漏判。
  * 只读一层(不递归),避免为每个候选目录做一次全量遍历。
  */
-async function dirSignature(dir: string): Promise<Set<string> | null> {
+async function dirSignature(dir: string): Promise<string[] | null> {
   const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => null);
   if (!entries) return null;
   const files = entries.filter((e) => e.isFile() && !e.name.startsWith(".") && detectKind(e.name)).map((e) => path.join(dir, e.name));
   if (!files.length) return null;
   const stats = await statAll(files);
   if (stats.length !== files.length) return null;
-  return new Set(stats.map((x) => `${x.size}:${x.mtimeMs}`));
+  return stats.map((x) => `${x.size}:${x.mtimeMs}`).sort();
 }
 
 /**
@@ -781,24 +783,26 @@ async function moveAlbumRoot(album: AlbumRow, newRoot: string) {
   const oldRoot = album.rootPath!;
   const t = await loadTree();
   const sub = descendants(t, album.id);
-  const rows = sub.map((id) => t.byId.get(id)).filter((r): r is AlbumRow => !!r && !!r.rootPath);
+  const rows = sub.map((id) => t.byId.get(id)).filter((r): r is AlbumRow & { rootPath: string } => !!r && !!r.rootPath);
   for (const r of rows) {
-    const next = r.id === album.id ? newRoot : newRoot + r.rootPath!.slice(oldRoot.length);
+    const next = r.id === album.id ? newRoot : newRoot + r.rootPath.slice(oldRoot.length);
     // 目标路径可能已被别的相册占用(极端情况),跳过该条以免撞唯一索引
     const [dup] = await db.select({ id: albums.id }).from(albums).where(eq(albums.rootPath, next)).limit(1);
     if (dup && dup.id !== r.id) continue;
     await db.update(albums).set({ rootPath: next, name: r.id === album.id ? path.basename(newRoot) : r.name }).where(eq(albums.id, r.id));
-    // ext 存储的 storage_key 就是绝对路径,必须一起改,否则缩略图仍在、但原图指向旧路径
+    // ext 存储的 storage_key 就是绝对路径,必须一起改,否则缩略图仍在、但原图指向旧路径。
+    // 用「新前缀 + 去掉旧前缀的剩余部分」而不是全局 replace,避免路径中段恰好含相同片段时被误替换。
     await db
       .update(media)
-      .set({ storageKey: sql`replace(${media.storageKey}, ${r.rootPath}, ${next})` })
+      .set({ storageKey: sql`${next} || substr(${media.storageKey}, ${r.rootPath.length + 1})`, missingAt: null })
       .where(and(eq(media.albumId, r.id), eq(media.storage, "ext")));
   }
   invalidateAlbums();
 }
 
 /** 受限并发地 stat 一批文件(网络文件系统上串行 stat 是扫描最慢的部分) */
-async function statAll(paths: string[], concurrency = 8): Promise<Array<{ abs: string; size: number; mtimeMs: number }>> {  const out: Array<{ abs: string; size: number; mtimeMs: number }> = [];
+async function statAll(paths: string[], concurrency = 8): Promise<Array<{ abs: string; size: number; mtimeMs: number }>> {
+  const out: Array<{ abs: string; size: number; mtimeMs: number }> = [];
   let i = 0;
   const worker = async () => {
     while (i < paths.length) {
@@ -975,13 +979,15 @@ async function scanOne(a: AlbumRow, recursive: boolean, s: ScanState, depth: num
       if (!sig) continue;
       for (const g of goneKids) {
         if (claimed.has(g.id) || !g.rootPath) continue;
+        // 连同"已标记缺失"的记录一起比对:文件可能因网络盘短暂不可用被标记过,
+        // 若把它们排除在外,改名就会识别失败并退化成"删旧建新"。
         const rows = await db
           .select({ size: media.size, mtimeMs: media.mtimeMs })
           .from(media)
-          .where(and(eq(media.albumId, g.id), eq(media.storage, "ext"), sql`${media.missingAt} IS NULL`));
-        if (!rows.length || rows.length !== sig.size) continue;
+          .where(and(eq(media.albumId, g.id), eq(media.storage, "ext")));
+        if (!rows.length || rows.length !== sig.length) continue;
         const have = rows.map((r) => `${r.size}:${r.mtimeMs ?? 0}`).sort().join(",");
-        if (have !== [...sig].sort().join(",")) continue;
+        if (have !== sig.join(",")) continue;
         await moveAlbumRoot(g, dir);
         claimed.add(g.id);
         s.albumsMoved++;

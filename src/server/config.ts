@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import os from "node:os";
 import path from "node:path";
+import pkg from "../../package.json";
 import { resolveSessionSecret } from "./secret";
 
 /** 环境变量统一解析入口。其它模块只允许从这里读取配置。 */
+
+/** 应用版本号:以 package.json 为唯一来源 */
+const pkgVersion: string = (pkg as { version?: string }).version ?? "0.0.0";
 
 function int(name: string, def: number, min: number, max: number): number {
   const raw = process.env[name];
@@ -79,7 +83,8 @@ const defaultTimezone = process.env.TZ?.trim() || process.env.PGS_TIMEZONE?.trim
 
 export const config = {
   appName: "PicGalleryServer",
-  version: "1.4.0",
+  // 版本号以 package.json 为唯一来源,避免"发了新版但 health 仍报旧版本"
+  version: pkgVersion,
   adminUser: process.env.ADMIN_USER?.trim() || "admin",
   adminPassword,
   /** 会话/令牌签名密钥来源:env | file | generated | derived(见 secret.ts) */
