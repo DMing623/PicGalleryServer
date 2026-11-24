@@ -102,6 +102,67 @@ const dateStr = (v: unknown): string | null => {
   return fmt(v);
 };
 
+/** 某个 IANA 时区在某一时刻的 UTC 偏移(毫秒) */
+function tzOffsetMs(tz: string, at: Date): number {
+  try {
+    const dtf = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, hour12: false,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    });
+    const map: Record<string, string> = {};
+    for (const p of dtf.formatToParts(at)) map[p.type] = p.value;
+    const asUtc = Date.UTC(+map.year, +map.month - 1, +map.day, +map.hour % 24, +map.minute, +map.second);
+    return asUtc - at.getTime();
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 把「无时区的墙上时间」按指定 IANA 时区解释成绝对时刻。
+ * EXIF 的 DateTimeOriginal 本身不带时区,旧实现用 `new Date(iso)` 交给 JS 按【进程 TZ】解释,
+ * 于是同一张照片在 TZ=UTC 与 TZ=Asia/Shanghai 的机器上会得到相差 8 小时的结果。
+ * 正确做法:按【站点时区】解释(与通知时间、日期分组的换算口径一致)。
+ */
+function naiveToUtc(y: number, mo: number, d: number, h: number, mi: number, s: number, tz: string): Date {
+  const guess = Date.UTC(y, mo - 1, d, h, mi, s);
+  let off = tzOffsetMs(tz, new Date(guess));
+  let utc = guess - off;
+  // 夏令时切换边界:用修正后的时刻再取一次偏移
+  const off2 = tzOffsetMs(tz, new Date(utc));
+  if (off2 !== off) utc = guess - off2;
+  return new Date(utc);
+}
+
+/** 把 Date 按【进程时区】格式化回 EXIF 风格的墙上时间(用于还原 exifr 的本地化结果) */
+function formatWallClock(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}:${p(d.getMonth() + 1)}:${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** 解析拍摄时间字符串:带偏移(Z / ±hh:mm)按绝对时刻,无时区按站点时区解释 */
+function parseTaken(raw: string, tz: string): Date | null {
+  const s = raw.trim();
+  if (!s) return null;
+  // 已带时区信息:直接按绝对时刻解析
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(s)) {
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  // EXIF 风格 "2021:07:20 12:34:56"
+  const exif = /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(s);
+  if (exif) return naiveToUtc(+exif[1], +exif[2], +exif[3], +exif[4], +exif[5], +exif[6], tz);
+  // ISO 无偏移 "2021-07-20T12:34:56"
+  const iso = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(s);
+  if (iso) return naiveToUtc(+iso[1], +iso[2], +iso[3], +iso[4], +iso[5], +iso[6], tz);
+  // 纯 8 位数字 "19690303"
+  const ymd = /^(\d{4})(\d{2})(\d{2})$/.exec(s);
+  if (ymd) return naiveToUtc(+ymd[1], +ymd[2], +ymd[3], 0, 0, 0, tz);
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 /** 把 Date / 字符串 / EXIF 的 "YYYY:MM:DD HH:MM:SS" 统一转成 Date;失败返回 null */
 function toDate(v: unknown): Date | null {
   if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;
@@ -200,7 +261,7 @@ function bitDepthName(v: unknown): string | null {
   return raw;
 }
 
-export async function extractImageMeta(file: string, facts: ImageFacts): Promise<ImageMetaResult> {
+export async function extractImageMeta(file: string, facts: ImageFacts, timezone?: string): Promise<ImageMetaResult> {
   let parsed: Record<string, Seg> = {};
   const parseOpts = {
     tiff: true, ifd0: true, exif: true, gps: true, interop: true, xmp: true, iptc: true, icc: true,
@@ -272,8 +333,19 @@ export async function extractImageMeta(file: string, facts: ImageFacts): Promise
   }
 
   const taken = g("DateTimeOriginal", "CreateDate", "DateCreated");
-  // XMP 的日期常常是字符串("2014-06-03T08:15:00")而不是 Date,不能只认 Date 实例
-  const takenAt = toDate(taken);
+  // XMP 的日期常常是字符串("2014-06-03T08:15:00")而不是 Date,不能只认 Date 实例。
+  // EXIF 时间本身不带时区,而 exifr 的 reviveValues 会按【进程 TZ】把它转成 Date,
+  // 于是同一张照片在 TZ=UTC 与 TZ=Asia/Shanghai 的机器上会差 8 小时。
+  // 这里统一还原成「墙上时间」后按【站点时区】重新解释,与通知时间/日期分组口径一致。
+  const tz = timezone || config.defaultTimezone;
+  const hasOffset = !!g("OffsetTimeOriginal", "OffsetTime", "OffsetTimeDigitized");
+  const takenAt = hasOffset
+    ? toDate(taken) // 带偏移量:已是绝对时刻,直接用
+    : taken instanceof Date
+      ? parseTaken(formatWallClock(taken), tz) // 还原 exifr 按进程 TZ 造出的墙上时间
+      : typeof taken === "string"
+        ? parseTaken(taken, tz)
+        : toDate(taken);
 
   const lat = num(parsed.gps?.latitude ?? g("GPSLatitude"));
   const lon = num(parsed.gps?.longitude ?? g("GPSLongitude"));

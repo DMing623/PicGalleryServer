@@ -11,6 +11,7 @@ import { config, dirs } from "../config";
 import { materialize } from "../storage";
 import { buildSearchText, extractImageMeta, grabVideoFrame, probeVideo, type MediaMeta } from "./metadata";
 import { invalidateHd } from "../hd/cache";
+import { getSite } from "../settings";
 import { decodeBmp, isBmp } from "./bmp";
 import { isHeic } from "./types";
 import { limiter } from "../queue";
@@ -155,7 +156,7 @@ export async function processMedia(id: string): Promise<void> {
         format: isHeic(row.filename) ? "heic" : isBmp(row.filename) ? "bmp" : m.format,
         width, height, space: m.space, depth: m.depth, hasAlpha: m.hasAlpha, density: m.density,
         orientation: m.orientation, channels: m.channels, isPng: m.format === "png" && !isBmp(row.filename),
-      });
+      }, (await getSite()).timezone);
       meta = r.meta;
       takenAt = r.takenAt;
     } else {
