@@ -54,13 +54,18 @@ async function login(username, password) {
 }
 
 async function makeImage(w, h, { exif = false } = {}) {
-  const buf = randomBytes(w * h * 3);
-  // 平滑一点的渐变 + 随机色,保证每张哈希不同
+  // 平滑渐变底图(不要纯随机噪点):噪点图在 WebP 有损压缩下,同一原图的两次编码
+  // 会在大面积高频区域产生随机差异,使「水印覆盖面积」断言剧烈抖动(实测 9%~48%)。
+  // 用低频渐变 + 每张不同的随机基色,既能保证哈希不同,又能让压缩差异稳定在极小范围。
+  const buf = Buffer.allocUnsafe(w * h * 3);
   const [r, g, b] = [randomBytes(1)[0], randomBytes(1)[0], randomBytes(1)[0]];
-  for (let i = 0; i < buf.length; i += 3) {
-    buf[i] = (r + (i / 3) % w / 8 + (buf[i] & 7)) & 255;
-    buf[i + 1] = (g + Math.floor(i / 3 / w) / 8 + (buf[i + 1] & 7)) & 255;
-    buf[i + 2] = (b + (buf[i + 2] & 7)) & 255;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 3;
+      buf[i] = (r + Math.round((x / w) * 60) + Math.round((y / h) * 20)) & 255;
+      buf[i + 1] = (g + Math.round((y / h) * 60)) & 255;
+      buf[i + 2] = (b + Math.round((x / w) * 30) + Math.round((y / h) * 30)) & 255;
+    }
   }
   let img = sharp(buf, { raw: { width: w, height: h, channels: 3 } });
   if (exif) img = img.withExif({ IFD0: { Copyright: "SECRET-COPYRIGHT-XYZ", Artist: "tester" } });
