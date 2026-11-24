@@ -12,6 +12,7 @@ import {
 import { config, dirs } from "../config";
 import { E, ok, readJson, str } from "../http";
 import { parseUpload } from "../media/upload";
+import { unreadCount } from "../notices";
 import { route } from "../router";
 import { getSite, patchSite, publicSite, setIcon } from "../settings";
 import { s3Available } from "../storage";
@@ -37,6 +38,7 @@ route("GET", "/auth/me", "public", async (ctx) => {
     perms: permsOf(ctx.user),
     site: publicSite(site),
     features: { s3: s3Available(), thumbConcurrency: config.thumbConcurrency },
+    unread: await unreadCount(ctx.user),
   };
 });
 

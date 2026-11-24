@@ -23,15 +23,16 @@ export type Perm =
   | "keys"
   | "users"
   | "settings"
-  | "status";
+  | "status"
+  | "notice.publish"; // 发布站点通知(管理者及以上)
 
 const ROLE_PERMS: Record<Role, Perm[]> = {
   admin: [
     "browse.private", "upload", "media.edit", "media.delete", "media.purge", "album.manage", "album.mount",
-    "original", "keys", "users", "settings", "status",
+    "original", "keys", "users", "settings", "status", "notice.publish",
   ],
   manager: [
-    "browse.private", "upload", "media.edit", "media.delete", "album.manage", "original", "status",
+    "browse.private", "upload", "media.edit", "media.delete", "album.manage", "original", "status", "notice.publish",
   ],
   uploader: ["browse.private", "upload"],
   viewer: ["browse.private"],

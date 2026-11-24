@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS build
+FROM node:24-bookworm-slim AS build
 WORKDIR /app
 
 # ---- 构建期占位环境变量 ----
@@ -17,14 +17,17 @@ RUN npm run build
 # next / pg / drizzle-orm / sharp 均在 dependencies 中,不受影响
 RUN npm prune --omit=dev
 
-FROM node:22-bookworm-slim
+FROM node:24-bookworm-slim
 # tini 负责 PID 1 的信号转发与僵尸进程回收;jemalloc 缓解 glibc 内存碎片(issue §5.1/§6.1)
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg tini libjemalloc2 \
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg tini libjemalloc2 tzdata \
  && rm -rf /var/lib/apt/lists/*
 
+# TZ:站点默认时区(通知发布时间/日期分组按它换算),可在 compose/.env 里覆盖;
+# 部署后仍可在「设置 → 系统状态 → 时区」里修改。
 ENV NODE_ENV=production \
     PORT=3000 \
     DATA_DIR=/app/data \
+    TZ=Asia/Shanghai \
     UV_THREADPOOL_SIZE=12 \
     MALLOC_ARENA_MAX=2 \
     NEXT_TELEMETRY_DISABLED=1

@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, rawQuery } from "@/db";
 import { albums, blocklist, media } from "@/db/schema";
 import { can, type AuthUser } from "./auth";
 import { blockedExtKeys, invalidateBlocklist } from "./blocklist";
@@ -175,14 +175,15 @@ async function loadStats(): Promise<Stats> {
   if (stats && Date.now() - stats.at < 5000) return stats;
   if (statsInflight) return statsInflight;
   statsInflight = (async () => {
-    const rows = await db.execute(sql`
+    // 用 CAST(...) 而不是 pg 专有的 ::int / ::float8,让同一条 SQL 在 SQLite 上也能跑
+    const rows = await rawQuery(sql`
       SELECT album_id,
-             count(*)::int AS media,
-             coalesce(sum(size),0)::float8 AS size,
-             count(*) FILTER (WHERE status='pending')::int AS pending,
-             count(*) FILTER (WHERE status='failed')::int AS failed,
-             count(*) FILTER (WHERE kind='image')::int AS images,
-             count(*) FILTER (WHERE kind='video')::int AS videos
+             CAST(count(*) AS INTEGER) AS media,
+             CAST(coalesce(sum(size),0) AS DOUBLE PRECISION) AS size,
+             CAST(count(*) FILTER (WHERE status='pending') AS INTEGER) AS pending,
+             CAST(count(*) FILTER (WHERE status='failed') AS INTEGER) AS failed,
+             CAST(count(*) FILTER (WHERE kind='image') AS INTEGER) AS images,
+             CAST(count(*) FILTER (WHERE kind='video') AS INTEGER) AS videos
       FROM pgs_media WHERE album_id IS NOT NULL AND missing_at IS NULL GROUP BY album_id`);
     const counts = new Map<string, AlbumCounts>();
     for (const r of rows.rows as Array<Record<string, unknown>>) {
@@ -191,9 +192,12 @@ async function loadStats(): Promise<Stats> {
         images: Number(r.images), videos: Number(r.videos),
       });
     }
-    const cov = await db.execute(sql`
-      SELECT DISTINCT ON (album_id) album_id, id FROM pgs_media
-      WHERE album_id IS NOT NULL AND status='ready' AND missing_at IS NULL ORDER BY album_id, sort_at DESC`);
+    // 封面:每个相册取 sort_at 最新的一条(用窗口函数替代 pg 专有的 DISTINCT ON)
+    const cov = await rawQuery(sql`
+      SELECT album_id, id FROM (
+        SELECT album_id, id, row_number() OVER (PARTITION BY album_id ORDER BY sort_at DESC) AS rn
+        FROM pgs_media WHERE album_id IS NOT NULL AND status='ready' AND missing_at IS NULL
+      ) WHERE rn = 1`);
     const covers = new Map<string, string>();
     for (const r of cov.rows as Array<Record<string, unknown>>) covers.set(String(r.album_id), String(r.id));
     const v = { at: Date.now(), counts, covers };
@@ -208,7 +212,7 @@ async function loadStats(): Promise<Stats> {
 const ZERO: AlbumCounts = { media: 0, size: 0, pending: 0, failed: 0, images: 0, videos: 0 };
 
 export async function unsortedCount(): Promise<number> {
-  const r = await db.execute(sql`SELECT count(*)::int AS n FROM pgs_media WHERE album_id IS NULL AND missing_at IS NULL`);
+  const r = await rawQuery(sql`SELECT CAST(count(*) AS INTEGER) AS n FROM pgs_media WHERE album_id IS NULL AND missing_at IS NULL`);
   return Number((r.rows[0] as { n: number }).n);
 }
 

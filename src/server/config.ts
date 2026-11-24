@@ -60,9 +60,26 @@ const cpu = Math.max(1, os.availableParallelism?.() ?? os.cpus().length ?? 1);
 
 const s3Bucket = process.env.S3_BUCKET?.trim();
 
+/**
+ * 数据库驱动:
+ *  - 显式 DB_DRIVER=sqlite → 使用内置 SQLite(单文件,无需外部服务)
+ *  - 显式 DB_DRIVER=postgres → 使用 PostgreSQL
+ *  - 未设置 → 有 DATABASE_URL 就用 PostgreSQL,否则回落到 SQLite
+ */
+const dbDriverRaw = process.env.DB_DRIVER?.trim().toLowerCase();
+const dbDriver: "postgres" | "sqlite" =
+  dbDriverRaw === "sqlite" || dbDriverRaw === "postgres"
+    ? dbDriverRaw
+    : process.env.DATABASE_URL?.trim()
+      ? "postgres"
+      : "sqlite";
+
+/** 站点默认时区(可被设置页覆盖;通知发布时间、日期分组都按它换算) */
+const defaultTimezone = process.env.TZ?.trim() || process.env.PGS_TIMEZONE?.trim() || "Asia/Shanghai";
+
 export const config = {
   appName: "PicGalleryServer",
-  version: "1.3.6",
+  version: "1.4.0",
   adminUser: process.env.ADMIN_USER?.trim() || "admin",
   adminPassword,
   /** 会话/令牌签名密钥来源:env | file | generated | derived(见 secret.ts) */
@@ -117,11 +134,19 @@ export const config = {
   keyRatePerMin: int("KEY_RATE_PER_MIN", 30, 1, 100_000),
   /** 数据库连接池 */
   db: {
+    /** postgres | sqlite(见上方解析规则) */
+    driver: dbDriver,
+    /** SQLite 数据文件(DB_DRIVER=sqlite 时使用),默认 DATA_DIR/pgs.sqlite */
+    sqliteFile: path.resolve(
+      /* turbopackIgnore: true */ process.env.SQLITE_FILE?.trim() || path.join(dataDir, "pgs.sqlite"),
+    ),
     poolMax: int("DB_POOL_MAX", 10, 1, 200),
     statementTimeoutMs: int("DB_STATEMENT_TIMEOUT_MS", 20_000, 0, 600_000),
     connectionTimeoutMs: int("DB_CONNECT_TIMEOUT_MS", 5_000, 500, 60_000),
     ssl: flag("DATABASE_SSL", false),
   },
+  /** 默认时区(设置页可覆盖,默认 Asia/Shanghai;容器里可用 TZ 环境变量指定) */
+  defaultTimezone,
   /**
    * 高清预览(HD):按需生成、临时磁盘缓存、短期令牌、服务端水印、独立限流。
    * 全部可由 HD_* 环境变量配置,说明见 .env.example

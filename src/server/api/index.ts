@@ -6,5 +6,6 @@ import "./media";
 import "./hd";
 import "./admin";
 import "./blocklist";
+import "./notices";
 
 export { dispatch } from "../router";

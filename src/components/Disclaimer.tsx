@@ -49,6 +49,9 @@ const SECTIONS: Array<{ title: string; items: string[] }> = [
   },
 ];
 
+/** 隐私与使用须知正文(通知面板默认展示,无需再次同意) */
+export const DISCLAIMER_SECTIONS: Array<{ title: string; items: string[] }> = SECTIONS;
+
 /** 启动页之后弹出的警告:必须滚动阅读到底并等待倒计时结束,点击「同意」后才会消退,露出被模糊的相册主界面。 */
 export default function Disclaimer() {
   const [accepted, setAccepted] = useState(false);

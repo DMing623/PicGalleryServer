@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { settings } from "@/db/schema";
 import { DEFAULT_THEME, PRESETS, isHex, type ThemeSetting } from "@/lib/theme";
+import { config } from "./config";
 import { E } from "./http";
 
 /** 站点设置:存于 pgs_settings 的单个 JSON(key = "site"),内存缓存。 */
@@ -25,6 +26,8 @@ export interface SiteSettings {
   iconMime: string;
   /** 是否允许游客浏览管理员开放的相册 */
   guestBrowse: boolean;
+  /** 站点时区(IANA 名称):通知发布时间、日期分组按它换算,默认 Asia/Shanghai */
+  timezone: string;
 }
 
 export const DEFAULT_SITE: SiteSettings = {
@@ -34,7 +37,19 @@ export const DEFAULT_SITE: SiteSettings = {
   iconVersion: 0,
   iconMime: "",
   guestBrowse: true,
+  timezone: config.defaultTimezone,
 };
+
+/** 时区白名单:用 Intl 能识别的 IANA 名称,拒绝随意字符串 */
+export function isValidTimezone(tz: string): boolean {
+  if (!tz || tz.length > 64 || !/^[A-Za-z0-9_+\-/]+$/.test(tz)) return false;
+  try {
+    new Intl.DateTimeFormat("zh-CN", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 let cache: { value: SiteSettings; at: number } | null = null;
 
@@ -74,6 +89,11 @@ export async function patchSite(patch: Record<string, unknown>): Promise<SiteSet
     next.siteName = patch.siteName.trim();
   }
   if (patch.guestBrowse !== undefined) next.guestBrowse = !!patch.guestBrowse;
+  if (patch.timezone !== undefined) {
+    const tz = String(patch.timezone).trim();
+    if (!isValidTimezone(tz)) throw E.badRequest("timezone 必须是合法的 IANA 时区名(如 Asia/Shanghai)");
+    next.timezone = tz;
+  }
 
   const t = patch.theme as Partial<ThemeSetting> | undefined;
   if (t && typeof t === "object") {
@@ -133,5 +153,6 @@ export function publicSite(s: SiteSettings) {
     splash: s.splash,
     iconUrl: `/api/v1/branding/icon?v=${s.iconVersion}`,
     guestBrowse: s.guestBrowse,
+    timezone: s.timezone,
   };
 }

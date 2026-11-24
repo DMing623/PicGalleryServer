@@ -37,7 +37,7 @@ services:
       start_period: 10s
 
   app:
-    image: ghcr.io/dming623/picgalleryserver:${PGS_TAG:-1.3.6}
+    image: ghcr.io/dming623/picgalleryserver:${PGS_TAG:-1.4.0}
     restart: unless-stopped
     depends_on:
       db:
@@ -47,9 +47,17 @@ services:
       - "127.0.0.1:3000:3000"
     environment:
       DATABASE_URL: postgresql://pgs:${PGS_DB_PASSWORD}@db:5432/picgallery
+      # 数据库驱动:postgres(默认) | sqlite
+      #   想用「单文件 SQLite」部署时,把 DB_DRIVER 设为 sqlite 并去掉对 db 服务的依赖
+      #   (见文件末尾的「SQLite 部署」说明),适合图片数量不多的个人图库。
+      DB_DRIVER: ${PGS_DB_DRIVER:-postgres}
+      SQLITE_FILE: ${PGS_SQLITE_FILE:-/app/data/pgs.sqlite}
       ADMIN_USER: ${PGS_ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${PGS_ADMIN_PASSWORD:?请在 .env 中设置 PGS_ADMIN_PASSWORD}
       SESSION_SECRET: ${PGS_SESSION_SECRET:?请在 .env 中设置 PGS_SESSION_SECRET}
+      # 站点默认时区(IANA):通知发布时间与日期分组按它换算,默认 Asia/Shanghai。
+      # 部署后仍可在「设置 → 系统状态 → 时区」里修改,历史通知显示时间会同步变化。
+      TZ: ${TZ:-Asia/Shanghai}
       # 分池并发:图片 / 视频 / HEIC 各自上限,避免大批量导入时 OOM
       THUMB_CONCURRENCY: ${PGS_THUMB_CONCURRENCY:-4}
       VIDEO_CONCURRENCY: ${PGS_VIDEO_CONCURRENCY:-2}
@@ -77,3 +85,11 @@ services:
 
 volumes:
   pgdata:
+
+# ---------------------------------------------------------------------------
+# 【SQLite 部署(可选)】图片数量不多时可以不跑 PostgreSQL,直接用单文件 SQLite:
+#   1. 把 app 的 environment 里 DB_DRIVER 设为 sqlite(PGS_DB_DRIVER=sqlite)
+#   2. 删掉 app 的 depends_on(db 服务),或保留 db 但不用它
+#   3. 数据文件默认落在 /app/data/pgs.sqlite(已随 ./data 挂载持久化)
+# 该模式无需任何外部数据库,适合手机本地 / 小规模自用;多实例部署请仍用 PostgreSQL。
+# ---------------------------------------------------------------------------

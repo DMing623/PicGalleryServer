@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, dbKind, pingDb, rawQuery } from "@/db";
 import { users } from "@/db/schema";
 import { hashPassword, invalidateUserCache, isRole, ROLES, validatePasswordStrength } from "../auth";
 import { config } from "../config";
@@ -133,7 +133,7 @@ route("GET", "/health", "public", async () => ({ status: "ok", version: config.v
 route("GET", "/health/ready", "public", async () => {
   const checks: Record<string, { ok: boolean; detail?: string }> = {};
   try {
-    await db.execute(sql`select 1`);
+    await pingDb();
     checks.db = { ok: true };
   } catch (e) {
     checks.db = { ok: false, detail: String((e as Error)?.message ?? e).slice(0, 200) };
@@ -169,15 +169,15 @@ route("GET", "/status", "status", async () => {
   if (!ffCache || Date.now() - ffCache.at > 60_000) {
     ffCache = { at: Date.now(), ffmpeg: await probeBin(config.ffmpeg), ffprobe: await probeBin(config.ffprobe) };
   }
-  const r = await db.execute(sql`
-    SELECT count(*)::int AS total,
-      count(*) FILTER (WHERE kind='image')::int AS images, count(*) FILTER (WHERE kind='video')::int AS videos,
-      count(*) FILTER (WHERE status='pending')::int AS pending, count(*) FILTER (WHERE status='failed')::int AS failed,
-      count(*) FILTER (WHERE album_id IS NULL)::int AS unsorted,
-      coalesce(sum(size),0)::float8 AS bytes,
-      (SELECT count(*)::int FROM pgs_albums) AS albums,
-      (SELECT count(*)::int FROM pgs_users) AS users,
-      (SELECT count(*)::int FROM pgs_download_keys) AS keys
+  const r = await rawQuery(sql`
+    SELECT CAST(count(*) AS INTEGER) AS total,
+      CAST(count(*) FILTER (WHERE kind='image') AS INTEGER) AS images, CAST(count(*) FILTER (WHERE kind='video') AS INTEGER) AS videos,
+      CAST(count(*) FILTER (WHERE status='pending') AS INTEGER) AS pending, CAST(count(*) FILTER (WHERE status='failed') AS INTEGER) AS failed,
+      CAST(count(*) FILTER (WHERE album_id IS NULL) AS INTEGER) AS unsorted,
+      CAST(coalesce(sum(size),0) AS DOUBLE PRECISION) AS bytes,
+      (SELECT CAST(count(*) AS INTEGER) FROM pgs_albums) AS albums,
+      (SELECT CAST(count(*) AS INTEGER) FROM pgs_users) AS users,
+      (SELECT CAST(count(*) AS INTEGER) FROM pgs_download_keys) AS keys
     FROM pgs_media`);
   const disk = await fs.statfs(config.dataDir).catch(() => null);
   const mem = process.memoryUsage();

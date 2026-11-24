@@ -6,6 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import { useApp } from "./AppProvider";
+import NoticeBell from "./NoticeBell";
 import { useInstall } from "./Pwa";
 import UploadDialog from "./UploadDialog";
 
@@ -69,20 +70,25 @@ export default function Shell({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen">
-      <form noValidate onSubmit={search} className="topbar glass">
+      <div className="topbar glass">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={me?.site.iconUrl ?? "/api/v1/branding/icon"} alt="" className="h-6 w-6 shrink-0 rounded-md" />
-        <input
-          className="field compact-field min-w-0 flex-1"
-          type="text"
-          enterKeyHint="search"
-          placeholder={scope ? "在当前相册内搜索…" : "搜索 文件名 / 备注 / 相机 / 提示词…"}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-        />
-        <span className="chip hidden shrink-0 sm:inline-flex">{scope ? "当前相册" : "全局"}</span>
-        <button type="submit" className="dbtn shrink-0" aria-label="搜索">🔍</button>
-      </form>
+        <NoticeBell />
+        <form noValidate onSubmit={search} className="flex min-w-0 flex-1 items-center gap-1.5">
+          <input
+            className="field compact-field min-w-0 flex-1"
+            type="text"
+            enterKeyHint="search"
+            placeholder={scope ? "本相册内搜索…" : "搜索 文件名/备注/相机/提示词"}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+          <span className="chip hidden shrink-0 sm:inline-flex">{scope ? "当前相册" : "全局"}</span>
+          <button type="submit" className="dbtn shrink-0" aria-label="搜索">
+            🔍
+          </button>
+        </form>
+      </div>
 
       <main className="pb-[calc(env(safe-area-inset-bottom,0px)+72px)] pt-[calc(env(safe-area-inset-top,0px)+1mm+36px+1mm)]" style={{ paddingInline: 0 }}>
         {children}

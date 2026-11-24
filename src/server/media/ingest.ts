@@ -4,7 +4,7 @@ import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, nullSafeEq } from "@/db";
 import { albums, media } from "@/db/schema";
 import { invalidateAlbums, invalidateMediaCaches, loadTree, assertMountAllowed, type AlbumRow } from "../albums";
 import type { AuthUser } from "../auth";
@@ -178,7 +178,7 @@ async function ingestOneInner(
       const [dup] = await db
         .select({ id: media.id })
         .from(media)
-        .where(and(eq(media.hash, file.hash), sql`${media.albumId} IS NOT DISTINCT FROM ${target.album?.id ?? null}`))
+        .where(and(eq(media.hash, file.hash), nullSafeEq(media.albumId, target.album?.id ?? null)))
         .limit(1);
       if (dup) return { ...result, status: "duplicate", id: dup.id, link: `/f/${dup.id}`, album: target.album?.code ?? null };
     }

@@ -47,7 +47,7 @@ export interface CorruptSummary {
 
 export async function corruptSummary(limit = 20): Promise<CorruptSummary> {
   const [total] = await db
-    .select({ n: sql<number>`count(*)::int` })
+    .select({ n: sql<number>`CAST(count(*) AS INTEGER)` })
     .from(media)
     .where(eq(media.status, "failed"));
   const rows = await db

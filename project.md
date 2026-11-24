@@ -23,7 +23,7 @@
 | 层 | 选型 |
 |---|---|
 | 框架 | Next.js 16 App Router(Node runtime),TypeScript,Tailwind CSS 4 |
-| 数据库 | PostgreSQL + Drizzle ORM(`pg` 驱动) |
+| 数据库 | **PostgreSQL 或 SQLite 二选一**(Drizzle ORM;`pg` 驱动 / Node 内置 `node:sqlite` + `sqlite-proxy`) |
 | 图像 | `sharp`(缩放/转码/统计)、`exifr`(EXIF/XMP/IPTC/ICC)、`heic-convert`(HEIC 解码)、自写 PNG 块解析 |
 | 视频 | 外部 `ffmpeg` / `ffprobe`(可选,通过 `FFMPEG_PATH` / `FFPROBE_PATH`) |
 | 对象存储 | `@aws-sdk/client-s3`(可选,懒加载) |
@@ -31,6 +31,18 @@
 | 认证 | 自实现:scrypt 密码哈希 + HMAC 无状态令牌(Cookie / Bearer / Basic 三种携带方式) |
 
 运行形态:单进程 Next 服务(`npm run build && npm start`,端口由 `PORT` 决定)。后台任务(缩略图队列、定时器)都在同一进程内,状态挂在 `globalThis`。数据库表在启动时自动幂等创建(`src/db/bootstrap.ts`),**无需手动迁移**。
+
+**双数据库驱动(v1.4.0)**:`src/db/index.ts` 按 `DB_DRIVER` 选择驱动,业务代码完全一致。
+
+| 模式 | 驱动 | 适用 |
+|---|---|---|
+| `postgres` | `pg` 连接池 + `drizzle/node-postgres` | 正式部署、多实例、图片量大 |
+| `sqlite` | Node 内置 `node:sqlite`(`DatabaseSync`)+ `drizzle/sqlite-proxy` | 手机本地测试、图片数量不多的个人图库;单文件、零外部服务 |
+
+- 表定义仍写在 `schema.ts`(pg-core),SQLite 模式由 sqlite 方言生成 SQL;时间戳存 ISO-8601 文本、布尔存 0/1(读回时还原为 `true/false`)、`jsonb` 存 TEXT。
+- 原始 SQL 一律走 `rawQuery()`(`src/db/index.ts`),pg 与 sqlite 都返回 `{rows}`;SQL 里禁止使用 pg 专有语法(`::int`、`DISTINCT ON`、`to_char`、`now()`),统一改用 `CAST(... AS INTEGER)`、窗口函数、`substr`、参数传时间。
+- SQLite 模式启动时注册 `now()` / `gen_random_uuid()` 兼容函数(drizzle 的 `defaultNow()` 会生成 `now()`)。
+- 未设置 `DB_DRIVER` 时:有 `DATABASE_URL` 用 postgres,否则自动回落 sqlite。
 
 ## 3. 目录与文件职责
 
@@ -205,7 +217,11 @@
 
 **pgs_download_keys**:`id` `key_hash`(SHA-256,唯一) `hint`(前 2 位 + `*`) `label` `expires_at`(null=永不) `created_by` `created_at` `last_used_at` `use_count`。
 
-**pgs_settings**:`key`(PK) `value`(jsonb) `updated_at`。目前只有 `key="site"`,内容为 `SiteSettings`(见 `server/settings.ts`):`siteName, theme{preset,mode,accent,background}, splash{enabled,mode,url,durationMs,title}, iconVersion, iconMime, guestBrowse`。
+**pgs_settings**:`key`(PK) `value`(jsonb) `updated_at`。目前只有 `key="site"`,内容为 `SiteSettings`(见 `server/settings.ts`):`siteName, theme{preset,mode,accent,background}, splash{enabled,mode,url,durationMs,title}, iconVersion, iconMime, guestBrowse, timezone`。
+
+**pgs_notices**(站点通知,v1.4.0):`id`(PK) `title` `body`(Markdown 原文) `pinned` `created_by` `created_by_name`(用户名快照) `created_at` `updated_at`;索引 `created_at`。发布需要 `notice.publish`(admin / manager)。
+
+**pgs_notice_reads**(通知已读,v1.4.0):`user_id` + `notice_id` 复合主键 `read_at`;索引 `user_id`。存在即已读,「一键已读」= 批量插入缺失行。游客没有账户,其已读状态保存在浏览器 localStorage。
 
 > 修改表结构:① 改 `schema.ts` ② 同步改 `bootstrap.ts` 的 DDL(`npx drizzle-kit export --sql` 可对照)③ 开发库可 `npx drizzle-kit push`。已发布版本的字段变更需在 `bootstrap.ts` 追加 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`。
 
@@ -407,6 +423,7 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(源�
 | POST `/media/:id/reprocess` | media.edit | — | 重新生成派生图与元数据 |
 | POST `/system/reprocess` | media.edit | — | 重新入队所有 `failed/pending` |
 | POST `/media/upload` | upload | multipart(多文件,字段名任意)。参数可放 query 或表单字段:`album`、`dir`、`storage`(local|s3)、`concurrency`(1..THUMB_CONCURRENCY,默认 4)、`duplicate`(skip|keep,默认 skip)、`note`(需 media.edit)、`wait`/`waitMs`(等本次上传处理完) | 见 §7.1。全部失败返回 `ok:false` + 422;`dir` 须位于已挂载且非只读的目录内 |
+| POST `/media/upload-url` | upload | `{urls[]|url, album?|dir?|storage?, duplicate?, note?}`(≤50 条) | **直链上传**:服务器下载远端图片/视频后入库。支持裸域名(自动补 `https://`)与含空格的文件名;每一跳都做 SSRF 校验(全部解析为内网地址才拒绝),限制重定向 5 次、总时长 120s、体积 `MAX_UPLOAD_MB`。返回结构同 `/media/upload` |
 | POST `/media/exists` | upload | `{hashes[]}`(≤5000) | 批量查询 hash 是否已存在,供客户端做幂等同步(先查后传) |
 | POST `/media/import` | album.mount | `{paths[]|path, album|dir|storage, recursive?=true, concurrency?, duplicate?, note?}` | 把**服务器本地**文件/目录**复制**导入目标;返回统计与前 200 条失败项 |
 | GET `/media-timeline` | public | — | 按月统计 `{months:[{m:"YYYY-MM",n}]}` |
@@ -459,14 +476,30 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(源�
 | POST `/blocklist/:id/restore` | media.delete | 解除黑名单:恢复记录并重新生成缩略图,返回 `{id,albumId}`;源文件不存在 → 400 `source_missing` |
 | DELETE `/blocklist/:id` | media.delete | 彻底删除:移除服务器源文件并删除黑名单行 |
 
-### 8.9 curl 示例
+### 8.9 站点通知(读取 public,发布需 `notice.publish`)
+
+| 方法 路径 | 权限 | 说明 |
+|---|---|---|
+| GET `/notices` | public | `{items:[{id,title,body,pinned,createdAt,updatedAt,createdBy,createdByName,read}], unread, total, timezone}`;游客返回空列表 |
+| GET `/notices/unread` | public | `{unread}`(铃铛红点,轮询用) |
+| POST `/notices` | notice.publish | `{title(≤120), body(Markdown,≤100000), pinned?}`;发布者自动标记已读 |
+| PATCH `/notices/:id` | notice.publish | `{title?, body?, pinned?}` |
+| DELETE `/notices/:id` | notice.publish | 删除通知及其已读记录 |
+| POST `/notices/:id/read` | user | 单条已读 |
+| POST `/notices/read-all` | user | 一键已读,返回 `{marked}` |
+
+### 8.10 curl 示例
 ```bash
 A="-u admin:密码"; B=http://127.0.0.1:3000/api/v1
 curl $A -X POST $B/albums -H 'content-type: application/json' -d '{"name":"旅行","visibility":"public"}'
 curl $A -X POST $B/albums/mount -H 'content-type: application/json' -d '{"path":"/srv/photos","name":"外部相册"}'
 curl $A -X POST "$B/media/upload?album=alb_xxxxxxxx&concurrency=8" -F f=@a.jpg -F f=@b.mp4
 curl $A -X POST "$B/media/upload?dir=/srv/photos/2024/trip" -F f=@c.jpg      # 指定挂载目录内的子目录
+curl $A -X POST $B/media/upload-url -H 'content-type: application/json' \
+  -d '{"urls":["images-assets.nasa.gov/image/carina_nebula/carina_nebula~orig.png"],"album":"alb_xxxxxxxx"}'
 curl $A -X POST $B/keys -H 'content-type: application/json' -d '{"key":"my-secret-key","expires":"24h"}'
+curl $A -X POST $B/notices -H 'content-type: application/json' -d '{"title":"维护通知","body":"**今晚** 22:00 维护"}'
+curl $A -X PUT  $B/settings -H 'content-type: application/json' -d '{"timezone":"Asia/Tokyo"}'
 curl -o orig.jpg "http://host:3000/f/<id>?key=my-secret-key"                  # 原图;去掉 key 则得到预览图
 curl -G "$B/media" --data-urlencode "q=日落" --data-urlencode "album=alb_xxxxxxxx"   # 相册内搜索
 curl $A -X POST $B/users -H 'content-type: application/json' -d '{"username":"bob","password":"password123","role":"viewer"}'
@@ -485,7 +518,10 @@ curl $A -X POST $B/blocklist/<bid>/restore        # 解除黑名单并重生成�
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DATABASE_URL` | — | **必填** PostgreSQL 连接串 |
+| `DATABASE_URL` | — | PostgreSQL 连接串(`DB_DRIVER=postgres` 时必填) |
+| `DB_DRIVER` | 自动 | `postgres` / `sqlite`;未设置时有 `DATABASE_URL` 用 postgres,否则 sqlite |
+| `SQLITE_FILE` | `DATA_DIR/pgs.sqlite` | SQLite 数据文件(`DB_DRIVER=sqlite`) |
+| `TZ` | `Asia/Shanghai` | 站点默认时区(IANA);通知发布时间与日期分组按它换算,部署后可在设置页改 |
 | `PORT` | 3000 | 服务端口(`next start` 直接读取) |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / `admin123456` | 超级管理员;每次启动同步到数据库。**生产环境若仍是占位密码会拒绝启动** |
 | `SESSION_SECRET` | 自动生成 | 令牌签名密钥;留空时生产环境自动生成并持久化到 `DATA_DIR/secret.key`(0600) |
@@ -562,9 +598,26 @@ node cli/pgs.mjs reprocess | regenerate-derived
 | 改水印浓淡 | `.env` 的 `HD_WM_OPACITY`(默认 8);合成逻辑在 `server/hd/watermark.ts` |
 | 改相册管理页层级显示 | `components/settings/AdminTabs.tsx#AlbumManager`(文件夹式导航) |
 | 加数据库字段 | §5 的三步流程 |
+| 加通知 / 改通知面板 | 数据 `server/notices.ts`、接口 `server/api/notices.ts`、面板 `components/NoticeBell.tsx`(必须 Portal)、发布页 `components/settings/NoticeTab.tsx` |
+| 改 Markdown 渲染 | `lib/markdown.ts`(零依赖,先转义再替换,链接走协议白名单) |
+| 改时区默认值 / 选择 | 默认值 `TZ` → `config.defaultTimezone`;设置页写入 `SiteSettings.timezone`;`components/settings/SystemTab.tsx` |
+| 改直链上传 | `server/media/fetch-url.ts`(SSRF/重定向/体积);接口 `api/media.ts#/media/upload-url` |
+| 改数据库驱动 | `src/db/index.ts`(驱动选择 + `rawQuery` + `nullSafeEq`)、`bootstrap.ts`(两套 DDL);SQL 里禁止 pg 专有语法 |
+| 改通知面板 / 铃铛 | `components/NoticeBell.tsx`(面板用 Portal 挂到 body,否则会被 `.topbar` 的 backdrop-filter 当成包含块而塌成一条线);样式在 `globals.css` 的「通知铃铛 / 通知面板」段 |
+| 改通知发布页 | `components/settings/NoticeTab.tsx`;接口 `server/api/notices.ts`;数据 `server/notices.ts` |
+| 改 Markdown 渲染 | `lib/markdown.ts`(零依赖,先整体 HTML 转义再替换,链接走协议白名单) |
+| 改时区 | 设置页写入 `SiteSettings.timezone`;默认值来自 `TZ` 环境变量(`config.defaultTimezone`) |
+| 改直链上传 | `server/media/fetch-url.ts`(SSRF 校验/重定向/体积);接口 `api/media.ts` 的 `/media/upload-url` |
+| 支持新的数据库 | `src/db/index.ts`(驱动选择 + `rawQuery`)、`bootstrap.ts`(两套 DDL);SQL 里禁止 pg 专有语法 |
 | 改端口 / 管理员 / 并发 | `.env`,无需改代码 |
 
 ## 13. 前端约定
+
+- 组件全部 `"use client"`,数据通过 `lib/api.ts` 的 `api<T>()`(自动解包 `{ok,data}` 信封,错误抛 `ApiErr`)。
+- 弹窗/确认框统一用 `DialogProvider` 的 `useDialog()`(`choose/confirm/prompt/alert/confirmCheck`),不要用原生 `alert/confirm/prompt`。
+- **位于 `.topbar` / `.dock` / 任何带 `backdrop-filter` 的元素内部的浮层,必须用 `createPortal` 挂到 `document.body`**:带 `backdrop-filter`(或 `filter`/`transform`/`contain`)的祖先会成为 `fixed` 后代的包含块,否则浮层的 `inset-0` 只等于该祖先的尺寸(通知面板曾因此塌成一条细线)。
+- 浮层高度用 `flex` 居中 + `padding` 让出顶栏/底部工具栏,内容区用 `min-h-0 flex-1 overflow-y-auto overscroll-contain` 独立滚动;打开时锁 `document.body.style.overflow`。
+- 启动页有纯 CSS 兜底动画(`splash-auto-hide`):即使客户端脚本没执行,也会在 `durationMs + 1.2s` 后自动淡出,不会永久挡住整站。
 
 - 根布局注入 `<style id="pgs-theme">`(`themeCss()`),设置页修改主题时直接替换其 `textContent` 实现实时预览;保存后全站生效。CSS 变量:`--bg --bg2 --surface --fg --muted --accent --accent-fg --border`;毛玻璃类 `.glass / .glass-strong`;按钮 `.btn / .btn-primary / .btn-danger`;输入 `.field`。
 - 全局事件(`window.dispatchEvent`):`pgs:changed`(媒体变更,图库刷新)、`pgs:albums`(相册变更,相册视图刷新)。
@@ -596,7 +649,7 @@ npm run typecheck && npm run lint && npm run build   # 提交前校验(CI 同样
 ```
 端到端冒烟:启动后依次验证 `POST /albums` → `POST /media/upload` → `GET /media?q=` → `GET /f/:id`(无 key=预览,有 key=原图)→ `POST /keys` → 游客访问私有相册应 404。
 
-## 16. 本轮优化(v1.3.0 ~ v1.3.5,2026-11-23)与遗留项
+## 16. 本轮优化(v1.3.0 ~ v1.4.0,2026-11-23)与遗留项
 
 本轮依据一份外部代码审查清单(整合版 issue,已在完成后移除)逐条落地,共完成 41 项。要点:
 
@@ -657,3 +710,37 @@ v1.3.0 的改动在代码复查与 InstaBox 真机部署中暴露出 8 处问题
 - 内存:99 个 NASA 文件全量上传 5.5s / 峰值 733MB;24 路 HD 并发峰值 **1897MB**;静置 20 秒回落到 **709MB**。对比裸机 `npm start`(报告数据)峰值 2490MB 且压测后 2168MB 不回落 —— 差异来自镜像内的 `jemalloc` 与 `MALLOC_ARENA_MAX=2`,已在 README 的部署章节写明。
 
 版本号 `1.3.5`(`package.json`、`package-lock.json`、`config.ts`、`cli/pgs.mjs`、`.env.example` 的 `PGS_TAG`、`docker-compose.yml` 的默认 tag 一致)。CI(`tsc --noEmit` + `eslint .` + `next build`)通过;镜像 `ghcr.io/dming623/picgalleryserver:1.3.5` 已发布。
+
+### 16.3 v1.4.0(2026-11-24):通知 / 时区 / 直链上传 / SQLite / UI 修复
+
+**新增能力**
+
+1. **站点通知**:`pgs_notices` + `pgs_notice_reads` 两张表;`server/notices.ts` 提供列表/未读数/发布/编辑/删除/已读;接口 `server/api/notices.ts`。权限新增 `notice.publish`(admin / manager)。前端 `components/NoticeBell.tsx`(顶栏铃铛 + 覆盖式面板)与 `components/settings/NoticeTab.tsx`(Markdown 编辑 + 预览)。Markdown 渲染为自写的 `lib/markdown.ts`(零依赖:先整体 HTML 转义再替换,链接走 http/https/mailto/相对路径白名单)。
+2. **时区**:`SiteSettings.timezone`(默认取 `TZ` 环境变量,回落 `Asia/Shanghai`),`isValidTimezone()` 用 `Intl` 校验;通知发布时间与日期分组按它换算,改时区后历史通知显示时间同步变化。设置页入口在「系统状态」顶部。
+3. **直链上传**:`server/media/fetch-url.ts` 下载远端图片/视频到 tmp 后复用 `ingestOne`;接口 `POST /media/upload-url`。SSRF 防护按「全部解析结果都是内网地址才拒绝」(双栈环境会同时返回 ULA 与公网 IPv4,一刀切会误杀正常域名——实测 `images-assets.nasa.gov` 解析出 `fc00::3d` + `198.20.0.62`)。限制重定向 5 次、总时长 120s、体积 `MAX_UPLOAD_MB`;支持裸域名自动补 `https://` 与含空格的文件名。
+4. **双数据库驱动**:`src/db/index.ts` 按 `DB_DRIVER` 选择 pg 或 `node:sqlite` + `drizzle/sqlite-proxy`;新增 `rawQuery()`(两驱动都返回 `{rows}`)、`nullSafeEq()`、`pingDb()`、`closeDb()`。`bootstrap.ts` 维护两套 DDL。SQLite 模式注册 `now()` / `gen_random_uuid()` 兼容函数,并在读回时把 `disabled` / `readonly` 的 0/1 还原为布尔。
+5. **Docker**:基础镜像升到 `node:24-bookworm-slim`(`node:sqlite` 在 Node 24 默认可用),运行阶段装 `tzdata` 并设 `ENV TZ=Asia/Shanghai`;compose 增加 `DB_DRIVER` / `SQLITE_FILE` / `TZ` 三个变量。
+
+**SQL 可移植性改造**(原先用了 pg 专有语法,SQLite 会直接报错)
+
+- `count(*)::int` → `CAST(count(*) AS INTEGER)`;`sum(size)::float8` → `CAST(... AS DOUBLE PRECISION)`。
+- `DISTINCT ON (album_id)` → `row_number() OVER (PARTITION BY album_id ORDER BY sort_at DESC)`。
+- `to_char(sort_at,'YYYY-MM')` → SQLite 走 `substr(sort_at,1,7)`(按驱动分支)。
+- `now()` → 参数传 ISO 时间串;`a IS NOT DISTINCT FROM b` → `nullSafeEq()`(SQLite 用 `IS`)。
+- 去掉 `::timestamptz` 强转(ISO 字符串在两种驱动下都能正确比较)。
+
+**UI 缺陷修复**
+
+6. **通知面板塌成一条细线(实测)**:面板渲染在 `.topbar` 内,而 `.topbar` 带 `backdrop-filter` —— 带该属性的元素会成为 `fixed` 后代的包含块,`inset-0` 只等于 36px 高的顶栏。改为 `createPortal` 挂到 `document.body`,并用 `flex` 居中 + `padding` 让出顶栏/底部工具栏。
+7. **挂载目录弹窗被顶栏遮挡 / 位置偏低**:容器改为 `flex` 居中 + `padding` 让出顶栏与底部工具栏;面板 `marginBottom: 4cm`(居中布局下等于上移 2cm),`maxHeight: calc(100% - 4cm)`;内容区 `min-h-0 flex-1 overflow-y-auto overscroll-contain` 独立滚动,打开时锁 `body` 滚动。
+8. **启动页可能永久卡住**:新增纯 CSS 兜底动画 `splash-auto-hide`,即使客户端脚本未执行也会在 `durationMs + 1.2s` 后自动淡出。开发模式下 Next 会拦截跨源 dev 资源(`Blocked cross-origin request ... from "127.0.0.1"`),已在 `next.config.ts` 加 `allowedDevOrigins`。
+9. **`AppProvider.reload()` 未捕获拒绝**:服务重启时日志刷 `unhandledRejection: Failed to fetch`,已补 `catch`。
+
+**实测(SQLite 模式,沙箱内 `npm run dev`)**
+
+- `tsc --noEmit` / `eslint .` 通过;`/`、`/albums`、`/settings`、`/login` 均 200。
+- 建相册、multipart 上传(2 个文件,派生图与元数据 ready)、挂载目录扫描(子目录自动建嵌套相册)、删除→黑名单→解除、下载密钥创建与原图访问、用户创建、批量移动、通知发布/未读/一键已读 全部通过。
+- 直链上传:NASA 星云 PNG(3.3MB)与 NASA 视频 MP4(167MB,1920×1080 / 93s)均下载入库成功,视频封面与 ffprobe 元数据正常。
+
+**许可证表述修正**:PolyForm Noncommercial 1.0.0 **不是开源许可证**(OSI 开源定义不允许限制商业用途),README 与徽章说明统一改为「非商业许可证 / 源码公开但非商业」,不再称其为开源许可证。
+

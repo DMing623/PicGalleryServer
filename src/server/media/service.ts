@@ -76,8 +76,8 @@ export async function listMedia(o: ListOptions) {
   }
 
   if (o.kind === "image" || o.kind === "video") conds.push(eq(media.kind, o.kind));
-  if (o.from && !Number.isNaN(Date.parse(o.from))) conds.push(sql`${media.sortAt} >= ${new Date(o.from).toISOString()}::timestamptz`);
-  if (o.to && !Number.isNaN(Date.parse(o.to))) conds.push(sql`${media.sortAt} <= ${new Date(o.to).toISOString()}::timestamptz`);
+  if (o.from && !Number.isNaN(Date.parse(o.from))) conds.push(sql`${media.sortAt} >= ${new Date(o.from).toISOString()}`);
+  if (o.to && !Number.isNaN(Date.parse(o.to))) conds.push(sql`${media.sortAt} <= ${new Date(o.to).toISOString()}`);
   // 软删除(扫描时暂时消失)的记录不参与列表与搜索
   conds.push(sql`${media.missingAt} IS NULL`);
   // 处理失败的记录(损坏/伪造文件)默认不展示:没有缩略图、也打不开,
@@ -97,7 +97,7 @@ export async function listMedia(o: ListOptions) {
   const asc_ = o.order === "asc";
   if (o.cursor) {
     const [ts, id] = dec(o.cursor);
-    conds.push(asc_ ? sql`(${media.sortAt}, ${media.id}) > (${ts}::timestamptz, ${id})` : sql`(${media.sortAt}, ${media.id}) < (${ts}::timestamptz, ${id})`);
+    conds.push(asc_ ? sql`(${media.sortAt}, ${media.id}) > (${ts}, ${id})` : sql`(${media.sortAt}, ${media.id}) < (${ts}, ${id})`);
   }
   const limit = Math.min(200, Math.max(1, o.limit ?? 60));
   const rows = await db

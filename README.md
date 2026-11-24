@@ -1,11 +1,11 @@
 # PicGalleryServer
 
 [![构建](https://github.com/DMing623/PicGalleryServer/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/DMing623/PicGalleryServer/actions/workflows/docker-publish.yml)
-[![许可证](https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0-blue.svg)](./LICENSE)
+[![许可证:非商业](https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0%20(Noncommercial)-blue.svg)](./LICENSE)
 
 自托管的图片与视频相册服务。把照片和视频放在自己的服务器上,用漂亮的毛玻璃界面浏览、搜索、分享,并且原图受保护。
 
-> ⚠️ **许可证**:本项目采用 **PolyForm Noncommercial License 1.0.0** —— 可自由使用、修改与再分发,但**仅限非商业用途**;修改后再分发必须保留本项目的归属声明(`Required Notice:`)与许可证副本。完整条款见 [LICENSE](./LICENSE)。
+> ⚠️ **许可证**:本项目采用 **PolyForm Noncommercial License 1.0.0** —— 源码公开,可自由使用、修改与再分发,但**仅限非商业用途**;修改后再分发必须保留本项目的归属声明(`Required Notice:`)与许可证副本。注意这**不是开源许可证**(开源不允许限制商业用途),准确说法是「非商业许可」。完整条款见 [LICENSE](./LICENSE)。
 
 ## ✨ 功能
 
@@ -22,6 +22,10 @@
 - **完整 API 与命令行**:所有操作都能通过 HTTP API 或命令行完成。
 
 * **高清预览与防盗图**:点击图片按屏幕分辨率加载无元数据的高清 WebP(最大 2560px,按需生成 + LRU 临时缓存),支持滚轮/双击/双指缩放;服务端合成来源水印(`Source: {域名} · github.com/DMing623/PicGalleryServer`,登录用户另有动态标识),短期令牌 + 独立限流 + 异常检测,不影响原图下载密钥体系。配置见 `.env.example` 的 `HD_*`。
+* **站点通知**:顶部栏铃铛(有未读时右上角小红点)打开覆盖式通知面板,背后相册自动虚化;面板顶部「一键已读」,下方长条显示未读数并可下拉选择日期(有未读的日期会轻微闪烁变色),同一天多条通知以时间折叠展示。通知内容支持 **Markdown**,由管理者及以上在 设置 → 通知发布 里撰写(带实时预览)。默认展示安全隐私协议(默认已读,无需再次同意)。
+* **时区可配置**:设置 → 系统状态 里可切换站点时区(默认 `Asia/Shanghai`,容器可用 `TZ` 环境变量指定);通知发布时间与日期分组都按该时区换算,改时区后历史通知的显示时间同步变化。
+* **直链上传**:上传对话框可在「本地文件」与「直链上传」间切换;直链模式把拖拽区换成多行输入框,一行一个图片/视频 URL(可省略 `https://`),服务器下载后入库。带 SSRF 防护(拒绝内网地址)、重定向与体积限制。
+* **双数据库驱动**:默认 PostgreSQL;设置 `DB_DRIVER=sqlite` 即可改用 Node 内置 SQLite 单文件存储,零外部服务,适合手机本地测试或图片数量不多的个人图库。
 * **PWA**:可安装到手机主屏幕;**免责声明**:首次进入需阅读并同意后才显示相册。
 * **隐私与索引控制**:游客默认只看到基础元数据(GPS、机身序列号、作者邮箱等不下发,可用 `GUEST_META` 调整);管理员备注不参与公开搜索;自带 `robots.txt`(默认禁止索引)且图片响应带 `X-Robots-Tag: noindex`。
 * **挂载目录只读**:挂载相册默认只读,本系统不会上传/移动/删除其中的文件;路径会先 `realpath` 再校验白名单,并拒绝嵌套重叠挂载。
@@ -77,15 +81,21 @@ docker compose up -d       # 启动服务
 ```
 然后执行 `docker compose up -d --build`。
 
-### 方式三:直接运行(Node.js 22+ 与 PostgreSQL)
+### 方式三:直接运行(Node.js 24+ 与 PostgreSQL,或 Node.js 24+ 单文件 SQLite)
 
 ```bash
 npm install
-cp .env.example .env     # 修改 DATABASE_URL、ADMIN_USER、ADMIN_PASSWORD、SESSION_SECRET
+cp .env.example .env     # 修改 ADMIN_USER、ADMIN_PASSWORD、SESSION_SECRET
 npm run build
 npm start                # 端口由 .env 中的 PORT 决定,默认 3000
 ```
-数据表会在首次启动时自动创建。视频封面与视频元数据需要系统安装 `ffmpeg`(可选):`apt install ffmpeg`。
+
+数据库二选一:
+
+- **PostgreSQL**(推荐,多实例/大数据量):`.env` 里设 `DB_DRIVER=postgres` 与 `DATABASE_URL`。
+- **SQLite**(零外部服务,单文件):`.env` 里设 `DB_DRIVER=sqlite`(`SQLITE_FILE` 默认 `DATA_DIR/pgs.sqlite`),无需安装任何数据库。数据表会在首次启动时自动创建。
+
+> SQLite 依赖 Node 内置的 `node:sqlite`(Node ≥ 22.5 需 `--experimental-sqlite`,Node ≥ 24 默认可用),因此运行 SQLite 模式请使用 Node 24+。视频封面与视频元数据需要系统安装 `ffmpeg`(可选):`apt install ffmpeg`。
 
 ### 镜像构建流水线(GitHub Actions)
 
@@ -196,7 +206,10 @@ location ~ ^/api/v1/media/[^/]+/hd {
 | `PORT` | 服务端口 |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | 管理员账号密码(改密码改这里并重启;生产环境不允许占位密码) |
 | `SESSION_SECRET` | 登录令牌签名密钥;留空时生产环境自动生成并保存到 `DATA_DIR/secret.key` |
-| `DATABASE_URL` | PostgreSQL 连接 |
+| `DATABASE_URL` | PostgreSQL 连接(与 `DB_DRIVER=postgres` 配合) |
+| `DB_DRIVER` | `postgres` / `sqlite`;不设时有 `DATABASE_URL` 用 postgres,否则 sqlite |
+| `SQLITE_FILE` | SQLite 数据文件,默认 `DATA_DIR/pgs.sqlite` |
+| `TZ` | 站点默认时区(默认 `Asia/Shanghai`),通知时间与日期分组按它换算 |
 | `DATA_DIR` | 数据目录 |
 | `THUMB_CONCURRENCY` | 图片处理并发,默认 `min(4, CPU)` |
 | `VIDEO_CONCURRENCY` / `HEIC_CONCURRENCY` | 视频与 HEIC 解码的独立并发上限(默认 2 / 1) |
@@ -209,12 +222,16 @@ location ~ ^/api/v1/media/[^/]+/hd {
 | `GUEST_META` / `GUEST_NOTE` | 游客可见的元数据级别(`full|basic|none`)与是否可见管理员备注 |
 | `S3_*` | 对象存储(可选) |
 | `HD_WM_OPACITY` | 高清预览水印透明度(默认 8,数值越大越明显) |
+| `DB_DRIVER` / `SQLITE_FILE` | 数据库驱动(`postgres`/`sqlite`)与 SQLite 文件路径 |
+| `TZ` | 站点默认时区,默认 `Asia/Shanghai` |
 
 完整清单(含数据库连接池、扫描熔断、限流、EXIF 读取上限等)见 [`.env.example`](./.env.example)。
 
 ## 🖥️ 使用
 
-- **上传**:登录后点右上角「上传」,在下拉框里选择要保存到的相册(或"未归类"),上传完成后会告诉你文件去了哪里。
+- **上传**:登录后点底部「⬆ 上传」,选择目标相册(或"未归类");可拖拽/点选本地文件,也可切到「🔗 直链上传」一行一个 URL。上传完成后会告诉你文件去了哪里。
+- **站点通知**:管理者及以上在 设置 → 通知发布 撰写 Markdown 通知;所有登录用户在顶部铃铛里查看,可一键已读,按日期筛选,同日多条按时间折叠。
+- **时区**:设置 → 系统状态 → 时区,默认 `Asia/Shanghai`;改后历史通知显示时间同步变化。
 - **公开相册给游客**:设置 → 相册管理 → 把相册设为"公开"。其余相册游客完全看不到。
 - **相册管理是文件夹式的**:列表只显示当前层级的相册;有子相册的相册左侧会出现 📁 图标(或"N 个子相册 ›"),点击进入下一层,支持多层嵌套,顶部面包屑可逐级返回。
 - **删除与反悔**:图片/视频详情页点"删除"时,不勾选"同时删除服务器上的原文件"即只做排除(加入删除黑名单);要彻底删除必须显式勾选。反悔入口:设置 → 删除黑名单 → 解除黑名单。
@@ -235,7 +252,9 @@ location ~ ^/api/v1/media/[^/]+/hd {
 
 ## 📜 许可证
 
-本项目采用 **[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)**(SPDX 标识:`PolyForm-Noncommercial-1.0.0`),这是一套由 PolyForm Project 发布的、面向软件的开源许可证。完整条款见 [LICENSE](./LICENSE),归属声明见 [NOTICE](./NOTICE)。
+本项目采用 **[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)**(SPDX 标识:`PolyForm-Noncommercial-1.0.0`),这是一套由 PolyForm Project 发布的**非商业许可证**。完整条款见 [LICENSE](./LICENSE),归属声明见 [NOTICE](./NOTICE)。
+
+> 关于措辞:本许可证**不是开源许可证**。按 OSI 的《开源定义》,开源许可证不得限制商业用途,而本许可证明确禁止商业使用,因此它属于「源码公开、但非商业」的许可模式(source-available / noncommercial),而不是 open source。请勿把本项目描述为「开源软件」,准确说法是「非商业许可的公开源码软件」。
 
 | 你可以 | 你不可以 |
 |---|---|
@@ -248,7 +267,7 @@ location ~ ^/api/v1/media/[^/]+/hd {
 
 许可证的 **Noncommercial Purposes** 条款规定:「Any noncommercial purpose is a permitted purpose.」即**只有非商业目的**才属于授权范围。
 
-- 允许:个人学习研究、非盈利的业余项目、公益与教育机构使用、开源贡献
+- 允许:个人学习研究、非盈利的业余项目、公益与教育机构使用、向本项目提交贡献
 - 禁止:对外收费的托管或订阅服务、将本项目打包进付费产品、基于本项目提供有偿服务
 - 商业使用需另行获得著作权人的书面授权
 

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { eq, inArray, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, dbKind, rawQuery } from "@/db";
 import { media } from "@/db/schema";
 import { can } from "../auth";
 import { config } from "../config";
 import { serveMedia } from "../files";
 import { E, boolParam, intParam, json, readJson } from "../http";
 import { collectFiles, copyToTmp, ingestOne, resolveTarget, type IngestResult } from "../media/ingest";
+import { downloadToTmp } from "../media/fetch-url";
 import { batchAction, getVisible, listMedia, mediaDetail, reprocessFailed, updateMedia } from "../media/service";
 import { parseUpload } from "../media/upload";
 import { deleteMediaByIds } from "../albums";
@@ -117,6 +118,44 @@ route("POST", "/media/upload", "upload", async (ctx) => {
   }
 });
 
+/**
+ * 直链上传:把远端图片/视频 URL 下载后入库。
+ * body: { urls: string[] | url: string, album?, storage?, duplicate?, note? }
+ * 一行一个链接;支持裸域名(自动补 https://)与带空格的文件名。
+ */
+route("POST", "/media/upload-url", "upload", async (ctx) => {
+  const b = await readJson(ctx.req);
+  const raw = Array.isArray(b.urls) ? b.urls.map(String) : typeof b.url === "string" ? [b.url] : [];
+  const urls = raw.map((s) => s.trim()).filter(Boolean).slice(0, 50);
+  if (!urls.length) throw E.badRequest("缺少 urls");
+  const target = await resolveTarget({ album: b.album as string, dir: b.dir as string, storage: b.storage as string });
+  const duplicate = b.duplicate === "keep" ? "keep" : "skip";
+  const note = can(ctx.user, "media.edit") && typeof b.note === "string" ? b.note : "";
+  const run = limiter(Math.min(3, config.thumbConcurrency));
+  const results: IngestResult[] = await Promise.all(
+    urls.map((u) =>
+      run(async () => {
+        try {
+          const tmp = await downloadToTmp(u);
+          return await ingestOne(tmp, target, { user: ctx.user!, note, duplicate });
+        } catch (e) {
+          return { filename: u, status: "error" as const, error: String((e as Error)?.message ?? e) };
+        }
+      }),
+    ),
+  );
+  const summary = {
+    created: results.filter((r) => r.status === "created").length,
+    duplicate: results.filter((r) => r.status === "duplicate").length,
+    failed: results.filter((r) => r.status === "error").length,
+  };
+  const body = { target: { album: target.album?.code ?? null, albumName: target.album?.name ?? null, storage: target.storage }, summary, results };
+  if (!summary.created && !summary.duplicate) {
+    return json({ ok: false, error: { code: "upload_failed", message: "所有链接都下载失败", details: body } }, { status: 422 });
+  }
+  return json({ ok: true, data: body });
+});
+
 /** 批量查询 hash 是否已存在,供客户端做幂等同步(先查后传,issue §4.3) */
 route("POST", "/media/exists", "upload", async (ctx) => {
   const b = await readJson(ctx.req);
@@ -167,6 +206,10 @@ route("GET", "/media-timeline", "public", async (ctx) => {
   const { allowed } = await visibleIds(ctx.user);
   if (allowed && !allowed.size) return { months: [] };
   const cond = allowed ? sql`album_id IN (${sql.join([...allowed].map((i) => sql`${i}`), sql`, `)})` : sql`true`;
-  const rows = await db.execute(sql`SELECT to_char(sort_at, 'YYYY-MM') AS m, count(*)::int AS n FROM pgs_media WHERE ${cond} AND missing_at IS NULL GROUP BY 1 ORDER BY 1 DESC`);
+  // SQLite 没有 to_char,用 substr 截取 ISO 时间串的年月
+  const month = dbKind === "sqlite" ? sql`substr(sort_at, 1, 7)` : sql`to_char(sort_at, 'YYYY-MM')`;
+  const rows = await rawQuery(
+    sql`SELECT ${month} AS m, CAST(count(*) AS INTEGER) AS n FROM pgs_media WHERE ${cond} AND missing_at IS NULL GROUP BY 1 ORDER BY 1 DESC`,
+  );
   return { months: rows.rows };
 });

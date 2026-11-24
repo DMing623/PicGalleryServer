@@ -10,6 +10,8 @@ export interface SiteInfo {
   splash: { enabled: boolean; mode: "builtin" | "url"; url: string; durationMs: number; title: string };
   iconUrl: string;
   guestBrowse: boolean;
+  /** 站点时区(IANA),通知时间按它换算 */
+  timezone: string;
 }
 
 export interface Me {
@@ -17,6 +19,8 @@ export interface Me {
   perms: string[];
   site: SiteInfo;
   features: { s3: boolean; thumbConcurrency: number };
+  /** 未读通知数(铃铛红点) */
+  unread: number;
 }
 
 interface Ctx {
@@ -35,6 +39,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const reload = useCallback(async () => {
     try {
       setMe(await api<Me>("/auth/me"));
+    } catch {
+      // 服务重启 / 网络抖动时不要让 Promise 未捕获(会刷屏 unhandledRejection)
     } finally {
       setLoading(false);
     }

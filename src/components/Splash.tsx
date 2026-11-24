@@ -138,13 +138,16 @@ export default function Splash({ conf }: { conf: SplashConf }) {
 
   return (
     <div
-      className="fixed inset-0 z-[100] overflow-hidden"
+      className="fixed inset-0 z-[100] overflow-hidden splash-root"
       style={{
         background: "radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--bg2) 90%, #000) 0%, color-mix(in srgb, var(--bg) 40%, #000) 100%)",
         opacity: leaving ? 0 : 1,
         transform: leaving ? "scale(1.06)" : "none",
         filter: leaving ? "blur(10px)" : "none",
         transition: "opacity .65s ease, transform .65s ease, filter .65s ease",
+        // 纯 CSS 兜底:即使客户端脚本没跑起来(加载失败/被拦截),启动页也会在
+        // durationMs + 1.2s 后自动淡出,不会把整站永久挡住。
+        animation: `splash-auto-hide 1ms linear ${conf.durationMs + 1200}ms forwards`,
       }}
     >
       {conf.mode === "url" ? (

@@ -6,6 +6,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   real,
   text,
   timestamp,
@@ -148,3 +149,36 @@ export const settings = pgTable("pgs_settings", {
   value: jsonb("value"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * 站点通知(管理者及以上可发布)。
+ * body 为 Markdown 原文;发布时间按「设置 → 系统状态 → 时区」换算展示。
+ */
+export const notices = pgTable(
+  "pgs_notices",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    body: text("body").notNull().default(""),
+    /** 置顶(在通知面板里优先展示) */
+    pinned: boolean("pinned").notNull().default(false),
+    createdBy: text("created_by"),
+    /** 发布者用户名快照(用户被删后仍可显示) */
+    createdByName: text("created_by_name").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("pgs_notices_created_idx").on(t.createdAt)],
+);
+
+/** 已读记录:按用户 × 通知,存在即已读 */
+export const noticeReads = pgTable(
+  "pgs_notice_reads",
+  {
+    userId: text("user_id").notNull(),
+    noticeId: text("notice_id").notNull(),
+    readAt: timestamp("read_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.noticeId] }), index("pgs_notice_reads_user_idx").on(t.userId)],
+);
+

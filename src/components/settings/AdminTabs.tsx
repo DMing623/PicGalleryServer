@@ -38,6 +38,15 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
     void browse("/");
   }, [browse]);
 
+  // 弹窗打开期间锁定页面滚动,避免背景跟着滑
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
   async function mount() {
     setBusy(true);
     try {
@@ -52,24 +61,43 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-3 backdrop-blur-sm sm:items-center" onClick={onClose}>
-      {/* 手机端:整体高度受限于可视区(减去安全区),内容区可滚动,避免被底部导航栏遮挡 */}
+    <div
+      className="fixed inset-0 z-[120] flex items-center justify-center"
+      style={{
+        // 顶部让出「状态栏 + 顶部搜索栏」,底部让出「底部工具栏」,弹窗不再被顶栏遮挡
+        paddingTop: "calc(env(safe-area-inset-top, 0px) + 46px)",
+        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 58px)",
+        paddingLeft: "0.5rem",
+        paddingRight: "0.5rem",
+      }}
+    >
+      <div className="absolute inset-0 bg-black/45 backdrop-blur-sm" onClick={onClose} />
       <div
-        className="glass-strong fade-in flex w-full max-w-xl flex-col rounded-3xl"
-        style={{ maxHeight: "calc(100dvh - 1.5rem - env(safe-area-inset-bottom, 0px))" }}
+        className="glass-strong fade-in relative flex w-full max-w-xl flex-col overflow-hidden rounded-3xl shadow-2xl"
+        style={{
+          // 整体上移 2cm:flex 居中时,下外边距 m 会让元素上移 m/2,
+          // 同时把最大高度减去 m,保证顶部不会顶进顶部搜索栏。
+          marginBottom: "4cm",
+          maxHeight: "calc(100% - 4cm)",
+        }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="shrink-0 px-5 pt-5">
-          <h2 className="mb-1 text-lg font-semibold">挂载服务器目录为相册</h2>
-          <p className="muted mb-3 text-xs">目录内的图片/视频会就地建立索引(不复制原文件);子目录自动生成嵌套子相册。</p>
+        <div className="shrink-0 px-5 pt-4">
+          <div className="mb-1 flex items-center gap-2">
+            <h2 className="text-lg font-semibold">挂载服务器目录为相册</h2>
+            <button className="btn ml-auto !py-1 text-xs" onClick={onClose}>
+              ✕
+            </button>
+          </div>
+          <p className="muted mb-2 text-xs">目录内的图片/视频会就地建立索引(不复制原文件);子目录自动生成嵌套子相册。</p>
         </div>
-        {/* 可滚动内容区:手机弹出键盘或屏幕较矮时,底部按钮始终可见 */}
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5">
+        {/* 可滚动内容区:min-h-0 + flex-1 让它在弹窗内独立滚动,而不是撑高整个弹窗 */}
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5" style={{ WebkitOverflowScrolling: "touch" }}>
           <div className="flex gap-2">
             <input className="field" value={path} onChange={(e) => setPath(e.target.value)} onKeyDown={(e) => e.key === "Enter" && browse(path)} placeholder="/data/photos" />
             <button className="btn shrink-0" onClick={() => browse(path)}>浏览</button>
           </div>
-          <div className="glass mt-2 max-h-48 min-h-24 overflow-y-auto rounded-xl p-1 text-sm">
+          <div className="glass mt-2 max-h-40 min-h-20 overflow-y-auto overscroll-contain rounded-xl p-1 text-sm">
             {parent && <button className="block w-full rounded-lg px-2 py-1 text-left hover:bg-black/5" onClick={() => browse(parent)}>⬆ 上级目录</button>}
             {dirs.map((d) => (
               <button key={d} className="block w-full truncate rounded-lg px-2 py-1 text-left hover:bg-black/5" onClick={() => browse(`${path === "/" ? "" : path}/${d}`)}>
@@ -78,7 +106,7 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
             ))}
             {!dirs.length && <p className="muted p-2 text-xs">没有子目录</p>}
           </div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <div className="mt-3 grid gap-3 pb-2 sm:grid-cols-2">
             <label className="text-sm">
               <span className="muted mb-1 block text-xs">相册名称(默认取目录名)</span>
               <input className="field" value={name} onChange={(e) => setName(e.target.value)} />
@@ -97,18 +125,20 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
                 <option value="public">公开(游客可见缩略图)</option>
               </select>
             </label>
-            <label className="mt-5 flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={recursive} onChange={(e) => setRecursive(e.target.checked)} /> 子目录生成嵌套相册
-            </label>
-            <label className="mt-5 flex items-center gap-2 text-sm" title="只读时本系统不会写入、移动或删除该目录下的文件">
-              <input type="checkbox" checked={readonly} onChange={(e) => setReadonly(e.target.checked)} /> 只读挂载(推荐)
-            </label>
+            <div className="flex flex-col gap-2 pt-1 sm:pt-5">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={recursive} onChange={(e) => setRecursive(e.target.checked)} /> 子目录生成嵌套相册
+              </label>
+              <label className="flex items-center gap-2 text-sm" title="只读时本系统不会写入、移动或删除该目录下的文件">
+                <input type="checkbox" checked={readonly} onChange={(e) => setReadonly(e.target.checked)} /> 只读挂载(推荐)
+              </label>
+            </div>
           </div>
-          {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
+          {err && <p className="pb-2 text-sm text-red-600">{err}</p>}
         </div>
-        <div className="shrink-0 px-5 pb-5 pt-3" style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom, 0px))" }}>
-          <div className="flex gap-2">
-            <span className="muted min-w-0 flex-1 truncate self-center text-xs">将挂载:{path}</span>
+        <div className="shrink-0 border-t border-line/60 px-5 py-3" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom, 0px))" }}>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="muted min-w-0 flex-1 truncate text-xs">将挂载:{path}</span>
             <button className="btn shrink-0" onClick={onClose}>取消</button>
             <button className="btn btn-primary shrink-0" disabled={busy} onClick={mount}>挂载并扫描</button>
           </div>

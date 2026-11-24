@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { desc, eq, isNotNull, lt, and, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, rawQuery } from "@/db";
 import { downloadKeys } from "@/db/schema";
 import { E } from "./http";
 
@@ -67,17 +67,18 @@ export async function deleteKeyByValue(key: string): Promise<boolean> {
 export async function verifyKey(key: string | null | undefined, countUse = true): Promise<boolean> {
   if (!key || key.length > 200) return false;
   const hash = hashKey(key);
+  const nowIso = new Date().toISOString();
   if (countUse) {
-    const r = await db.execute(sql`
+    const r = await rawQuery(sql`
       UPDATE pgs_download_keys
-         SET use_count = use_count + 1, last_used_at = now()
-       WHERE key_hash = ${hash} AND (expires_at IS NULL OR expires_at > now())
+         SET use_count = use_count + 1, last_used_at = ${nowIso}
+       WHERE key_hash = ${hash} AND (expires_at IS NULL OR expires_at > ${nowIso})
       RETURNING id`);
     if (r.rows.length) return true;
   } else {
-    const r = await db.execute(sql`
+    const r = await rawQuery(sql`
       SELECT id FROM pgs_download_keys
-       WHERE key_hash = ${hash} AND (expires_at IS NULL OR expires_at > now()) LIMIT 1`);
+       WHERE key_hash = ${hash} AND (expires_at IS NULL OR expires_at > ${nowIso}) LIMIT 1`);
     if (r.rows.length) return true;
   }
   // 未命中:若是过期密钥则顺手清理

@@ -1,7 +1,7 @@
 "use client";
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { bytes } from "@/lib/format";
 import { useApp } from "../AppProvider";
@@ -111,10 +111,26 @@ function CorruptCard({ data, onPurged }: { data: CorruptSummary; onPurged: () =>
 }
 
 export default function SystemTab() {
-  const { can } = useApp();
+  const { can, me, reload } = useApp();
   const [s, setS] = useState<Status | null>(null);
   const [corrupt, setCorrupt] = useState<CorruptSummary | null>(null);
   const [msg, setMsg] = useState("");
+  const [tz, setTz] = useState(me?.site.timezone ?? "Asia/Shanghai");
+  const [tzBusy, setTzBusy] = useState(false);
+  const [tzMsg, setTzMsg] = useState("");
+
+  const zones = useMemo(() => {
+    const list: string[] =
+      typeof Intl.supportedValuesOf === "function"
+        ? (Intl.supportedValuesOf("timeZone") as string[])
+        : ["Asia/Shanghai", "Asia/Tokyo", "Asia/Singapore", "UTC", "Europe/London", "America/New_York", "America/Los_Angeles"];
+    const extra = ["Asia/Shanghai", "Asia/Hong_Kong", "Asia/Taipei", "Asia/Tokyo", "Asia/Seoul", "Asia/Singapore", "UTC"];
+    return [...new Set([...extra, ...list])].sort((a, b) => a.localeCompare(b));
+  }, []);
+
+  useEffect(() => {
+    if (me?.site.timezone) setTz(me.site.timezone);
+  }, [me?.site.timezone]);
 
   const loadCorrupt = useCallback(() => api<CorruptSummary>("/status/corrupt").then(setCorrupt).catch(() => undefined), []);
 
@@ -134,8 +150,64 @@ export default function SystemTab() {
 
   if (!s) return <p className="muted text-sm">{msg || "加载中…"}</p>;
   const c = s.counts;
+  const nowInTz = (() => {
+    try {
+      return new Intl.DateTimeFormat("zh-CN", {
+        timeZone: tz,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(new Date());
+    } catch {
+      return "—";
+    }
+  })();
+
+  async function saveTz(next: string) {
+    setTz(next);
+    setTzBusy(true);
+    setTzMsg("");
+    try {
+      await api("/settings", { method: "PUT", json: { timezone: next } });
+      setTzMsg("已保存,通知时间与日期分组会按新时区显示");
+      await reload();
+    } catch (e) {
+      setTzMsg((e as Error).message);
+    } finally {
+      setTzBusy(false);
+    }
+  }
+
   return (
     <div className="min-w-0 space-y-4">
+      <section className="glass rounded-2xl p-4 text-sm">
+        <h3 className="mb-1 font-semibold">时区</h3>
+        <p className="muted mb-2 text-xs">
+          通知的发布时间、日期分组都按该时区换算;修改后历史通知的显示时间会同步变化。
+          容器部署时可用环境变量 TZ 指定默认值(默认 Asia/Shanghai)。
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            className="field max-w-full sm:max-w-xs"
+            value={tz}
+            disabled={!can("settings") || tzBusy}
+            onChange={(e) => void saveTz(e.target.value)}
+          >
+            {zones.map((z) => (
+              <option key={z} value={z}>
+                {z}
+              </option>
+            ))}
+          </select>
+          <span className="muted text-xs">当前时间:{nowInTz}</span>
+        </div>
+        {!can("settings") && <p className="muted mt-1 text-xs">仅管理员可修改时区。</p>}
+        {tzMsg && <p className="mt-1 break-words text-xs" style={{ color: "var(--accent)" }}>{tzMsg}</p>}
+      </section>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="媒体总数" value={c.total} />
         <Stat label="图片 / 视频" value={`${c.images} / ${c.videos}`} />
