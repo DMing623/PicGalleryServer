@@ -75,8 +75,16 @@ route("POST", "/albums/:code/scan", "album.mount", async (ctx) => {
   const recursive = boolParam(ctx.q.get("recursive"), true);
   const p = scanAlbum(ctx.params.code, recursive);
   if (boolParam(ctx.q.get("wait"))) return p;
+  // 后台扫描:但要把"同步阶段就失败"的情况(相册不存在 / 正在扫描)如实返回,
+  // 否则前端会以为已经启动,而实际被互斥锁拒绝。
+  let early: unknown = null;
+  const guard = p.then(() => null, (e) => {
+    early = e;
+    return null;
+  });
+  await Promise.race([guard, new Promise((r) => setTimeout(r, 60))]);
+  if (early) throw early;
   p.catch((e) => console.error("[scan]", e));
-  await new Promise((r) => setTimeout(r, 30));
   const t = await loadTree();
   const a = t.byCode.get(ctx.params.code);
   return { started: true, state: a ? scanStates.get(a.id) ?? null : null };

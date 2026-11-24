@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "@/lib/api";
 import { bytes, dateTime } from "@/lib/format";
 import AlbumActions, { type AlbumDto } from "../AlbumActions";
@@ -21,6 +22,7 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
   const [visibility, setVisibility] = useState("private");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   const browse = useCallback(async (p: string) => {
     try {
@@ -42,10 +44,20 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
   useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    setMounted(true);
     return () => {
       document.body.style.overflow = prev;
     };
   }, []);
+
+  // Esc 关闭
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
 
   async function mount() {
     setBusy(true);
@@ -60,32 +72,36 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
     }
   }
 
-  return (
+  const panel = (
     <div
-      className="fixed inset-0 z-[120] flex items-center justify-center"
+      className="fixed inset-0 z-[120]"
       style={{
-        // 顶部让出「状态栏 + 顶部搜索栏」,底部让出「底部工具栏」,弹窗不再被顶栏遮挡
-        paddingTop: "calc(env(safe-area-inset-top, 0px) + 46px)",
-        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 58px)",
+        // 顶部让出「状态栏 + 顶部搜索栏」,底部让出「底部工具栏」:
+        // 弹窗严格落在两条栏之间,不再压住顶栏/底栏,也不需要 marginBottom 之类的位移 hack。
+        paddingTop: "calc(env(safe-area-inset-top, 0px) + 1mm + 36px + 8px)",
+        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 14px + 40px + 8px)",
         paddingLeft: "0.5rem",
         paddingRight: "0.5rem",
       }}
     >
-      <div className="absolute inset-0 bg-black/45 backdrop-blur-sm" onClick={onClose} />
+      {/* 背景遮罩:模糊 + 压暗,让背后的相册列表彻底虚化 */}
       <div
-        className="glass-strong fade-in relative flex w-full max-w-xl flex-col overflow-hidden rounded-3xl shadow-2xl"
-        style={{
-          // 整体上移 2cm:flex 居中时,下外边距 m 会让元素上移 m/2,
-          // 同时把最大高度减去 m,保证顶部不会顶进顶部搜索栏。
-          marginBottom: "4cm",
-          maxHeight: "calc(100% - 4cm)",
-        }}
+        className="absolute inset-0 transition-opacity duration-200"
+        style={{ background: "color-mix(in srgb, var(--fg) 28%, transparent)", backdropFilter: "blur(14px) saturate(1.2)", WebkitBackdropFilter: "blur(14px) saturate(1.2)", opacity: mounted ? 1 : 0 }}
+        onClick={onClose}
+      />
+      <div
+        className="glass-strong relative mx-auto flex h-full w-full max-w-xl flex-col overflow-hidden rounded-3xl shadow-2xl transition-all duration-200"
+        style={{ opacity: mounted ? 1 : 0, transform: mounted ? "none" : "translateY(10px) scale(0.985)" }}
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="挂载服务器目录为相册"
       >
         <div className="shrink-0 px-5 pt-4">
           <div className="mb-1 flex items-center gap-2">
             <h2 className="text-lg font-semibold">挂载服务器目录为相册</h2>
-            <button className="btn ml-auto !py-1 text-xs" onClick={onClose}>
+            <button className="btn ml-auto !py-1 text-xs" onClick={onClose} aria-label="关闭">
               ✕
             </button>
           </div>
@@ -136,7 +152,7 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
           </div>
           {err && <p className="pb-2 text-sm text-red-600">{err}</p>}
         </div>
-        <div className="shrink-0 border-t border-line/60 px-5 py-3" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom, 0px))" }}>
+        <div className="shrink-0 border-t border-line/60 px-5 py-3">
           <div className="flex flex-wrap items-center gap-2">
             <span className="muted min-w-0 flex-1 truncate text-xs">将挂载:{path}</span>
             <button className="btn shrink-0" onClick={onClose}>取消</button>
@@ -146,6 +162,9 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
       </div>
     </div>
   );
+
+  // 必须 portal 到 body:弹窗若留在带 backdrop-filter 的祖先里,fixed 会以该祖先为包含块而塌陷
+  return typeof document === "undefined" ? panel : createPortal(panel, document.body);
 }
 
 export function AlbumManager() {

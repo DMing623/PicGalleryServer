@@ -730,11 +730,19 @@ interface ScanState {
   renamed: number;
   missing: number;
   albumsCreated: number;
+  /** 目录消失后一并移除的相册数(含其子相册) */
+  albumsRemoved: number;
+  /** 目录改名后沿用原相册(保留记录与缩略图)的数量 */
+  albumsMoved: number;
+  /** 因超过 SCAN_MAX_DEPTH 而未下探的子目录数(非 0 时提示用户) */
+  truncated: number;
   error: string | null;
 }
 
-const g = globalThis as typeof globalThis & { __pgsScan?: Map<string, ScanState> };
+const g = globalThis as typeof globalThis & { __pgsScan?: Map<string, ScanState>; __pgsScanLocks?: Set<string> };
 export const scanStates: Map<string, ScanState> = (g.__pgsScan ??= new Map());
+/** 扫描互斥锁(按相册代码)。必须在任何 await 之前同步占位,否则并发请求会同时通过检查。 */
+const scanLocks: Set<string> = (g.__pgsScanLocks ??= new Set());
 
 const SKIP_DIR = /^(\.|@eaDir|#recycle|\$RECYCLE\.BIN|System Volume Information|node_modules$|lost\+found)/i;
 
@@ -750,9 +758,47 @@ interface ScannedFile {
   mime: string;
 }
 
+/**
+ * 目录的"内容指纹":直接子文件数量 + 每个文件的 (size:mtime) 多重集。
+ * 用于识别"目录被改名"——改名不会改变文件大小与 mtime,因此指纹完全一致。
+ * 只读一层(不递归),避免为每个候选目录做一次全量遍历。
+ */
+async function dirSignature(dir: string): Promise<Set<string> | null> {
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => null);
+  if (!entries) return null;
+  const files = entries.filter((e) => e.isFile() && !e.name.startsWith(".") && detectKind(e.name)).map((e) => path.join(dir, e.name));
+  if (!files.length) return null;
+  const stats = await statAll(files);
+  if (stats.length !== files.length) return null;
+  return new Set(stats.map((x) => `${x.size}:${x.mtimeMs}`));
+}
+
+/**
+ * 把挂载相册的根路径迁移到新目录(目录改名场景),并同步更新其所有子孙相册的 rootPath 前缀。
+ * 保留相册代码、记录与已生成的缩略图,用户不会看到"相册消失又新建"。
+ */
+async function moveAlbumRoot(album: AlbumRow, newRoot: string) {
+  const oldRoot = album.rootPath!;
+  const t = await loadTree();
+  const sub = descendants(t, album.id);
+  const rows = sub.map((id) => t.byId.get(id)).filter((r): r is AlbumRow => !!r && !!r.rootPath);
+  for (const r of rows) {
+    const next = r.id === album.id ? newRoot : newRoot + r.rootPath!.slice(oldRoot.length);
+    // 目标路径可能已被别的相册占用(极端情况),跳过该条以免撞唯一索引
+    const [dup] = await db.select({ id: albums.id }).from(albums).where(eq(albums.rootPath, next)).limit(1);
+    if (dup && dup.id !== r.id) continue;
+    await db.update(albums).set({ rootPath: next, name: r.id === album.id ? path.basename(newRoot) : r.name }).where(eq(albums.id, r.id));
+    // ext 存储的 storage_key 就是绝对路径,必须一起改,否则缩略图仍在、但原图指向旧路径
+    await db
+      .update(media)
+      .set({ storageKey: sql`replace(${media.storageKey}, ${r.rootPath}, ${next})` })
+      .where(and(eq(media.albumId, r.id), eq(media.storage, "ext")));
+  }
+  invalidateAlbums();
+}
+
 /** 受限并发地 stat 一批文件(网络文件系统上串行 stat 是扫描最慢的部分) */
-async function statAll(paths: string[], concurrency = 8): Promise<Array<{ abs: string; size: number; mtimeMs: number }>> {
-  const out: Array<{ abs: string; size: number; mtimeMs: number }> = [];
+async function statAll(paths: string[], concurrency = 8): Promise<Array<{ abs: string; size: number; mtimeMs: number }>> {  const out: Array<{ abs: string; size: number; mtimeMs: number }> = [];
   let i = 0;
   const worker = async () => {
     while (i < paths.length) {
@@ -773,7 +819,13 @@ async function scanOne(a: AlbumRow, recursive: boolean, s: ScanState, depth: num
   for (const e of entries) {
     const abs = path.join(a.rootPath, e.name);
     if (e.isDirectory()) {
-      if (recursive && depth < 12 && !SKIP_DIR.test(e.name)) subdirs.push(abs);
+      if (!recursive || SKIP_DIR.test(e.name)) continue;
+      if (depth >= config.scanMaxDepth) {
+        // 超过深度上限:不再下探,但要计数并提示,避免"文件在却搜不到"的静默丢失
+        s.truncated++;
+        continue;
+      }
+      subdirs.push(abs);
     } else if (e.isFile() && !e.name.startsWith(".")) {
       const k = detectKind(e.name);
       if (!k) continue;
@@ -892,22 +944,72 @@ async function scanOne(a: AlbumRow, recursive: boolean, s: ScanState, depth: num
     }
   }
 
-  // 子目录:递归扫描存在的,消失的连同记录一起软/硬清理(避免幽灵相册)
+  // 子目录:递归扫描存在的;消失的清理相册(避免幽灵相册);改名的沿用原相册(保留记录与缩略图)
   if (recursive) {
     const t = await loadTree();
     const kids = t.children.get(a.id) ?? [];
     const seenDirs = new Set(subdirs);
+    /** 目录已确实消失(ENOENT)的子相册 */
+    const goneKids: AlbumRow[] = [];
     for (const child of kids) {
-      if (child.kind === "mounted" && child.rootPath && !seenDirs.has(child.rootPath)) {
-        const st = await fs.stat(child.rootPath).catch(() => null);
-        if (!st?.isDirectory()) {
-          const rows = await db.select({ id: media.id }).from(media).where(eq(media.albumId, child.id));
-          if (rows.length) await db.update(media).set({ missingAt: new Date() }).where(inArray(media.id, rows.map((r) => r.id)));
-          s.missing += rows.length;
-          continue;
-        }
+      if (child.kind !== "mounted" || !child.rootPath) continue;
+      if (seenDirs.has(child.rootPath)) continue;
+      const st = await fs.stat(child.rootPath).catch((e: NodeJS.ErrnoException) => e);
+      if (st instanceof Error) {
+        // 只有"确实不存在"才算消失;权限/IO 错误(网络盘抖动)一律保留,避免误删相册
+        if (st.code === "ENOENT" || st.code === "ENOTDIR") goneKids.push(child);
+        continue;
+      }
+      if (st.isDirectory()) continue; // 存在但本轮被跳过(SKIP_DIR / 深度上限),保留
+      goneKids.push(child);
+    }
+
+    /** 本轮新出现、尚无对应相册的子目录 */
+    const newDirs = subdirs.filter((d) => !kids.some((c) => c.rootPath === d));
+
+    // 1) 目录改名识别:文件签名集合(数量 + size:mtime 多重集)完全一致 → 视为同一目录改名
+    const claimed = new Set<string>();
+    for (const dir of newDirs) {
+      if (!goneKids.length) break;
+      const sig = await dirSignature(dir);
+      if (!sig) continue;
+      for (const g of goneKids) {
+        if (claimed.has(g.id) || !g.rootPath) continue;
+        const rows = await db
+          .select({ size: media.size, mtimeMs: media.mtimeMs })
+          .from(media)
+          .where(and(eq(media.albumId, g.id), eq(media.storage, "ext"), sql`${media.missingAt} IS NULL`));
+        if (!rows.length || rows.length !== sig.size) continue;
+        const have = rows.map((r) => `${r.size}:${r.mtimeMs ?? 0}`).sort().join(",");
+        if (have !== [...sig].sort().join(",")) continue;
+        await moveAlbumRoot(g, dir);
+        claimed.add(g.id);
+        s.albumsMoved++;
+        break;
       }
     }
+
+    // 2) 其余消失目录:先软删除媒体;确认(第二次扫描仍缺失 / 空相册)后移除相册
+    for (const g of goneKids) {
+      if (claimed.has(g.id)) continue;
+      const rows = await db.select({ id: media.id, missingAt: media.missingAt }).from(media).where(eq(media.albumId, g.id));
+      const fresh = rows.filter((r) => !r.missingAt);
+      if (fresh.length) {
+        await db.update(media).set({ missingAt: new Date() }).where(inArray(media.id, fresh.map((r) => r.id)));
+        s.missing += fresh.length;
+      }
+      // 空相册,或上一轮已全部标记缺失 → 目录确实没了,移除相册子树(记录一并清理,不进黑名单)
+      if (!rows.length || fresh.length === 0) {
+        const sub = descendants(t, g.id);
+        const subMedia = await db.select({ id: media.id }).from(media).where(inArray(media.albumId, sub));
+        if (subMedia.length) await deleteMediaByIds(subMedia.map((r) => r.id), false, { block: false });
+        await db.delete(albums).where(inArray(albums.id, sub));
+        s.albumsRemoved += sub.length;
+        invalidateAlbums();
+      }
+    }
+
+    // 3) 递归扫描(改名后的相册用新路径)
     for (const dir of subdirs) {
       let child = kids.find((c) => c.rootPath === dir);
       if (!child) {
@@ -933,31 +1035,39 @@ async function scanOne(a: AlbumRow, recursive: boolean, s: ScanState, depth: num
 }
 
 export async function scanAlbum(code: string, recursive = true): Promise<ScanState> {
-  const t = await loadTree();
-  const a = t.byCode.get(code);
-  if (!a) throw E.notFound("相册不存在");
-  if (a.kind !== "mounted" || !a.rootPath) throw E.badRequest("只有挂载的目录相册可以扫描");
-  if (scanStates.get(a.id)?.running) throw E.conflict("该相册正在扫描中");
-  const s: ScanState = {
-    running: true, startedAt: new Date().toISOString(), finishedAt: null, added: 0, removed: 0, updated: 0, renamed: 0,
-    missing: 0, albumsCreated: 0, error: null,
-  };
-  scanStates.set(a.id, s);
+  // 竞态修复:先同步占位再 await。原先在 await loadTree() 之后才检查 running,
+  // 多个并发请求会同时通过检查,导致同一目录被并行扫描(重复建相册/重复入队)。
+  if (scanLocks.has(code)) throw E.conflict("该相册正在扫描中");
+  scanLocks.add(code);
+  let s: ScanState | null = null;
   try {
+    const t = await loadTree();
+    const a = t.byCode.get(code);
+    if (!a) throw E.notFound("相册不存在");
+    if (a.kind !== "mounted" || !a.rootPath) throw E.badRequest("只有挂载的目录相册可以扫描");
+    s = {
+      running: true, startedAt: new Date().toISOString(), finishedAt: null, added: 0, removed: 0, updated: 0, renamed: 0,
+      missing: 0, albumsCreated: 0, albumsRemoved: 0, albumsMoved: 0, truncated: 0, error: null,
+    };
+    scanStates.set(a.id, s);
     const st = await fs.stat(a.rootPath).catch(() => null);
     if (!st?.isDirectory()) throw new Error(`目录不可访问: ${a.rootPath}(为避免误删,已保留现有记录)`);
     // 扫描开始时一次性取黑名单,避免长扫描里反复过期重查
     const blocked = await blockedExtKeys();
     await scanOne(a, recursive, s, 0, blocked);
   } catch (e) {
-    s.error = String((e as Error).message ?? e);
+    if (s) s.error = String((e as Error).message ?? e);
+    else throw e;
   } finally {
-    s.running = false;
-    s.finishedAt = new Date().toISOString();
+    if (s) {
+      s.running = false;
+      s.finishedAt = new Date().toISOString();
+    }
+    scanLocks.delete(code);
     invalidateAlbums();
   }
-  if (s.error) throw E.badRequest(s.error, "scan_failed");
-  return s;
+  if (s?.error) throw E.badRequest(s.error, "scan_failed");
+  return s!;
 }
 
 /** 目录浏览(挂载对话框用):列出子目录 */

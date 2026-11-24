@@ -107,6 +107,11 @@ export const config = {
   mountRoots: list("ALLOWED_MOUNT_ROOTS").map((p) => path.resolve(/* turbopackIgnore: true */ p)),
   /** 自动重扫挂载相册的间隔(分钟),0 = 关闭 */
   scanIntervalMin: int("SCAN_INTERVAL_MIN", 0, 0, 60 * 24 * 7),
+  /**
+   * 递归扫描的最大目录深度(含根为 0)。超过该深度的子目录不再下探,
+   * 并在扫描结果里给出 truncated 提示,避免"文件明明在却搜不到"的静默丢失。
+   */
+  scanMaxDepth: int("SCAN_MAX_DEPTH", 32, 1, 128),
   /** 扫描熔断:一次扫描允许清理的最大消失比例(issue §2.1) */
   scanPruneMaxRatio: num("SCAN_PRUNE_MAX_RATIO", 0.3, 0, 1),
   /** 扫描熔断:已知记录数低于该值时不做比例熔断(小相册正常删文件) */

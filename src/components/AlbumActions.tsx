@@ -111,7 +111,28 @@ export default function AlbumActions({ album, onChanged, onDeleted }: { album: A
         </button>
       )}
       {mount && album.kind === "mounted" && (
-        <button className="btn !py-1 text-xs" disabled={busy} onClick={() => void run(() => api(`/albums/${album.code}/scan?wait=1`, { method: "POST" }))}>
+        <button
+          className="btn !py-1 text-xs"
+          disabled={busy}
+          onClick={() =>
+            void run(async () => {
+              const r = await api<{ added: number; missing: number; albumsCreated: number; albumsRemoved: number; albumsMoved: number; truncated: number }>(
+                `/albums/${album.code}/scan?wait=1`,
+                { method: "POST" },
+              );
+              const parts = [
+                `新增 ${r.added}`,
+                r.albumsCreated ? `新建子相册 ${r.albumsCreated}` : "",
+                r.albumsMoved ? `改名沿用 ${r.albumsMoved}` : "",
+                r.albumsRemoved ? `移除失效相册 ${r.albumsRemoved}` : "",
+                r.missing ? `缺失 ${r.missing}` : "",
+              ].filter(Boolean);
+              // 深层目录被截断时必须提示,否则用户会以为文件"丢了"
+              const warn = r.truncated ? `\n\n注意:有 ${r.truncated} 个子目录超过最大扫描深度(SCAN_MAX_DEPTH),其中的文件未被索引。` : "";
+              await dlg.alert(`扫描完成:${parts.join(" · ")}${warn}`, "重新扫描");
+            })
+          }
+        >
           ⟳ 重新扫描
         </button>
       )}
