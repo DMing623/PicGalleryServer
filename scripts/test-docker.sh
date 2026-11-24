@@ -63,9 +63,13 @@ for DRIVER in $DRIVERS; do
   [ $ready = 1 ] || { echo "服务未就绪"; docker logs --tail 60 "$NAME"; FAILED=$((FAILED+1)); cleanup; continue; }
 
   step "$DRIVER:容器环境检查"
-  check "进程非 root 运行" bash -c "[ \"\$(docker exec $NAME id -u)\" != 0 ]"
+  # 注意:镜像没有 USER 指令,入口脚本以 root 启动、再用 setpriv 降权到 node(1000)。
+  # 因此 `docker exec id -u` 恒为 0,不能据此判断;必须查应用进程(next-server)自身的 uid。
+  check "应用进程非 root 运行(uid=1000)" bash -c "docker exec $NAME sh -c 'for p in /proc/[0-9]*; do case \"\$(cat \$p/comm 2>/dev/null)\" in next*) awk \"/^Uid:/{print \\\$2}\" \$p/status;; esac; done' | grep -qx 1000"
   check "容器内有 ffmpeg / ffprobe" docker exec "$NAME" sh -c 'ffmpeg -version && ffprobe -version'
-  check "jemalloc 已 LD_PRELOAD" bash -c "docker exec $NAME sh -c 'cat /proc/1/environ /proc/\$(pgrep -n node)/environ 2>/dev/null | tr \"\\0\" \"\\n\" | grep -q jemalloc'"
+  # jemalloc 由入口脚本 export LD_PRELOAD 后注入;镜像内无 ps/pgrep,且 root 读 uid1000 进程的
+  # /proc/*/maps 会被 ptrace 权限拒绝,故以 -u 1000 遍历 /proc 检查 maps 中的 libjemalloc。
+  check "jemalloc 已加载到应用进程" bash -c "docker exec -u 1000 $NAME sh -c 'for p in /proc/[0-9]*; do grep -qa libjemalloc \$p/maps 2>/dev/null && echo yes; done' | grep -q yes"
   check "/api/health 返回 200" curl -fs "$BASE/api/health"
   echo "  node: $(docker exec $NAME node -v)  时区: $(docker exec $NAME date +%Z)"
 

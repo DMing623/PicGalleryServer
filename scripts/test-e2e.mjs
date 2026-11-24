@@ -33,6 +33,9 @@ const SAMPLES = process.env.SAMPLES_DIR || "/tmp/pgs-samples";
 const DATA = process.env.DATA_DIR || "";
 const MNT_HOST = process.env.MOUNT_HOST_DIR || "";
 const MNT_SRV = process.env.MOUNT_SERVER_DIR || MNT_HOST;
+// 服务端绝对路径 → 测试进程可见路径(Docker 里 /photos ↔ 宿主机挂载目录)
+const toHostPath = (p) =>
+  MNT_SRV && MNT_HOST && p && p.startsWith(MNT_SRV) ? path.join(MNT_HOST, p.slice(MNT_SRV.length)) : p;
 const HAS_VIDEO = process.env.HAS_VIDEO !== "0";
 const OFFLINE = process.env.OFFLINE === "1";
 const ONLY = (process.env.ONLY || "").split(",").filter(Boolean);
@@ -290,8 +293,15 @@ async function sUpload() {
   ].filter((f) => fs.existsSync(f.path));
   if (fs.existsSync(S("fmt.avif"))) files.push({ path: S("fmt.avif") });
   const tvid = tinyVideo;
-  if (tvid) files.push({ path: tvid });
-  if (nasaVids[0]) files.push({ path: nasaVids[0] });
+  // 去重:tiny.mp4 缺失时 tinyVideo 会回落到 nasaVids[0],此时不能再重复 push,
+  // 否则同一视频上传两次,第二次被判为 duplicate,导致「所有文件 created」断言失败
+  const seenPaths = new Set(files.map((f) => f.path));
+  for (const p of [tvid, nasaVids[0]]) {
+    if (p && !seenPaths.has(p)) {
+      seenPaths.add(p);
+      files.push({ path: p });
+    }
+  }
 
   let r = await admin.upload({ album: st.A.code, wait: 1, concurrency: 4 }, files, { timeout: 300_000 });
   ok(r.status === 200, "批量上传 HTTP 200", `${r.status} ${r.buf.toString().slice(0, 200)}`);
@@ -341,7 +351,22 @@ async function sUpload() {
   eq(m.summary.exposure.fNumber, "f/2.8", "EXIF 光圈");
   eq(m.summary.exposure.exposureTime, "1/250s", "EXIF 快门");
   eq(m.summary.exposure.focalLength, "50mm", "EXIF 焦距");
-  ok(String(d.takenAt).startsWith("2021-07-20T12:34:56"), "takenAt 取自 DateTimeOriginal", d.takenAt);
+  // EXIF DateTimeOriginal 无时区,产品按【站点时区】解释(默认 Asia/Shanghai),
+  // 因此 API 返回的是 UTC ISO 串。断言时按站点时区换算回本地时间再比较,
+  // 避免在不同 TZ 的宿主机/容器上误判(此前在 TZ=UTC 的 CI 上恰好通过)。
+  {
+    const tz = (await admin.get("/settings")).data?.timezone || "Asia/Shanghai";
+    let local = "";
+    try {
+      local = new Intl.DateTimeFormat("sv-SE", {
+        timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+      }).format(new Date(d.takenAt)).replace(" ", "T");
+    } catch {
+      local = String(d.takenAt);
+    }
+    ok(local.startsWith("2021-07-20T12:34:56"), "takenAt 取自 DateTimeOriginal", `${d.takenAt} → ${tz} ${local}`);
+  }
   ok(String(d.sortAt) === String(d.takenAt), "sortAt = takenAt");
   eq(m.summary.file.format, "jpeg", "文件格式");
   const ai = (await admin.get(`/media/${st.up["ai-a1111.png"].id}`)).data;
@@ -365,7 +390,13 @@ async function sUpload() {
   ok(withKw.length > 0, "至少一张 NASA 图片提取到 IPTC/XMP/EXIF 内容(标题/关键词/相机)", `${withKw.length}/${nasaImgs.length}`);
   if (HAS_VIDEO && tvid) {
     const v = done[st.up[path.basename(tvid)]?.id];
-    ok(v?.kind === "video" && v.duration > 1 && v.duration < 4 && v.width === 320, "视频:时长/宽度(ffprobe)", JSON.stringify({ d: v?.duration, w: v?.width }));
+    // 断言目标:合成 2 秒 320x240 视频。若 tiny.mp4 缺失而回落到 NASA 真实视频,
+    // 时长/宽度必然不同,此时只校验「已解析出时长与宽度」,避免误报。
+    const isSynth = path.basename(tvid) === "tiny.mp4";
+    const vOk = isSynth
+      ? v?.kind === "video" && v.duration > 1 && v.duration < 4 && v.width === 320
+      : v?.kind === "video" && v.duration > 0 && v.width > 0;
+    ok(vOk, isSynth ? "视频:时长/宽度(ffprobe)" : "视频:时长/宽度(ffprobe,NASA 真实素材)", JSON.stringify({ f: path.basename(tvid), d: v?.duration, w: v?.width }));
     ok(/h264|avc/i.test(v?.meta?.video?.videoCodec || ""), "视频:编码识别 h264", v?.meta?.video?.videoCodec);
     const th = await admin.get(`/media/${v.id}/thumb`);
     ok(th.status === 200 && /image\//.test(th.headers.get("content-type")), "视频封面 thumb 可取");
@@ -962,9 +993,12 @@ async function sMount() {
   const victim = tripItems.find((i) => i.filename === "t1.jpg") || tripItems[0];
   if (victim) {
     const vpath = (await admin.get(`/media/${victim.id}`)).data.storageKey;
+    // storageKey 在 ext 存储下是【服务端视角】的绝对路径(Docker 里是 /photos/...),
+    // 测试进程看到的是宿主机路径,必须换算后再做磁盘断言。
+    const vhost = toHostPath(vpath);
     r = await admin.del(`/media/${victim.id}`);
     ok(r.status === 200 && r.data.blocked, "ext 媒体默认删除=排除", r.buf.toString().slice(0, 150));
-    ok(fs.existsSync(vpath), "排除后磁盘源文件仍在");
+    ok(fs.existsSync(vhost), "排除后磁盘源文件仍在", vpath);
     r = await admin.post(`/albums/${M.code}/scan?wait=1&recursive=1`);
     ok(!(await list(trip.code)).some((i) => i.filename === victim.filename), "重新扫描不会把被排除文件重新入库");
     const b = (await admin.get("/blocklist")).data.items.find((x) => x.storageKey === vpath);
@@ -975,7 +1009,7 @@ async function sMount() {
     ok((await list(trip.code)).some((i) => i.id === victim.id), "恢复后回到相册");
     await admin.del(`/media/${victim.id}`);
     const b2 = (await admin.get("/blocklist")).data.items.find((x) => x.storageKey === vpath);
-    fs.rmSync(vpath, { force: true });
+    fs.rmSync(vhost, { force: true });
     r = await admin.post(`/blocklist/${b2.id}/restore`);
     eq(r.status, 400, "源文件已不存在时 restore → 400 source_missing");
     eq(r.err?.code, "source_missing", "错误码 source_missing");
@@ -986,7 +1020,7 @@ async function sMount() {
   if (keep) {
     const kp = (await admin.get(`/media/${keep.id}`)).data.storageKey;
     r = await admin.del(`/media/${keep.id}?purge=1`);
-    ok(r.status === 200 && !fs.existsSync(kp), "可写挂载相册 purge=1 → 磁盘文件真正删除", `${r.status} ${r.err?.code}`);
+    ok(r.status === 200 && !fs.existsSync(toHostPath(kp)), "可写挂载相册 purge=1 → 磁盘文件真正删除", `${r.status} ${r.err?.code}`);
   }
 
   // 熔断:一次扫描大面积消失时不批量清理(样本 ≥ SCAN_PRUNE_MIN_COUNT 才触发,小库不测)
