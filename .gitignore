@@ -6,6 +6,9 @@ data
 *.log
 *.tsbuildinfo
 
+# 一次性测试/生成脚本:临时产物,不入库(长期保留的测试脚本用 test-*.mjs 命名)
+scripts/tmp-*
+
 # 由 Next.js 自行生成与维护,内容可能随版本变化,不应纳入版本管理
 # (官方说明:https://nextjs.org/docs/app/api-reference/config/typescript)
 next-env.d.ts
