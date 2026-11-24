@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-import { eq, inArray, sql } from "drizzle-orm";
-import { db, dbKind, rawQuery } from "@/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { db, dbKind, nullSafeEq, rawQuery } from "@/db";
 import { media } from "@/db/schema";
 import { can } from "../auth";
 import { config } from "../config";
@@ -161,10 +161,16 @@ route("POST", "/media/exists", "upload", async (ctx) => {
   const b = await readJson(ctx.req);
   const hashes = Array.isArray(b.hashes) ? b.hashes.map(String).slice(0, 5000) : [];
   if (!hashes.length) throw E.badRequest("缺少 hashes");
-  const rows = await db
-    .select({ hash: media.hash, id: media.id, albumId: media.albumId })
-    .from(media)
-    .where(inArray(media.hash, hashes));
+  // 去重在服务端按「同一相册」判定:带 album(相册代码)或 dir 时只比对目标相册,
+  // 否则客户端会把「已在别的相册里」的文件误判为已存在而跳过(CLI 幂等同步的前提)。
+  // 不带目标时保持旧行为(全库比对)。
+  const hasTarget = b.album !== undefined || b.dir !== undefined;
+  let where = inArray(media.hash, hashes);
+  if (hasTarget) {
+    const target = await resolveTarget({ album: (b.album as string | null) ?? null, dir: (b.dir as string | null) ?? null, storage: null });
+    where = and(where, nullSafeEq(media.albumId, target.album?.id ?? null)) ?? where;
+  }
+  const rows = await db.select({ hash: media.hash, id: media.id, albumId: media.albumId }).from(media).where(where);
   return { existing: rows.map((r) => ({ hash: r.hash, id: r.id, album: r.albumId })) };
 });
 

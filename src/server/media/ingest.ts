@@ -38,12 +38,15 @@ export async function resolveTarget(p: { album?: string | null; dir?: string | n
   const t = await loadTree();
 
   if (p.dir) {
+    if (!path.isAbsolute(p.dir)) throw E.badRequest("dir 必须是服务器上的绝对路径");
     const abs = await assertMountAllowed(path.resolve(p.dir));
     const roots = t.rows
       .filter((a) => a.kind === "mounted" && a.rootPath && (abs === a.rootPath || abs.startsWith(a.rootPath + path.sep)))
       .sort((a, b) => b.rootPath!.length - a.rootPath!.length);
     let cur = roots[0];
     if (!cur) throw E.badRequest("dir 不在任何已挂载的相册目录内,请先挂载", "dir_not_mounted");
+    // 只读挂载相册(含其子目录)不允许通过 dir= 写入:与 album= 参数的校验保持一致
+    if (cur.readonly) throw E.forbidden("该挂载目录是只读的,不能写入文件(可在相册设置里关闭只读)");
     const rel = path.relative(cur.rootPath!, abs);
     if (rel) {
       let walk = cur.rootPath!;
@@ -55,12 +58,13 @@ export async function resolveTarget(p: { album?: string | null; dir?: string | n
         if (!child) {
           const [created] = await db
             .insert(albums)
-            .values({ id: randomId(14), code: `dir_${randomId(8)}`, name: seg, parentId: cur.id, kind: "mounted", storage: "ext", rootPath: walk, visibility: cur.visibility })
+            .values({ id: randomId(14), code: `dir_${randomId(8)}`, name: seg, parentId: cur.id, kind: "mounted", storage: "ext", rootPath: walk, visibility: cur.visibility, readonly: cur.readonly })
             .returning();
           child = created;
           invalidateAlbums();
         }
         cur = child;
+        if (cur.readonly) throw E.forbidden("该挂载子目录是只读的,不能写入文件(可在相册设置里关闭只读)");
       }
     }
     if (wantStorage && wantStorage !== "ext") throw E.badRequest("dir 目标的 storage 固定为 ext");

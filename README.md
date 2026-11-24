@@ -97,6 +97,22 @@ npm start                # 端口由 .env 中的 PORT 决定,默认 3000
 
 > SQLite 依赖 Node 内置的 `node:sqlite`(Node ≥ 22.5 需 `--experimental-sqlite`,Node ≥ 24 默认可用),因此运行 SQLite 模式请使用 Node 24+。视频封面与视频元数据需要系统安装 `ffmpeg`(可选):`apt install ffmpeg`。
 
+### 依赖版本要求与推荐版本
+
+以下结论来自实测(见 [`scripts/TESTING.md`](./scripts/TESTING.md))与代码审查:
+
+| 组件 | 最低 | 推荐 | 说明 |
+|---|---|---|---|
+| **Node.js** | 22.13(`engines` 写 ≥22) | **24 LTS**(镜像即 `node:24-bookworm-slim`) | SQLite 模式依赖内置 `node:sqlite`:Node 22.5–22.12 需 `--experimental-sqlite`(`next start` 无法方便传入),22.13+ 起默认可用;PostgreSQL 模式不依赖它。已在 Node 22.23 与 24 验证 |
+| **PostgreSQL** | **13** | **15 / 16 / 17** | ① `pg_trgm` 在 13+ 为「受信任扩展」,非超级用户的库所有者也能建立索引;② 代码使用 `ADD COLUMN IF NOT EXISTS`、`FILTER`、窗口函数,12 及以下未测试;③ **v1.4.3 起 PG 15 及以下也可正常运行**(此前封面查询的子查询缺少别名,PG ≤ 15 会在创建相册时报 500,PG ≥ 16 才不报错)。已实测 PG 15 与 PG 16 |
+| **SQLite**(`node:sqlite` 内置) | **3.35**(需要 `RETURNING`,聚合 `FILTER` 需 3.30,窗口函数需 3.25) | Node 24 内置的版本 | 版本由 Node 自带,无需单独安装;Node 22.23 内置 3.4x+,Node 24 更新。单进程单文件,**不要把 SQLite 文件放在网络文件系统(NFS/SMB)上**,也不要多实例共用 |
+| **ffmpeg / ffprobe** | 4.x | 6.x / 7.x | 可选;没有时视频封面为占位图且无时长/编码元数据。官方镜像已内置 |
+| **sharp(libvips)** | 随 npm 依赖安装 | — | 预编译 libvips **不含 BMP 加载器**,BMP 由项目内置解码器处理;HEIC 由 `heic-convert` 解码 |
+| **Docker** | 20.10 | 24+ / Compose v2 | `docker-compose.yml` 使用 `service_healthy` 依赖条件 |
+| 文件系统 | — | ext4 / xfs / btrfs / zfs | 挂载目录处理图片时会先复制私有副本(支持 reflink 的文件系统几乎零开销),避免外部程序截断文件导致进程崩溃 |
+
+> 数据库功能差异:两种驱动对外行为一致(同一套 e2e 在两者上均全部通过)。区别主要在容量与并发:大图库(数万以上)与搜索性能建议用 PostgreSQL(`pg_trgm` GIN 索引加速模糊搜索),SQLite 的 `LIKE '%词%'` 是顺序扫描。
+
 ### 镜像构建流水线(GitHub Actions)
 
 工作流文件:[`.github/workflows/docker-publish.yml`](./.github/workflows/docker-publish.yml)
@@ -292,3 +308,5 @@ location ~ ^/api/v1/media/[^/]+/hd {
 ## 📄 说明
 
 开发者文档(目录结构、API、扩展方式)见 [project.md](./project.md)。
+
+全量测试(API / CLI / PostgreSQL+SQLite / local+ext / Docker / InstaBox)的脚本与步骤见 [scripts/TESTING.md](./scripts/TESTING.md)。

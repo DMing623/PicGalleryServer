@@ -1,0 +1,51 @@
+# 全链路测试:PostgreSQL(服务容器)+ SQLite 各跑一遍 e2e / cli / hd / 重启持久化。
+# 详见 scripts/TESTING.md。触发:推送 main、PR、手动。
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: 安装 ffmpeg 与 psql 客户端
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg postgresql-client
+      - run: npm ci
+      - name: 构建
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          DATABASE_URL: postgresql://build:build@127.0.0.1:5432/build
+      - name: 下载测试素材(NASA + 合成)
+        run: node scripts/fetch-samples.mjs --images 8 --videos 1
+      - name: PostgreSQL(15) + SQLite 全链路
+        run: node scripts/test-matrix.mjs
+        env:
+          PG_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      - name: 上传服务日志(失败时)
+        if: failure()
+        run: |
+          mkdir -p /tmp/pgs-logs && cp /tmp/pgs-run-*/pgs-*.log /tmp/pgs-logs/ 2>/dev/null || true
+          tail -n 80 /tmp/pgs-logs/*.log 2>/dev/null || true

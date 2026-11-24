@@ -24,7 +24,7 @@
 |---|---|
 | 框架 | Next.js 16 App Router(Node runtime),TypeScript,Tailwind CSS 4 |
 | 数据库 | **PostgreSQL 或 SQLite 二选一**(Drizzle ORM;`pg` 驱动 / Node 内置 `node:sqlite` + `sqlite-proxy`) |
-| 图像 | `sharp`(缩放/转码/统计)、`exifr`(EXIF/XMP/IPTC/ICC)、`heic-convert`(HEIC 解码)、自写 PNG 块解析 |
+| 图像 | `sharp`(缩放/转码/统计;BMP 由 `media/bmp.ts` 内置解码后再交给 sharp)、`exifr`(EXIF/XMP/IPTC/ICC)、`heic-convert`(HEIC 解码)、自写 PNG 块解析 |
 | 视频 | 外部 `ffmpeg` / `ffprobe`(可选,通过 `FFMPEG_PATH` / `FFPROBE_PATH`) |
 | 对象存储 | `@aws-sdk/client-s3`(可选,懒加载) |
 | 上传解析 | `busboy` 流式 multipart(边收边写临时文件并计算 SHA-256) |
@@ -58,6 +58,7 @@
 ├─ .github/workflows/docker-publish.yml  镜像构建与推送
 ├─ public/robots.txt               默认 Disallow: /(自托管相册不被索引)
 ├─ cli/pgs.mjs                     命令行管理工具(零依赖,util.parseArgs,调用 REST API)
+├─ scripts/                        测试与运维脚本(素材下载、e2e/CLI/HD 测试、PostgreSQL+SQLite 矩阵、Docker/InstaBox 测试)。**如需测试,请阅读 scripts/TESTING.md**(脚本分工、建议步骤、已修缺陷),本文件不再展开
 ├─ data/                           运行时数据目录(DATA_DIR,默认 ./data,git 忽略)
 │   ├─ albums/<albumCode>/         受管相册(local 存储)的原文件;albums/_inbox/ 为未归类收件箱
 │   ├─ derived/<id前2位>/<id>.thumb.webp|.preview.webp   派生图
@@ -533,7 +534,7 @@ curl $A -X POST $B/blocklist/<bid>/restore        # 解除黑名单并重生成�
 | `DATA_DIR` | `./data` | 数据目录 |
 | `THUMB_CONCURRENCY` | `min(4,CPU)` | 图片处理并发(1-128) |
 | `VIDEO_CONCURRENCY` / `HEIC_CONCURRENCY` | 2 / 1 | 视频与 HEIC 解码单独限流 |
-| `THUMB_WIDTH` / `PREVIEW_WIDTH` | 480 / 1600 | 派生图最大宽度 |
+| `THUMB_WIDTH` / `PREVIEW_WIDTH` | 720 / 1600 | 派生图最大宽度 |
 | `EXIF_READ_BYTES` | 1048576 | EXIF 只读文件头字节数(读不到再放大到 8MB) |
 | `MAX_UPLOAD_MB` | 2048 | 单文件上限,0=不限 |
 | `MIN_FREE_DISK_MB` | 1024 | 上传前要求的最小剩余磁盘,0=不检查 |
@@ -640,6 +641,8 @@ node cli/pgs.mjs reprocess | regenerate-derived
 - 已知边界:播放令牌 + `Sec-Fetch-Dest` 校验只能防"直接下载",无法阻止录屏/抓包;进程内队列、限流与缓存均为单进程内存,**仅支持单实例部署**;`/media/import` 仍是同步长请求。
 
 ## 15. 开发与验证
+
+> 全量自动化测试(API / CLI / PostgreSQL+SQLite / local+ext / Docker)见 `scripts/TESTING.md`;日常只需 `node scripts/test-matrix.mjs --drivers sqlite`。
 
 ```bash
 npm install

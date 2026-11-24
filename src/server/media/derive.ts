@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -10,6 +11,7 @@ import { config, dirs } from "../config";
 import { materialize } from "../storage";
 import { buildSearchText, extractImageMeta, grabVideoFrame, probeVideo, type MediaMeta } from "./metadata";
 import { invalidateHd } from "../hd/cache";
+import { decodeBmp, isBmp } from "./bmp";
 import { isHeic } from "./types";
 import { limiter } from "../queue";
 
@@ -75,6 +77,12 @@ const heicGate = limiter(config.heicConcurrency);
 /** 视频探测/抽帧(ffmpeg 子进程)单独限流 */
 const videoGate = limiter(config.videoConcurrency);
 
+/** BMP:libvips 预编译版没有加载器,先用内置解码器转成 PNG 再交给 sharp */
+async function bmpToPng(file: string): Promise<Buffer> {
+  const d = decodeBmp(await fs.readFile(file));
+  return sharp(d.data, { raw: { width: d.width, height: d.height, channels: 4 } }).png().toBuffer();
+}
+
 export async function heicToJpeg(file: string): Promise<Buffer> {
   return heicGate(async () => {
     const convert = (await import("heic-convert")).default;
@@ -114,6 +122,10 @@ export async function processMedia(id: string): Promise<void> {
   await invalidateHd(id); // 重新处理 = 原文件可能已变化,旧高清缓存作废
   const hint = localHints.get(id);
   let mat: { path: string; cleanup: () => Promise<void> } | null = null;
+  // 挂载目录(ext)里的文件可能被外部程序(同步工具、用户)原地覆盖/截断。libvips 对 webp/heif 等格式
+  // 会 mmap 源文件,文件在读取途中被截断会让整个 Node 进程收到 SIGBUS 直接崩溃,
+  // 所以 ext 图片先复制一份私有副本再交给 sharp(支持 reflink 的文件系统上几乎零成本)。
+  let privateCopy: string | null = null;
   try {
     mat = hint
       ? { path: hint, cleanup: () => fs.unlink(hint).then(() => void localHints.delete(id), () => void localHints.delete(id)) }
@@ -124,7 +136,14 @@ export async function processMedia(id: string): Promise<void> {
     let takenAt: Date | null = null;
 
     if (row.kind === "image") {
-      const input: string | Buffer = isHeic(row.filename) ? await heicToJpeg(file) : file;
+      let src = file;
+      if (row.storage === "ext" && !isHeic(row.filename) && !isBmp(row.filename)) {
+        await fs.mkdir(dirs.tmp, { recursive: true });
+        privateCopy = path.join(dirs.tmp, `src-${randomBytes(6).toString("hex")}`);
+        await fs.copyFile(file, privateCopy, fsConstants.COPYFILE_FICLONE);
+        src = privateCopy;
+      }
+      const input: string | Buffer = isHeic(row.filename) ? await heicToJpeg(file) : isBmp(row.filename) ? await bmpToPng(file) : src;
       const m = await sharp(input, INPUT_OPTS).metadata();
       const swap = (m.orientation ?? 1) >= 5 && (m.orientation ?? 1) <= 8;
       const width = (swap ? m.height : m.width) ?? 0;
@@ -133,9 +152,9 @@ export async function processMedia(id: string): Promise<void> {
       patch.height = height;
       patch.color = await makeDerived(id, input);
       const r = await extractImageMeta(file, {
-        format: isHeic(row.filename) ? "heic" : m.format,
+        format: isHeic(row.filename) ? "heic" : isBmp(row.filename) ? "bmp" : m.format,
         width, height, space: m.space, depth: m.depth, hasAlpha: m.hasAlpha, density: m.density,
-        orientation: m.orientation, channels: m.channels, isPng: m.format === "png",
+        orientation: m.orientation, channels: m.channels, isPng: m.format === "png" && !isBmp(row.filename),
       });
       meta = r.meta;
       takenAt = r.takenAt;
@@ -188,6 +207,7 @@ export async function processMedia(id: string): Promise<void> {
       .where(eq(media.id, id));
     throw e;
   } finally {
+    if (privateCopy) await fs.unlink(privateCopy).catch(() => undefined);
     if (mat) await mat.cleanup();
   }
 }

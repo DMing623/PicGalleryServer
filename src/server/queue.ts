@@ -19,12 +19,19 @@ interface QueueState {
   waiters: Array<() => void>;
   /** 每个 id 的重试次数(指数退避,issue §2.7) */
   attempts: Map<string, number>;
+  /** 正在执行的 id 集合,以及「执行期间又被要求重新处理」的 id(执行结束后补跑一次) */
+  runningIds: Set<string>;
+  dirty: Set<string>;
 }
 
 const g = globalThis as typeof globalThis & { __pgsQueue?: QueueState };
 const state: QueueState = (g.__pgsQueue ??= {
   waiting: [], head: 0, queued: new Set(), running: 0, done: 0, failed: 0, runner: null, waiters: [], attempts: new Map(),
+  runningIds: new Set(), dirty: new Set(),
 });
+// 兼容开发热重载时遗留的旧版状态对象
+state.runningIds ??= new Set();
+state.dirty ??= new Set();
 
 const MAX_ATTEMPTS = 3;
 
@@ -45,6 +52,7 @@ function pump() {
       state.head = 0;
     }
     state.running++;
+    state.runningIds.add(id);
     state
       .runner(id)
       .then(() => {
@@ -56,11 +64,9 @@ function pump() {
         const n = (state.attempts.get(id) ?? 0) + 1;
         if (n <= MAX_ATTEMPTS) {
           state.attempts.set(id, n);
-          setTimeout(() => {
-            if (!state.queued.has(id)) return;
-            state.queued.delete(id);
-            enqueue(id, true);
-          }, 1000 * 4 ** (n - 1)).unref?.();
+          // 注意:此时 finally 还没跑完,但等定时器触发时 queued 里早已没有该 id,
+          // 以前这里用 `if (!queued.has(id)) return` 判断,导致重试永远不会发生(attempts 也一直残留)
+          setTimeout(() => enqueue(id, true), 1000 * 4 ** (n - 1)).unref?.();
         } else {
           state.attempts.delete(id);
           state.failed++;
@@ -68,7 +74,13 @@ function pump() {
       })
       .finally(() => {
         state.running--;
+        state.runningIds.delete(id);
         state.queued.delete(id);
+        // 处理过程中源文件又变了(扫描发现变更/用户要求重处理):补跑一次,避免用旧内容覆盖结果
+        if (state.dirty.delete(id)) {
+          state.attempts.delete(id);
+          enqueue(id, true);
+        }
         pump();
         if (!state.running && !pendingCount()) {
           const w = state.waiters.splice(0);
@@ -80,7 +92,10 @@ function pump() {
 
 /** 加入队列(同 id 去重)。priority=true 插队到最前。 */
 export function enqueue(id: string, priority = false) {
-  if (state.queued.has(id)) return;
+  if (state.queued.has(id)) {
+    if (state.runningIds.has(id)) state.dirty.add(id);
+    return;
+  }
   state.queued.add(id);
   if (priority) {
     // 插到游标前一位,保持 O(1)

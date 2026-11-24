@@ -13,7 +13,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-const VERSION = "1.4.0";
+/** 版本号以 package.json 为准(随仓库/镜像一起分发);读不到时回退到 unknown */
+const VERSION = (() => {
+  try {
+    const p = new URL("../package.json", import.meta.url);
+    return JSON.parse(fs.readFileSync(p, "utf8")).version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+})();
 
 /* ---------- 参数解析(util.parseArgs:未知参数直接报错,支持 --k=v 与 -- 结束符) ---------- */
 
@@ -106,7 +114,7 @@ function readPassword() {
 const TOKEN = flags.token ?? process.env.PGS_TOKEN ?? readCredFile()?.token ?? "";
 const PASS = TOKEN ? "" : readPassword();
 
-if (!TOKEN && !PASS && !["login", "help", undefined].includes(pos[0])) {
+if (!TOKEN && !PASS && !["login", "help", "version", undefined].includes(pos[0])) {
   console.error("缺少凭据:请先 `pgs login`,或设置 PGS_PASSWORD / 使用 --password-stdin");
   process.exit(2);
 }
@@ -191,7 +199,7 @@ function collect(inputs, recursive) {
     }
     if (st.isFile()) {
       if (EXT.test(p)) files.push(p);
-    } else if (st.isDirectory() && depth < 12) {
+    } else if (st.isDirectory() && depth < 12 && (depth === 0 || recursive)) {
       let entries;
       try {
         entries = fs.readdirSync(p);
@@ -234,10 +242,12 @@ async function upload(inputs) {
 
   // 幂等同步:先算本地 hash,批量查询服务端是否已存在,只传缺的(issue §4.3)
   let pending = files;
-  if (flags.duplicate !== "keep") {
+  if (flags.duplicate !== "keep" && !flags.dir) {
+    // --dir 目标会在服务端创建目录/子相册,预检不能带副作用,直接上传由服务端按相册去重
     try {
       const hashes = await Promise.all(files.map(sha256File));
-      const { existing } = await call("POST", "/media/exists", { hashes });
+      // 带上目标相册:只把「目标相册里已有」的文件当作已存在(不同相册允许放同一张图)
+      const { existing } = await call("POST", "/media/exists", { hashes, ...(flags.album ? { album: flags.album } : flags.dir ? { dir: flags.dir } : { album: null }) });
       const have = new Set(existing.map((x) => x.hash));
       pending = files.filter((_, i) => !have.has(hashes[i]));
       if (pending.length < files.length) console.log(`已存在 ${files.length - pending.length} 个文件,跳过`);

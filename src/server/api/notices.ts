@@ -40,6 +40,6 @@ route("PATCH", "/notices/:id", "notice.publish", async (ctx) => {
 
 route("DELETE", "/notices/:id", "notice.publish", async (ctx) => {
   if (!ctx.params.id) throw E.badRequest("缺少通知 id");
-  await deleteNotice(ctx.params.id);
+  if (!(await deleteNotice(ctx.params.id))) throw E.notFound("通知不存在");
   return { deleted: true };
 });

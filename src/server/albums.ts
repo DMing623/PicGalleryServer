@@ -197,7 +197,7 @@ async function loadStats(): Promise<Stats> {
       SELECT album_id, id FROM (
         SELECT album_id, id, row_number() OVER (PARTITION BY album_id ORDER BY sort_at DESC) AS rn
         FROM pgs_media WHERE album_id IS NOT NULL AND status='ready' AND missing_at IS NULL
-      ) WHERE rn = 1`);
+      ) AS ranked WHERE rn = 1`);
     const covers = new Map<string, string>();
     for (const r of cov.rows as Array<Record<string, unknown>>) covers.set(String(r.album_id), String(r.id));
     const v = { at: Date.now(), counts, covers };
@@ -393,6 +393,7 @@ export async function mountDir(input: {
   path: unknown; name?: unknown; parent?: string | null; recursive?: boolean; visibility?: unknown; scan?: boolean; readonly?: unknown;
 }) {
   if (typeof input.path !== "string" || !input.path.trim()) throw E.badRequest("缺少 path");
+  if (!path.isAbsolute(input.path.trim())) throw E.badRequest("路径必须是服务器上的绝对路径");
   const abs = await assertMountAllowed(path.resolve(input.path.trim()));
   const st = await fs.stat(abs).catch(() => null);
   if (!st?.isDirectory()) throw E.badRequest("目录不存在或不是文件夹");
@@ -578,7 +579,11 @@ async function relocateExtFileInner(
   if (row.storage !== "ext" || !path.isAbsolute(row.storageKey)) return null;
   const t = await loadTree();
   const target = targetAlbumId ? t.byId.get(targetAlbumId) : undefined;
-  if (!target || target.kind !== "mounted" || !target.rootPath) return null;
+  // 挂载目录里的文件只能在挂载相册之间搬动;移到受管相册/未归类时若只改库不搬文件,
+  // 记录会指向挂载目录却归属受管相册,造成"目录里有文件、相册里看不到"的不一致状态
+  if (!target || target.kind !== "mounted" || !target.rootPath) {
+    throw E.badRequest("挂载目录中的文件只能移动到其他挂载相册;如需放入受管相册,请使用「导入」复制一份");
+  }
   if (target.readonly) throw E.forbidden("目标相册是只读挂载目录,不能写入文件");
   const srcAlbum = row.albumId ? t.byId.get(row.albumId) : undefined;
   if (srcAlbum?.readonly) throw E.forbidden("源相册是只读挂载目录,不能移动其中的文件");

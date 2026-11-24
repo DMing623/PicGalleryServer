@@ -130,9 +130,11 @@ export async function updateNotice(id: string, patch: { title?: string; body?: s
   };
 }
 
-export async function deleteNotice(id: string): Promise<void> {
-  await db.delete(notices).where(eq(notices.id, id));
+export async function deleteNotice(id: string): Promise<boolean> {
+  const gone = await db.delete(notices).where(eq(notices.id, id)).returning({ id: notices.id });
+  if (!gone.length) return false;
   await db.delete(noticeReads).where(eq(noticeReads.noticeId, id));
+  return true;
 }
 
 /** 一键已读:把当前所有通知标记为已读 */
