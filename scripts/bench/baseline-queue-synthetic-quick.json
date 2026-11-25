@@ -1,0 +1,50 @@
+{
+  "env": {
+    "node": "v22.23.4",
+    "platform": "linux/x64",
+    "cpus": 4,
+    "mode": "spawn",
+    "jemalloc": false,
+    "mallocArenaMax": null,
+    "serverEnv": {
+      "SEARCH_RATE_PER_MIN": "100000"
+    },
+    "createdAt": "2026-11-25T11:27:54.726Z",
+    "quick": true,
+    "bigMp": 8,
+    "heicFiles": 0,
+    "config": {
+      "thumbConcurrency": 4,
+      "heic": 1,
+      "budget": 2048
+    }
+  },
+  "rows": [
+    {
+      "scen": "jpeg-100",
+      "files": 40,
+      "uploadMs": 1481,
+      "totalMs": 2091,
+      "p50": 1060,
+      "p95": 1834,
+      "smallLastMs": 1834,
+      "bigDoneMs": null,
+      "heicLastMs": null,
+      "peak": 272.0625,
+      "maxWaiting": 1
+    },
+    {
+      "scen": "big-plus-small",
+      "files": 21,
+      "uploadMs": 758,
+      "totalMs": 1298,
+      "p50": 787,
+      "p95": 1045,
+      "smallLastMs": 1045,
+      "bigDoneMs": 523,
+      "heicLastMs": null,
+      "peak": 305.42578125,
+      "maxWaiting": 3
+    }
+  ]
+}
