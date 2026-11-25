@@ -70,7 +70,26 @@
   1. 为 `body::before`、`.topbar`、`.dock` 增加 `transform: translateZ(0)` 与 `contain: layout style`，为 `.mtile`、`.tile` 增加 `contain: layout paint style`；将 `.notice-date.unread` 呼吸动画改为合成器线程执行的 `opacity` 动画；
   2. 在 `Shell.tsx` 中将搜索表单抽离为独立的 `memo(SearchForm)` 组件，搜索框打字时整页外壳零重渲染；
   3. 在 `NoticeBell.tsx` 与 `lib/format.ts` 中按时区/格式缓存 `Intl.DateTimeFormat` 实例，通知分组与时间格式化提速数十倍；通知未读轮询在后台标签页自动暂停；`Markdown.tsx` 增加 `memo` 与 `useMemo` 缓存。
+- **本项提交 Hash**：`820cd18c34cdcfa1efbbcb469dabb573d3c4d4fe` (`820cd18`)
 - **单独回滚到优化项 2（撤销优化项 3）**：
   ```bash
   git reset --hard 7d09c238e8d143a9699414902ca4ad59b0cb1ccb
+  ```
+
+---
+
+## 优化项 4：启动页 (`Splash.tsx`) 粒子网络批量路径绘制与全屏离场去模糊卡顿
+
+- **回滚锚点（上一提交）**：`820cd18c34cdcfa1efbbcb469dabb573d3c4d4fe`
+- **涉及文件**：`src/components/Splash.tsx`
+- **问题根因**：
+  1. `Splash.tsx` 的粒子画布在每一帧（60/120fps）循环中对每个粒子单独执行 `ctx.beginPath() + ctx.arc() + ctx.fill()`（最高 140 次/帧），并对每条距离 `<12000` 的连线单独执行 `ctx.beginPath() + ctx.stroke()`（每帧约 300~500 次独立绘制指令），Canvas 2D 状态切换与命令提交开销高；
+  2. 启动页结束或点击「跳过 ›」进入 `leaving` 阶段时，一方面全屏容器执行 `filter: blur(10px)` 的 650ms CSS 过渡（迫使浏览器对包含实时 Canvas + 3D 旋转光环 + 12 层 3D 文字的整屏内容逐帧重光栅化并做高斯模糊），另一方面 Canvas 帧循环仍在继续运行，导致退场露出相册主页的瞬间明显掉帧，且 650ms 内阻断底层点击。
+- **优化措施（维持原有页面布局不变）**：
+  1. 将全部粒子圆点合并为单次 `beginPath() + fill()` 绘制，粒子连线先通过包络盒快速剪枝（`|dx| > 110 || |dy| > 110`），再按距离归入 3 个透明度桶批量 `stroke()`，每帧 Canvas 绘制调用从 ~500 次降至 4 次；
+  2. 在 `leaving` 触发或标签页后台隐藏时立即终止 `requestAnimationFrame` 循环（保留画布最后一帧静态画面平滑淡出）；
+  3. 离场过渡改为纯 GPU 合成器属性 `opacity + transform: scale(1.04) translateZ(0)`，并在 `leaving` 开始瞬间设置 `pointerEvents: "none"` 立即释放底层画廊交互。
+- **单独回滚到优化项 3（撤销优化项 4）**：
+  ```bash
+  git reset --hard 820cd18c34cdcfa1efbbcb469dabb573d3c4d4fe
   ```
