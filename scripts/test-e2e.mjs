@@ -795,10 +795,19 @@ async function sMedia() {
 async function sMount() {
   section("挂载目录(ext):挂载 / 扫描 / 改名 / 搬迁 / 只读 / 删除 / 黑名单");
   if (!MNT_HOST) return skip("挂载测试", "未设置 MOUNT_HOST_DIR");
+  try { process.umask(0); } catch {}
   const H = path.join(MNT_HOST, "lib-" + tag); // 测试进程视角
   const V = path.join(MNT_SRV, "lib-" + tag); // 服务端视角
+  const chmodTree777 = (d) => {
+    try { fs.chmodSync(d, 0o777); } catch {}
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) chmodTree777(p);
+      else if (!e.isSymbolicLink()) try { fs.chmodSync(p, 0o666); } catch {}
+    }
+  };
   const cp = (src, rel) => {
-    fs.mkdirSync(path.dirname(path.join(H, rel)), { recursive: true });
+    fs.mkdirSync(path.dirname(path.join(H, rel)), { recursive: true, mode: 0o777 });
     fs.copyFileSync(src, path.join(H, rel));
   };
   cp(nasaImgs[0], "r1.jpg");
@@ -806,9 +815,10 @@ async function sMount() {
   cp(S("fmt.webp"), "2024/y1.webp");
   cp(nasaImgs[1] || nasaImgs[0], "2024/trip/t1.jpg");
   if (tinyVideo) cp(tinyVideo, "2024/trip/t2.mp4");
-  fs.mkdirSync(path.join(H, "empty"), { recursive: true });
+  fs.mkdirSync(path.join(H, "empty"), { recursive: true, mode: 0o777 });
   fs.writeFileSync(path.join(H, "notes.txt"), "ignore me");
   fs.writeFileSync(path.join(H, "2024", ".hidden.jpg"), fs.readFileSync(S("fmt.webp")));
+  chmodTree777(H);
 
   // 拒绝项
   let r = await admin.post("/albums/mount", { path: "relative/path" });
@@ -918,8 +928,9 @@ async function sMount() {
   r = await admin.post(`/albums/${M.code}/scan?wait=1`);
   ok(r.data?.removed === 1 || r.data?.missing === 1, "磁盘删除文件 → 扫描 removed=1 或软删除 missing=1", JSON.stringify(r.data));
   ok(!(await list(M.code)).some((i) => i.id === added.id), "已消失文件不再列出");
-  fs.mkdirSync(path.join(H, "new-sub/deeper"), { recursive: true });
+  fs.mkdirSync(path.join(H, "new-sub/deeper"), { recursive: true, mode: 0o777 });
   fs.copyFileSync(S("fmt.gif"), path.join(H, "new-sub/deeper/g.gif"));
+  chmodTree777(H);
   r = await admin.post(`/albums/${M.code}/scan?wait=1&recursive=1`);
   ok(r.data?.albumsCreated >= 2 && r.data.added >= 1, "新增子目录 → 自动建子相册并入库", JSON.stringify(r.data));
   r = await st.mgr.post(`/albums/${M.code}/scan`);

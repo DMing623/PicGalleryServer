@@ -177,9 +177,11 @@ ok(r.code !== 0, "media get 不存在 → 非 0");
 section("album mount / scan / import / --dir");
 if (!MNT_HOST) skip("mount/import", "未设置 MOUNT_HOST_DIR");
 else {
+  try { process.umask(0); } catch {}
   const H = path.join(MNT_HOST, "cli-lib-" + Date.now());
   const V = path.join(MNT_SRV, path.basename(H));
-  fs.mkdirSync(path.join(H, "inner"), { recursive: true });
+  fs.mkdirSync(path.join(H, "inner"), { recursive: true, mode: 0o777 });
+  try { fs.chmodSync(H, 0o777); fs.chmodSync(path.join(H, "inner"), 0o777); } catch {}
   fs.copyFileSync(path.join(SAMPLES, "synth/fmt.webp"), path.join(H, "top.webp"));
   fs.copyFileSync(path.join(SAMPLES, "synth/fmt.gif"), path.join(H, "inner/in.gif"));
   r = pgs(["album", "mount", V, "--name", "CLI挂载", "--public"], { noAuth: true });
@@ -205,7 +207,7 @@ else {
   ok(r.code === 0 && json(r)?.readonly === true, "album set --readonly");
   r = pgs(["album", "rm", M.code], { noAuth: true });
   ok(r.code === 0 && fs.existsSync(path.join(H, "top.webp")), "album rm 挂载相册只解除登记,磁盘文件保留");
-  fs.rmSync(H, { recursive: true, force: true });
+  try { fs.rmSync(H, { recursive: true, force: true }); } catch {}
 }
 
 /* ---------- key / user / settings ---------- */
