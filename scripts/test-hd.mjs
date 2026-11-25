@@ -11,6 +11,7 @@
  *       响应头(no-store)、元数据剥离、真实水印、缓存命中/失效(替换原文件/删除)、并发合并、
  *       限流 429(IP 维度,且不影响普通缩略图)、异常批量访问封禁与安全日志、S3 临时文件清理(代码路径见 src/server/hd/service.ts 的 materialize())。
  */
+import { spawnSync } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -22,6 +23,24 @@ const PASS = process.env.ADMIN_PASSWORD || "test-pass-123";
 const SECRET = process.env.SESSION_SECRET || "test-secret";
 const DATA = path.resolve(process.env.DATA_DIR || "./data");
 const SCAN = Number(process.env.HD_SCAN_DISTINCT || 150);
+
+// 容器以任意非宿主机 uid(如 RUN_AS=12345)运行时,容器内新建的子目录/文件属主为该 uid,宿主机用户直接写/删会 EACCES;
+// 此时由容器内当前用户把 /app/data 放开读写权限后重试。
+function relaxContainerDataPerms() {
+  const c = process.env.DOCKER_CONTAINER;
+  if (!c) return false;
+  const parts = (process.env.DOCKER_CMD || "docker").trim().split(/\s+/);
+  spawnSync(parts[0], [...parts.slice(1), "exec", c, "chmod", "-R", "a+rwX", "/app/data"], { stdio: "ignore" });
+  return true;
+}
+async function writeData(filePath, buf) {
+  try { await fs.writeFile(filePath, buf); }
+  catch (e) { if (e?.code === "EACCES" && relaxContainerDataPerms()) await fs.writeFile(filePath, buf); else throw e; }
+}
+async function unlinkData(filePath) {
+  try { await fs.unlink(filePath); }
+  catch (e) { if (e?.code === "EACCES" && relaxContainerDataPerms()) await fs.unlink(filePath); else throw e; }
+}
 
 let passed = 0;
 let failed = 0;
@@ -226,14 +245,14 @@ async function main() {
   ok(!!storageKey, "管理员可读到 storageKey(测试用)");
   const before = Buffer.from(await (await fetchHd(pubId)).res.arrayBuffer());
   const replaced = await makeImage(2600, 1500);
-  await fs.writeFile(path.join(DATA, storageKey), replaced);
+  await writeData(path.join(DATA, storageKey), replaced);
   r = await fetchHd(pubId);
   const after = Buffer.from(await r.res.arrayBuffer());
   ok(r.res.headers.get("x-pgs-cache") === "miss", "原文件被替换后旧缓存失效并重新生成", r.res.headers.get("x-pgs-cache"));
   ok(!before.equals(after), "替换后输出内容发生变化");
   // 缓存文件被删除后可自动重新生成
   const shard = path.join(DATA, "cache", "hd", pubId.slice(0, 2));
-  for (const f of await fs.readdir(shard).catch(() => [])) if (f.startsWith(`${pubId}.`)) await fs.unlink(path.join(shard, f));
+  for (const f of await fs.readdir(shard).catch(() => [])) if (f.startsWith(`${pubId}.`)) await unlinkData(path.join(shard, f));
   r = await fetchHd(pubId);
   ok(r.status === 200 && r.res.headers.get("x-pgs-cache") === "miss", "缓存目录被清空后自动重新生成", `${r.status}`);
   // 水印是真实合成进像素的:缓存里是未加水印的基础图,输出必须不同
@@ -390,7 +409,7 @@ async function main() {
 
     // ⑥ 替换原图后旧成品不再命中(版本变化),且旧版本成品被清理
     const detail8 = await data(await call("GET", `/media/${wmId}`, { token: admin }));
-    await fs.writeFile(path.join(DATA, detail8.storageKey), await makeImage(2700, 1800));
+    await writeData(path.join(DATA, detail8.storageKey), await makeImage(2700, 1800));
     x = await fetchHd(wmId);
     ok(x.res.headers.get("x-pgs-wm-cache") === "miss" && x.res.headers.get("x-pgs-cache") === "miss", "原图被替换后水印成品与基图都不命中");
     const afterReplace = Buffer.from(await x.res.arrayBuffer());

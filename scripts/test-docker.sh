@@ -53,12 +53,13 @@ command -v node >/dev/null 2>&1 || { echo "需要 node(≥22)在宿主机运行�
 # ---- 运行身份 ----
 USER_ARGS=()
 EXPECT_UID=1000
+EXPECT_UG=1000:1000
 case "$RUN_AS" in
   entry) ;;
   *[!0-9:]* | "") echo "RUN_AS 只能是 entry 或 数字 uid[:gid],收到: $RUN_AS"; exit 2 ;;
   *) UID_PART="${RUN_AS%%:*}"; GID_PART="${RUN_AS#*:}"; [ "$GID_PART" = "$RUN_AS" ] && GID_PART="$UID_PART"
      [ "$UID_PART" != "0" ] || { echo "RUN_AS=0 不是非 root 场景;要测默认(root 入口降权)请用 RUN_AS=entry"; exit 2; }
-     USER_ARGS=(--user "$UID_PART:$GID_PART"); EXPECT_UID="$UID_PART" ;;
+     USER_ARGS=(--user "$UID_PART:$GID_PART"); EXPECT_UID="$UID_PART"; EXPECT_UG="$UID_PART:$GID_PART" ;;
 esac
 LIMIT_ARGS=()
 [ -n "$MEM_LIMIT" ] && LIMIT_ARGS+=(--memory "$MEM_LIMIT")
@@ -132,9 +133,9 @@ for DRIVER in $DRIVERS; do
   # 注意:RUN_AS=entry 时 `docker exec id -u` 恒为 0(入口脚本以 root 启动再降权),不能据此判断,必须查应用进程自身的 uid。
   check "应用进程以 uid=$EXPECT_UID 运行(非 root)" app_uid_ok "$NAME"
   check "容器内有 ffmpeg / ffprobe" $DOCKER exec "$NAME" sh -c 'ffmpeg -version && ffprobe -version'
-  # jemalloc 由入口脚本 export LD_PRELOAD 注入;镜像内无 ps/pgrep,且 root 读其它 uid 进程的 /proc/*/maps 可能被拒,
-  # 故以应用自身 uid 遍历 /proc 检查 maps 中的 libjemalloc。
-  check "jemalloc 已加载到应用进程" bash -c "$DOCKER exec -u $EXPECT_UID $NAME sh -c 'for p in /proc/[0-9]*; do grep -qa libjemalloc \$p/maps 2>/dev/null && echo yes; done' | grep -q yes"
+  # jemalloc 由入口脚本 export LD_PRELOAD 注入;镜像内无 ps/pgrep,且 ptrace_may_access 要求 uid 与 gid 均与目标进程一致,
+  # 故以应用自身 uid:gid 遍历 /proc 检查 maps 中的 libjemalloc。
+  check "jemalloc 已加载到应用进程" bash -c "$DOCKER exec -u $EXPECT_UG $NAME sh -c 'for p in /proc/[0-9]*; do grep -qa libjemalloc \$p/maps 2>/dev/null && echo yes; done' | grep -q yes"
   check "/api/health 返回 200" curl -fs "$BASE/api/health"
   check "数据目录对应用可写(health/ready 的 dataDir 检查)" bash -c "curl -fs '$BASE/api/v1/health/ready' | grep -q '\"dataDir\":{\"ok\":true'"
   check "容器内 /app/data 内建的子目录属主为应用 uid(不是 root,否则非 root 无法写)" bash -c "[ \"\$($DOCKER exec $NAME sh -c 'stat -c %u /app/data/albums 2>/dev/null || stat -c %u /app/data')\" != 0 ]"
@@ -165,7 +166,8 @@ for DRIVER in $DRIVERS; do
   BASE="$BASE" ADMIN_PASSWORD="$PASS" SAMPLES_DIR="$SAMPLES_DIR" TEST_LABEL="docker-$DRIVER" \
     MOUNT_HOST_DIR="$T/mnt" MOUNT_SERVER_DIR=/photos node scripts/test-cli.mjs || FAILED=$((FAILED+1))
   step "$DRIVER:HD(含游客水印成品缓存;DATA_DIR 指向宿主机上的数据卷)"
-  BASE="$BASE" ADMIN_PASSWORD="$PASS" SESSION_SECRET=test-secret DATA_DIR="$T/data" HD_SCAN_DISTINCT=9 node scripts/test-hd.mjs || FAILED=$((FAILED+1))
+  BASE="$BASE" ADMIN_PASSWORD="$PASS" SESSION_SECRET=test-secret DATA_DIR="$T/data" HD_SCAN_DISTINCT=9 \
+    DOCKER_CONTAINER="$NAME" DOCKER_CMD="$DOCKER" node scripts/test-hd.mjs || FAILED=$((FAILED+1))
 
   step "$DRIVER:重启容器后数据保持"
   counts() { sfield "$BASE" counts | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const c=JSON.parse(s);console.log(c.total+"/"+c.albums+"/"+c.users)}catch{console.log("?")}})'; }
@@ -187,7 +189,7 @@ done
 # ---- 媒体内存治理(test-media):单独起一个 MEDIA_MAX_INPUT_MP=10 的 SQLite 容器 ----
 if [ "${SKIP_MEDIA:-0}" != 1 ]; then
   step "媒体内存治理(MEDIA_MAX_INPUT_MP=10, SHARP_CONCURRENCY=1)"
-  MP=$((PORT_BASE + 20)); MT="$(mktemp -d "$TMP_ROOT/pgs-docker-media-XXXXXX")"; TMPS+=("$MT"); chmod 777 "$MT"; mkdir -p "$MT/data"; chmod 777 "$MT/data"
+  MP=$((PORT_BASE + 20)); MT="$(mktemp -d "$TMP_ROOT/pgs-docker-media-XXXXXX")"; TMPS+=("$MT"); chmod 777 "$MT"; mkdir -p "$MT/data"/{albums,derived,tmp,cache,logs,branding}; chmod -R 777 "$MT/data"
   MNAME="pgs-test-media"; NAMES+=("$MNAME"); $DOCKER rm -f "$MNAME" >/dev/null 2>&1
   $DOCKER run -d --name "$MNAME" ${USER_ARGS[@]+"${USER_ARGS[@]}"} ${LIMIT_ARGS[@]+"${LIMIT_ARGS[@]}"} -p "127.0.0.1:$MP:3000" \
     -e ADMIN_PASSWORD="$PASS" -e SESSION_SECRET=test-secret -e MIN_FREE_DISK_MB=0 -e DB_DRIVER=sqlite -e SQLITE_FILE=/app/data/pgs.sqlite \
