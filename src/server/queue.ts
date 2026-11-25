@@ -147,8 +147,17 @@ export function idleIds(ids: string[], timeoutMs: number): Promise<void> {
   });
 }
 
-/** 小型并发限制器(单个请求内部使用) */
-export function limiter(max: number) {
+/** 已命名限流器的运行统计(/status 展示各闸门的 active/waiting) */
+const gates = ((globalThis as typeof globalThis & { __pgsGates?: Map<string, { max: number; stats: () => { active: number; waiting: number } }> }).__pgsGates ??= new Map());
+
+export function gateStats(): Record<string, { max: number; active: number; waiting: number }> {
+  const out: Record<string, { max: number; active: number; waiting: number }> = {};
+  for (const [name, g] of gates) out[name] = { max: g.max, ...g.stats() };
+  return out;
+}
+
+/** 小型并发限制器(单个请求内部使用);传 name 则登记到 /status */
+export function limiter(max: number, name?: string) {
   let active = 0;
   const q: Array<() => void> = [];
   const next = () => {
@@ -156,6 +165,7 @@ export function limiter(max: number) {
     active++;
     q.shift()!();
   };
+  if (name) gates.set(name, { max, stats: () => ({ active, waiting: q.length }) });
   return <T>(fn: () => Promise<T>): Promise<T> =>
     new Promise<T>((resolve, reject) => {
       q.push(() => {

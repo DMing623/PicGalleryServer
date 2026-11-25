@@ -15,6 +15,9 @@
 | `test-matrix.mjs` | **一键编排**:对 PostgreSQL 与 SQLite 各起一个全新服务,依次跑 e2e → cli → hd → 重启持久化检查,并扫描服务日志里的未处理异常 | 本机全链路入口 |
 | `test-docker.sh` | **容器镜像测试**:用 docker 起真实镜像(Postgres/SQLite 各一轮),宿主机跑 e2e/cli/hd,再检查非 root、ffmpeg、jemalloc、HEALTHCHECK、重启持久化 | 需要 Docker(例如 InstaBox 测试机) |
 | `instabox-test.sh` | 在 **InstaBox** 测试机上更新容器到新镜像并跑 `test-docker.sh` | 需要 `INSTABOX_API_KEY` |
+| `check-config.mjs` | **静态一致性校验**(零依赖,秒级):代码读取的环境变量 ↔ compose 映射 ↔ `.env.example`、版本号 ↔ `PGS_TAG`、`schema.ts` ↔ `bootstrap.ts` 的 PG/SQLite DDL | 无需构建/数据库/Docker/root;CI 与提交前必跑 |
+| `test-unit.mjs` + `unit/*.test.mjs` | **纯逻辑单元测试**(`node:test`):cgroup 解析、准入控制、内存估算、压力状态机等不依赖 sharp/DB 的模块 | Node ≥ 22.6;不需要构建 |
+| `bench/` | **内存/耗时基准**(合成素材 + 真实素材),详见 `bench/README.md` | 不需要 root/联网/DB |
 | `cleanup-image-versions.py` | 清理 GHCR 旧镜像(CI 用) | 与测试无关 |
 
 ### e2e 章节(`ONLY=` 取值)
@@ -81,6 +84,13 @@ scripts/instabox-test.sh <机器名> [镜像标签]    # 更新容器到新镜�
 
 `npm run typecheck && npm run lint && npm run build && node scripts/test-matrix.mjs --drivers sqlite`
 (仓库的 `.github/workflows/test.yml` 在 CI 里用 PostgreSQL 服务容器 + SQLite 跑同一套矩阵。)
+
+### 2.5 不需要构建/数据库的快速检查(推荐每次提交前)
+
+```bash
+node scripts/check-config.mjs     # 配置/文档/数据库自举一致性
+node scripts/test-unit.mjs        # 纯逻辑单测
+```
 
 ## 3. 环境变量速查
 

@@ -13,9 +13,17 @@ interface Status {
   uptimeSec: number;
   node: string;
   counts: { total: number; images: number; videos: number; pending: number; failed: number; unsorted: number; bytes: number; albums: number; users: number; keys: number };
-  queue: { concurrency: number; running: number; waiting: number; done: number; failed: number };
+  queue: {
+    concurrency: number; running: number; waiting: number; done: number; failed: number;
+    gates?: Record<string, { max: number; active: number; waiting: number }>;
+  };
   tools: { ffmpeg: boolean; ffprobe: boolean; s3: boolean };
-  memory: { rss: number; heapUsed: number };
+  memory: {
+    rss: number; heapUsed: number; heapTotal?: number; external?: number; arrayBuffers?: number; maxRss?: number; rssPeak10m?: number;
+    cgroup?: { version: number; current: number | null; max: number | null; anon: number | null; workingSet: number | null } | null;
+    pressureRatio?: number | null;
+  };
+  eventLoop?: { p99Ms: number; maxMs: number; windowSec: number } | null;
   disk: { freeBytes: number; totalBytes: number } | null;
   config: Record<string, string | number>;
   hd?: { files: number; bytes: number; maxBytes: number; ttlDays: number; hits: number; misses: number; evicted: number; expired: number; invalidated: number; conversions: number; coalesced: number };
@@ -233,7 +241,20 @@ export default function SystemTab() {
           <li>版本:{s.app} {s.version}</li>
           <li>Node:{s.node}</li>
           <li>运行时长:{Math.floor(s.uptimeSec / 3600)} 小时 {Math.floor((s.uptimeSec % 3600) / 60)} 分</li>
-          <li>内存:RSS {bytes(s.memory.rss)} · 堆 {bytes(s.memory.heapUsed)}</li>
+          <li>内存:RSS {bytes(s.memory.rss)} · 堆 {bytes(s.memory.heapUsed)}{s.memory.external !== undefined && <> · 堆外 {bytes(s.memory.external)}</>}</li>
+          {s.memory.rssPeak10m !== undefined && <li>近 10 分钟 RSS 峰值:{bytes(s.memory.rssPeak10m)}(启动以来 {bytes(s.memory.maxRss ?? 0)})</li>}
+          {s.memory.cgroup && (
+            <li>
+              容器内存:工作集 {bytes(s.memory.cgroup.workingSet ?? 0)} / {s.memory.cgroup.max ? bytes(s.memory.cgroup.max) : "无上限"}
+              {s.memory.pressureRatio != null && <> · 水位 {Math.round(s.memory.pressureRatio * 100)}%</>}
+            </li>
+          )}
+          {s.eventLoop && <li>事件循环延迟:p99 {s.eventLoop.p99Ms}ms · 最大 {s.eventLoop.maxMs}ms</li>}
+          {s.queue.gates && Object.keys(s.queue.gates).length > 0 && (
+            <li>
+              闸门:{Object.entries(s.queue.gates).map(([k, v]) => `${k} ${v.active}/${v.max}${v.waiting ? `(等待 ${v.waiting})` : ""}`).join(" · ")}
+            </li>
+          )}
           <li>ffmpeg:{s.tools.ffmpeg ? "✓ 可用" : "✗ 未检测到(视频封面使用占位图)"}</li>
           <li>ffprobe:{s.tools.ffprobe ? "✓ 可用" : "✗ 未检测到(视频元数据为 N/A)"}</li>
           <li>对象存储 S3:{s.tools.s3 ? "✓ 已配置" : "未配置"}</li>

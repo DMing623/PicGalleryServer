@@ -74,9 +74,9 @@ async function makeDerived(id: string, input: string | Buffer) {
 }
 
 /** HEIC 解码是最吃内存/CPU 的路径,单独限流(issue §6.1) */
-const heicGate = limiter(config.heicConcurrency);
+const heicGate = limiter(config.heicConcurrency, "heic");
 /** 视频探测/抽帧(ffmpeg 子进程)单独限流 */
-const videoGate = limiter(config.videoConcurrency);
+const videoGate = limiter(config.videoConcurrency, "video");
 
 /** BMP:libvips 预编译版没有加载器,先用内置解码器转成 PNG 再交给 sharp */
 async function bmpToPng(file: string): Promise<Buffer> {

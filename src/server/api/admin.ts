@@ -12,7 +12,8 @@ import { E, json, readJson, str, intParam } from "../http";
 import { createKey, deleteKeyById, deleteKeyByValue, listKeys, verifyKey } from "../keys";
 import { corruptSummary, purgeCorrupt } from "../media/corrupt";
 import { invalidateAlbums, invalidateMediaCaches } from "../albums";
-import { queueStats } from "../queue";
+import { gateStats, queueStats } from "../queue";
+import { runtimeSnapshot } from "../metrics";
 import { route } from "../router";
 import { s3Available } from "../storage";
 
@@ -180,17 +181,19 @@ route("GET", "/status", "status", async () => {
       (SELECT CAST(count(*) AS INTEGER) FROM pgs_download_keys) AS keys
     FROM pgs_media`);
   const disk = await fs.statfs(config.dataDir).catch(() => null);
-  const mem = process.memoryUsage();
+  const rt = runtimeSnapshot();
   const value = {
     app: config.appName,
     version: config.version,
     uptimeSec: Math.round(process.uptime()),
     node: process.version,
     counts: r.rows[0],
-    queue: queueStats(),
+    queue: { ...queueStats(), gates: gateStats() },
     hd: await hdCacheInfo(),
     tools: { ffmpeg: ffCache.ffmpeg, ffprobe: ffCache.ffprobe, s3: s3Available() },
-    memory: { rss: mem.rss, heapUsed: mem.heapUsed },
+    memory: rt.memory,
+    sharp: rt.sharp,
+    eventLoop: rt.eventLoop,
     disk: disk ? { freeBytes: Number(disk.bavail) * Number(disk.bsize), totalBytes: Number(disk.blocks) * Number(disk.bsize) } : null,
     config: {
       dataDir: config.dataDir, thumbConcurrency: config.thumbConcurrency, videoConcurrency: config.videoConcurrency,

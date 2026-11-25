@@ -12,6 +12,7 @@ import { purgeExpiredKeys } from "./keys";
 import { sweepHdCache } from "./hd/cache";
 import { processMedia } from "./media/derive";
 import { startCorruptSweeper } from "./media/corrupt";
+import { startMetrics } from "./metrics";
 import { enqueue, setRunner } from "./queue";
 
 /**
@@ -42,6 +43,7 @@ function assertSecureConfig() {
 
 async function init() {
   assertSecureConfig();
+  startMetrics();
   await runBootstrap();
   await Promise.all(Object.values(dirs).map((d) => fs.mkdir(d, { recursive: true })));
   await syncEnvAdmin();

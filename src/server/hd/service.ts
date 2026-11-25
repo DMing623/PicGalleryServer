@@ -78,7 +78,7 @@ async function loadVisibleImage(id: string, user: AuthUser | null): Promise<Row 
 
 /* ---------- 转换 ---------- */
 
-const gate = limiter(config.hd.concurrency);
+const gate = limiter(config.hd.concurrency, "hd");
 const inflight = new Map<string, Promise<Buffer>>();
 
 async function convert(row: Row, width: number): Promise<Buffer> {
