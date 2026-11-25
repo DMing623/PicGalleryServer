@@ -27,7 +27,7 @@ import { Client, ROOT, resetPgDb, startServer } from "./lib/harness.mjs";
 const { values: a } = parseArgs({
   options: {
     drivers: { type: "string", default: "postgres,sqlite" },
-    only: { type: "string", default: "e2e,cli,hd,restart" },
+    only: { type: "string", default: "e2e,cli,hd,media,restart" },
     static: { type: "boolean", default: false },
     keep: { type: "boolean", default: false },
     "e2e-only": { type: "string", default: "" },
@@ -96,7 +96,10 @@ for (const driver of a.drivers.split(",")) {
     FFPROBE_PATH: process.env.FFPROBE_PATH || "ffprobe",
   };
   try {
-    if (driver === "postgres") await resetPgDb(pgDb);
+    if (driver === "postgres") {
+      await resetPgDb(pgDb);
+      if (suites.has("media")) await resetPgDb(pgDb + "_media");
+    }
     srv = await startServer({ driver, port, dataDir: dataDir, pgDb, env });
     const common = { BASE: srv.base, ADMIN_PASSWORD: PASS, SESSION_SECRET: "test-secret", SAMPLES_DIR: SAMPLES, DATA_DIR: dataDir, MOUNT_HOST_DIR: mnt, MOUNT_SERVER_DIR: mnt, HAS_VIDEO: HAS_VIDEO ? "1" : "0", TEST_LABEL: label, HD_SCAN_DISTINCT: "9" };
 
@@ -111,6 +114,21 @@ for (const driver of a.drivers.split(",")) {
     if (suites.has("hd")) {
       const code = await run(process.execPath, ["scripts/test-hd.mjs"], { ...common, DATA_DIR: dataDir });
       results.push({ name: `${label}:hd`, ok: code === 0 });
+    }
+    if (suites.has("media")) {
+      // 媒体内存治理:单独起一个 MEDIA_MAX_INPUT_MP=10、SHARP_CONCURRENCY=1 的服务,验证 [LIMIT] 与观测字段
+      let msrv;
+      try {
+        const mData = path.join(root, "media-data");
+        msrv = await startServer({ driver, port: port + 10, dataDir: mData, pgDb: pgDb + "_media", tag: driver + "-media", env: { ...env, MEDIA_MAX_INPUT_MP: "10", SHARP_CONCURRENCY: "1" } });
+        const code = await run(process.execPath, ["scripts/test-media.mjs"], { BASE: msrv.base, ADMIN_PASSWORD: PASS, DATA_DIR: mData, EXPECT_MAX_INPUT_MP: "10" });
+        results.push({ name: `${label}:media`, ok: code === 0 });
+      } catch (e) {
+        console.error(`✗ ${driver} media 阶段异常:`, e.message);
+        results.push({ name: `${label}:media`, ok: false });
+      } finally {
+        if (msrv) await msrv.stop();
+      }
     }
     if (suites.has("restart")) {
       console.log(`\n# 重启持久化检查(${driver})`);
