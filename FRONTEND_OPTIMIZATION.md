@@ -49,7 +49,28 @@
   2. 在 `ResizeObserver` 和 `pointerdown` 阶段缓存舞台边界 `rectRef`，手势移动与滚轮缩放过程中零同步布局读取；
   3. 在 `useHd.ts` 的 `fetchHd` 中通过离屏 `Image` + `pre.decode()` 完成异步预解码后再置为 `ready`，相邻预加载图片同样提前解码进位图缓存，左右翻页与滑动切换瞬间上屏；
   4. 在 `Viewer.tsx` 中引入请求序号防竞态（`loadReqId`）与容量为 30 的会话级详情 LRU 缓存（修改备注或重处理时自动穿透刷新）。
+- **本项提交 Hash**：`7d09c238e8d143a9699414902ca4ad59b0cb1ccb` (`7d09c23`)
 - **单独回滚到优化项 1（撤销优化项 2）**：
   ```bash
   git reset --hard 39b0a8f3dc55340733bcc16de4d39bf88e7abb2d
+  ```
+
+---
+
+## 优化项 3：毛玻璃图层合成隔离、顶栏搜索防重渲染与通知面板 `Intl` 缓存 (`globals.css`, `Shell.tsx`, `NoticeBell.tsx`, `lib/format.ts`, `Markdown.tsx`)
+
+- **回滚锚点（上一提交）**：`7d09c238e8d143a9699414902ca4ad59b0cb1ccb`
+- **涉及文件**：`src/app/globals.css`、`src/components/Shell.tsx`、`src/components/NoticeBell.tsx`、`src/lib/format.ts`、`src/components/Markdown.tsx`
+- **问题根因**：
+  1. `body::before` 四重径向渐变背景及固定定位的 `.topbar` / `.dock` 毛玻璃栏缺少 GPU 独立图层提升与 `contain` 边界隔离，瀑布流滚动时易触发大面积重绘；`.mtile` 与 `.tile` 缺少 `contain: layout paint style`，单张图加载或悬停高亮会污染同列相邻节点；
+  2. `.notice-date.unread` 的 `@keyframes date-blink` 对 `background` 做无限循环动画，属于非合成层属性，导致通知下拉展开时主线程以 60fps 持续重绘；
+  3. `Shell.tsx` 将搜索框受控状态 `text` 放在顶层，用户在搜索栏每输入一个字符都会触发整个 `Shell`（含 `NoticeBell`、`main`、底部 `.dock`）重渲染；
+  4. `NoticeBell.tsx` 的 `dateKey`/`timeLabel`/`dayLabel` 在遍历通知数组时每次调用都执行 `new Intl.DateTimeFormat(...)`（同样 `lib/format.ts` 每次调 `toLocaleString`），V8 反复实例化国际化格式化器造成明显主线程卡顿；`Markdown.tsx` 亦未做 `memo` 缓存。
+- **优化措施（维持原有页面布局不变）**：
+  1. 为 `body::before`、`.topbar`、`.dock` 增加 `transform: translateZ(0)` 与 `contain: layout style`，为 `.mtile`、`.tile` 增加 `contain: layout paint style`；将 `.notice-date.unread` 呼吸动画改为合成器线程执行的 `opacity` 动画；
+  2. 在 `Shell.tsx` 中将搜索表单抽离为独立的 `memo(SearchForm)` 组件，搜索框打字时整页外壳零重渲染；
+  3. 在 `NoticeBell.tsx` 与 `lib/format.ts` 中按时区/格式缓存 `Intl.DateTimeFormat` 实例，通知分组与时间格式化提速数十倍；通知未读轮询在后台标签页自动暂停；`Markdown.tsx` 增加 `memo` 与 `useMemo` 缓存。
+- **单独回滚到优化项 2（撤销优化项 3）**：
+  ```bash
+  git reset --hard 7d09c238e8d143a9699414902ca4ad59b0cb1ccb
   ```

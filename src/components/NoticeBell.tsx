@@ -34,11 +34,40 @@ export interface NoticeDto {
 
 const PRIVACY_KEY = "privacy";
 
+const dateKeyFormatters = new Map<string, Intl.DateTimeFormat>();
+const timeLabelFormatters = new Map<string, Intl.DateTimeFormat>();
+const dayLabelFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function getDateKeyFmt(tz: string): Intl.DateTimeFormat {
+  let f = dateKeyFormatters.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+    dateKeyFormatters.set(tz, f);
+  }
+  return f;
+}
+
+function getTimeLabelFmt(tz: string): Intl.DateTimeFormat {
+  let f = timeLabelFormatters.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat("zh-CN", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false });
+    timeLabelFormatters.set(tz, f);
+  }
+  return f;
+}
+
+function getDayLabelFmt(tz: string): Intl.DateTimeFormat {
+  let f = dayLabelFormatters.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat("zh-CN", { timeZone: tz, year: "numeric", month: "long", day: "numeric", weekday: "short" });
+    dayLabelFormatters.set(tz, f);
+  }
+  return f;
+}
+
 function dateKey(iso: string, tz: string): string {
   try {
-    return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(
-      new Date(iso),
-    );
+    return getDateKeyFmt(tz).format(new Date(iso));
   } catch {
     return iso.slice(0, 10);
   }
@@ -46,12 +75,7 @@ function dateKey(iso: string, tz: string): string {
 
 function timeLabel(iso: string, tz: string): string {
   try {
-    return new Intl.DateTimeFormat("zh-CN", {
-      timeZone: tz,
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    }).format(new Date(iso));
+    return getTimeLabelFmt(tz).format(new Date(iso));
   } catch {
     return new Date(iso).toTimeString().slice(0, 5);
   }
@@ -60,13 +84,7 @@ function timeLabel(iso: string, tz: string): string {
 function dayLabel(key: string, tz: string): string {
   try {
     const d = new Date(`${key}T12:00:00Z`);
-    return new Intl.DateTimeFormat("zh-CN", {
-      timeZone: tz,
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      weekday: "short",
-    }).format(d);
+    return getDayLabelFmt(tz).format(d);
   } catch {
     return key;
   }
@@ -86,6 +104,7 @@ export default function NoticeBell() {
 
   /* ---------- 未读数 ---------- */
   const loadUnread = useCallback(() => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     api<{ unread: number }>("/notices/unread")
       .then((r) => setUnread(r.unread))
       .catch(() => undefined);
@@ -96,9 +115,11 @@ export default function NoticeBell() {
     const t = setInterval(loadUnread, 60_000);
     const h = () => loadUnread();
     window.addEventListener("pgs:notices", h);
+    document.addEventListener("visibilitychange", h);
     return () => {
       clearInterval(t);
       window.removeEventListener("pgs:notices", h);
+      document.removeEventListener("visibilitychange", h);
     };
   }, [loadUnread]);
 
@@ -233,142 +254,142 @@ export default function NoticeBell() {
               paddingRight: "0.5rem",
             }}
           >
-          {/* 背景虚化:把相册内容挡住并模糊 */}
-          <div
-            className="notice-backdrop absolute inset-0"
-            onClick={() => setOpen(false)}
-            style={{
-              background: "color-mix(in srgb, var(--bg) 30%, rgba(0,0,0,.42))",
-              WebkitBackdropFilter: "blur(14px) saturate(1.2)",
-              backdropFilter: "blur(14px) saturate(1.2)",
-            }}
-          />
-          <div
-            ref={panel}
-            className="glass-strong fade-in relative flex h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl shadow-2xl"
-          >
-            {/* 顶部:标题 + 一键已读 */}
-            <div className="flex shrink-0 items-center gap-2 px-3 pt-3">
-              <h2 className="flex items-center gap-1.5 text-base font-semibold">
-                <span aria-hidden>🔔</span> 通知
-              </h2>
-              {unread > 0 && <span className="chip">{unread} 条未读</span>}
-              <button className="btn ml-auto !py-1 text-xs" onClick={markAll} disabled={!items.some((n) => !n.read)}>
-                ✓ 一键已读
-              </button>
-              <button className="btn !py-1 text-xs" onClick={() => setOpen(false)} aria-label="关闭">
-                ✕
-              </button>
-            </div>
-
-            {/* 未读概况长条(类似搜索栏)+ ∨ 下拉 */}
-            <div className="shrink-0 px-3 pt-2">
-              <div className="notice-bar">
-                <span className="min-w-0 flex-1 truncate text-xs">
-                  {unread > 0 ? (
-                    <>
-                      <span style={{ color: "var(--accent)" }}>● {unread} 条未读</span>
-                      {latest && <span className="muted"> · 最新:{latest.title}</span>}
-                    </>
-                  ) : (
-                    <span className="muted">{items.length ? "全部已读" : "暂无站点通知"}</span>
-                  )}
-                </span>
-                <button
-                  type="button"
-                  className="notice-caret"
-                  aria-label="展开有通知的日期"
-                  aria-expanded={dropOpen}
-                  onClick={() => setDropOpen((v) => !v)}
-                >
-                  <span style={{ display: "inline-block", transform: dropOpen ? "rotate(180deg)" : "none", transition: "transform .18s" }}>
-                    ∨
-                  </span>
+            {/* 背景虚化:把相册内容挡住并模糊 */}
+            <div
+              className="notice-backdrop absolute inset-0"
+              onClick={() => setOpen(false)}
+              style={{
+                background: "color-mix(in srgb, var(--bg) 30%, rgba(0,0,0,.42))",
+                WebkitBackdropFilter: "blur(14px) saturate(1.2)",
+                backdropFilter: "blur(14px) saturate(1.2)",
+              }}
+            />
+            <div
+              ref={panel}
+              className="glass-strong fade-in relative flex h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl shadow-2xl"
+            >
+              {/* 顶部:标题 + 一键已读 */}
+              <div className="flex shrink-0 items-center gap-2 px-3 pt-3">
+                <h2 className="flex items-center gap-1.5 text-base font-semibold">
+                  <span aria-hidden>🔔</span> 通知
+                </h2>
+                {unread > 0 && <span className="chip">{unread} 条未读</span>}
+                <button className="btn ml-auto !py-1 text-xs" onClick={markAll} disabled={!items.some((n) => !n.read)}>
+                  ✓ 一键已读
+                </button>
+                <button className="btn !py-1 text-xs" onClick={() => setOpen(false)} aria-label="关闭">
+                  ✕
                 </button>
               </div>
-              {dropOpen && (
-                <div className="notice-dates glass mt-1 max-h-52 overflow-y-auto overscroll-contain rounded-xl p-1">
-                  <button
-                    className={`notice-date ${sel === PRIVACY_KEY ? "on" : ""}`}
-                    onClick={() => {
-                      setSel(PRIVACY_KEY);
-                      setDropOpen(false);
-                    }}
-                  >
-                    🛡 安全隐私协议
-                    <span className="muted ml-auto text-[11px]">默认已读</span>
-                  </button>
-                  {groups.map(([k, arr]) => {
-                    const un = unreadDates.has(k);
-                    return (
-                      <button
-                        key={k}
-                        className={`notice-date ${sel === k ? "on" : ""} ${un ? "unread" : ""}`}
-                        onClick={() => {
-                          setSel(k);
-                          setDropOpen(false);
-                          setExpanded(new Set());
-                        }}
-                      >
-                        <span className="min-w-0 flex-1 truncate">{dayLabel(k, tz)}</span>
-                        <span className="muted ml-2 shrink-0 text-[11px]">
-                          {arr.length} 条{un ? " · 未读" : ""}
-                        </span>
-                      </button>
-                    );
-                  })}
-                  {!groups.length && <p className="muted p-2 text-xs">还没有任何通知</p>}
-                </div>
-              )}
-            </div>
 
-            {/* 内容区:可滚动 */}
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3">
-              {sel === PRIVACY_KEY ? (
-                <div className="text-[13px] leading-relaxed">
-                  <p className="muted mb-2 text-xs">以下为本站默认的安全与隐私说明,已默认阅读,无需再次同意。</p>
-                  {DISCLAIMER_SECTIONS.map((s) => (
-                    <section key={s.title} className="mb-3 last:mb-0">
-                      <h3 className="mb-1 text-sm font-semibold" style={{ color: "var(--accent)" }}>
-                        {s.title}
-                      </h3>
-                      <ul className="list-disc space-y-1 pl-5">
-                        {s.items.map((t) => (
-                          <li key={t}>{t}</li>
-                        ))}
-                      </ul>
-                    </section>
-                  ))}
+              {/* 未读概况长条(类似搜索栏)+ ∨ 下拉 */}
+              <div className="shrink-0 px-3 pt-2">
+                <div className="notice-bar">
+                  <span className="min-w-0 flex-1 truncate text-xs">
+                    {unread > 0 ? (
+                      <>
+                        <span style={{ color: "var(--accent)" }}>● {unread} 条未读</span>
+                        {latest && <span className="muted"> · 最新:{latest.title}</span>}
+                      </>
+                    ) : (
+                      <span className="muted">{items.length ? "全部已读" : "暂无站点通知"}</span>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    className="notice-caret"
+                    aria-label="展开有通知的日期"
+                    aria-expanded={dropOpen}
+                    onClick={() => setDropOpen((v) => !v)}
+                  >
+                    <span style={{ display: "inline-block", transform: dropOpen ? "rotate(180deg)" : "none", transition: "transform .18s" }}>
+                      ∨
+                    </span>
+                  </button>
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  {loading && <p className="muted text-sm">加载中…</p>}
-                  {!loading && !selItems.length && <p className="muted text-sm">这一天没有通知</p>}
-                  {selItems.map((n) => {
-                    const on = expanded.has(n.id);
-                    return (
-                      <div key={n.id} className={`notice-item ${on ? "open" : ""} ${n.read ? "" : "unread"}`}>
-                        <button className="notice-head" onClick={() => toggle(n.id)} aria-expanded={on}>
-                          <span className="notice-time">{timeLabel(n.createdAt, tz)}</span>
-                          <span className="min-w-0 flex-1 truncate text-left text-sm">{n.title}</span>
-                          {!n.read && <span className="notice-unread-dot" aria-label="未读" />}
-                          <span className="muted shrink-0 text-xs" aria-hidden>
-                            {on ? "▲" : "▼"}
+                {dropOpen && (
+                  <div className="notice-dates glass mt-1 max-h-52 overflow-y-auto overscroll-contain rounded-xl p-1">
+                    <button
+                      className={`notice-date ${sel === PRIVACY_KEY ? "on" : ""}`}
+                      onClick={() => {
+                        setSel(PRIVACY_KEY);
+                        setDropOpen(false);
+                      }}
+                    >
+                      🛡 安全隐私协议
+                      <span className="muted ml-auto text-[11px]">默认已读</span>
+                    </button>
+                    {groups.map(([k, arr]) => {
+                      const un = unreadDates.has(k);
+                      return (
+                        <button
+                          key={k}
+                          className={`notice-date ${sel === k ? "on" : ""} ${un ? "unread" : ""}`}
+                          onClick={() => {
+                            setSel(k);
+                            setDropOpen(false);
+                            setExpanded(new Set());
+                          }}
+                        >
+                          <span className="min-w-0 flex-1 truncate">{dayLabel(k, tz)}</span>
+                          <span className="muted ml-2 shrink-0 text-[11px]">
+                            {arr.length} 条{un ? " · 未读" : ""}
                           </span>
                         </button>
-                        {on && (
-                          <div className="notice-body">
-                            {n.createdByName && <p className="muted mb-1 text-[11px]">发布者:{n.createdByName}</p>}
-                            <Markdown text={n.body} />
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+                      );
+                    })}
+                    {!groups.length && <p className="muted p-2 text-xs">还没有任何通知</p>}
+                  </div>
+                )}
+              </div>
+
+              {/* 内容区:可滚动 */}
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3">
+                {sel === PRIVACY_KEY ? (
+                  <div className="text-[13px] leading-relaxed">
+                    <p className="muted mb-2 text-xs">以下为本站默认的安全与隐私说明,已默认阅读,无需再次同意。</p>
+                    {DISCLAIMER_SECTIONS.map((s) => (
+                      <section key={s.title} className="mb-3 last:mb-0">
+                        <h3 className="mb-1 text-sm font-semibold" style={{ color: "var(--accent)" }}>
+                          {s.title}
+                        </h3>
+                        <ul className="list-disc space-y-1 pl-5">
+                          {s.items.map((t) => (
+                            <li key={t}>{t}</li>
+                          ))}
+                        </ul>
+                      </section>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {loading && <p className="muted text-sm">加载中…</p>}
+                    {!loading && !selItems.length && <p className="muted text-sm">这一天没有通知</p>}
+                    {selItems.map((n) => {
+                      const on = expanded.has(n.id);
+                      return (
+                        <div key={n.id} className={`notice-item ${on ? "open" : ""} ${n.read ? "" : "unread"}`}>
+                          <button className="notice-head" onClick={() => toggle(n.id)} aria-expanded={on}>
+                            <span className="notice-time">{timeLabel(n.createdAt, tz)}</span>
+                            <span className="min-w-0 flex-1 truncate text-left text-sm">{n.title}</span>
+                            {!n.read && <span className="notice-unread-dot" aria-label="未读" />}
+                            <span className="muted shrink-0 text-xs" aria-hidden>
+                              {on ? "▲" : "▼"}
+                            </span>
+                          </button>
+                          {on && (
+                            <div className="notice-body">
+                              {n.createdByName && <p className="muted mb-1 text-[11px]">发布者:{n.createdByName}</p>}
+                              <Markdown text={n.body} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
           </div>,
           document.body,
         )}

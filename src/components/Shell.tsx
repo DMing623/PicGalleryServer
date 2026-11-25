@@ -3,7 +3,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import { useApp } from "./AppProvider";
 import NoticeBell from "./NoticeBell";
@@ -11,6 +11,57 @@ import { useInstall } from "./Pwa";
 import UploadDialog from "./UploadDialog";
 
 const IS_DEV = process.env.NODE_ENV !== "production";
+
+/**
+ * 独立搜索表单:将输入框受控状态隔离在表单内部,
+ * 避免每次按键输入时连带重渲染整页 Shell(NoticeBell、main、底部 dock)。
+ */
+const SearchForm = memo(function SearchForm({
+  scope,
+  kind,
+  order,
+  urlQuery,
+}: {
+  scope: string | null;
+  kind: string;
+  order: "asc" | "desc";
+  urlQuery: string;
+}) {
+  const router = useRouter();
+  const [text, setText] = useState(urlQuery);
+
+  useEffect(() => {
+    setText(urlQuery);
+  }, [urlQuery]);
+
+  function search(e: React.FormEvent) {
+    e.preventDefault();
+    const base = scope ? `/albums/${scope}` : "/";
+    const p = new URLSearchParams();
+    if (text.trim()) p.set("q", text.trim());
+    if (kind) p.set("kind", kind);
+    if (order === "asc") p.set("order", "asc");
+    const s = p.toString();
+    router.push(s ? `${base}?${s}` : base);
+  }
+
+  return (
+    <form noValidate onSubmit={search} className="flex min-w-0 flex-1 items-center gap-1.5">
+      <input
+        className="field compact-field min-w-0 flex-1"
+        type="text"
+        enterKeyHint="search"
+        placeholder={scope ? "本相册内搜索…" : "搜索 文件名/备注/相机/提示词"}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+      <span className="chip hidden shrink-0 sm:inline-flex">{scope ? "当前相册" : "全局"}</span>
+      <button type="submit" className="dbtn shrink-0" aria-label="搜索">
+        🔍
+      </button>
+    </form>
+  );
+});
 
 /**
  * 应用外壳:
@@ -27,23 +78,10 @@ export default function Shell({ children }: { children: ReactNode }) {
   const albumMatch = /^\/albums\/([^/]+)/.exec(pathname);
   const scope = albumMatch ? decodeURIComponent(albumMatch[1]) : null;
   const isGallery = pathname === "/" || !!albumMatch;
-  const [text, setText] = useState(sp.get("q") ?? "");
   const [upload, setUpload] = useState(false);
+  const urlQuery = sp.get("q") ?? "";
   const kind = sp.get("kind") ?? "";
   const order = sp.get("order") === "asc" ? "asc" : "desc";
-
-  useEffect(() => setText(sp.get("q") ?? ""), [sp]);
-
-  function search(e: React.FormEvent) {
-    e.preventDefault();
-    const base = scope ? `/albums/${scope}` : "/";
-    const p = new URLSearchParams();
-    if (text.trim()) p.set("q", text.trim());
-    if (kind) p.set("kind", kind);
-    if (order === "asc") p.set("order", "asc");
-    const s = p.toString();
-    router.push(s ? `${base}?${s}` : base);
-  }
 
   function setParam(k: string, v: string) {
     const p = new URLSearchParams(sp.toString());
@@ -74,20 +112,7 @@ export default function Shell({ children }: { children: ReactNode }) {
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={me?.site.iconUrl ?? "/api/v1/branding/icon"} alt="" className="h-6 w-6 shrink-0 rounded-md" />
         <NoticeBell />
-        <form noValidate onSubmit={search} className="flex min-w-0 flex-1 items-center gap-1.5">
-          <input
-            className="field compact-field min-w-0 flex-1"
-            type="text"
-            enterKeyHint="search"
-            placeholder={scope ? "本相册内搜索…" : "搜索 文件名/备注/相机/提示词"}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
-          <span className="chip hidden shrink-0 sm:inline-flex">{scope ? "当前相册" : "全局"}</span>
-          <button type="submit" className="dbtn shrink-0" aria-label="搜索">
-            🔍
-          </button>
-        </form>
+        <SearchForm scope={scope} kind={kind} order={order} urlQuery={urlQuery} />
       </div>
 
       <main className="pb-[calc(env(safe-area-inset-bottom,0px)+72px)] pt-[calc(env(safe-area-inset-top,0px)+1mm+36px+1mm)]" style={{ paddingInline: 0 }}>

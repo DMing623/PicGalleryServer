@@ -1,4 +1,22 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
+const dtFmt = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+
+const dayFmt = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+  weekday: "short",
+});
+
 export function bytes(n: number | null | undefined): string {
   if (n === null || n === undefined) return "N/A";
   if (n < 1024) return `${n} B`;
@@ -23,11 +41,11 @@ export function duration(sec: number | null | undefined): string {
 
 export function dateTime(v: string | Date | null | undefined): string {
   if (!v) return "N/A";
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? "N/A" : d.toLocaleString("zh-CN", { hour12: false });
+  const d = v instanceof Date ? v : new Date(v);
+  return Number.isNaN(d.getTime()) ? "N/A" : dtFmt.format(d);
 }
 
 export function dayLabel(v: string): string {
   const d = new Date(v);
-  return d.toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "short" });
+  return Number.isNaN(d.getTime()) ? v : dayFmt.format(d);
 }
