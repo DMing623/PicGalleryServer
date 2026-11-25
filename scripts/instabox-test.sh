@@ -21,10 +21,11 @@ REPO="${REPO_URL:-https://github.com/DMing623/PicGalleryServer.git}"
 BRANCH="${BRANCH:-main}"
 : "${INSTABOX_API_KEY:?请先 export INSTABOX_API_KEY}"
 IB="${INSTABOX:-npx --yes instabox@latest}"
+EXEC_TIMEOUT="${EXEC_TIMEOUT:-600}" # instabox exec 默认 60s 超时,全量容器测试需设为最大 600s
 RUN_AS="${RUN_AS:-1000}"            # InstaBox 默认以非 root 用户直接启动镜像(--user 1000:1000)
 EXTRA_ENV="${EXTRA_ENV:-}"          # 例如 EXTRA_ENV="DRIVERS=sqlite MEM_LIMIT=1g"
 
-rexec() { $IB exec "$MACHINE" -- bash -lc "$1"; }
+rexec() { $IB exec --timeout "$EXEC_TIMEOUT" --stream "$MACHINE" -- bash -lc "$1"; }
 
 echo "== 1. 机器环境与当前容器(自动兼容非 root 宿主机用户) =="
 rexec 'DOCKER=docker; $DOCKER info >/dev/null 2>&1 || DOCKER="sudo -n docker"; echo "user=$(id -un)($(id -u)) docker_cmd=$DOCKER"; $DOCKER version --format "docker {{.Server.Version}}" && node -v || true; $DOCKER ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"'
@@ -33,14 +34,25 @@ echo "== 2. 拉取新镜像 $IMAGE =="
 rexec "DOCKER=docker; \$DOCKER info >/dev/null 2>&1 || DOCKER='sudo -n docker'; \$DOCKER pull $IMAGE && \$DOCKER image inspect $IMAGE --format '{{.Id}} {{index .RepoDigests 0}}'"
 
 echo "== 3. 同步测试脚本并执行静态检查 + 单测 + compose 校验 + test-docker.sh (RUN_AS=$RUN_AS) =="
-rexec "set -e; DOCKER=docker; \$DOCKER info >/dev/null 2>&1 || DOCKER='sudo -n docker'; export DOCKER; D=\${HOME:-/tmp}/pgs-src; if [ -d \$D/.git ]; then cd \$D && git fetch -q origin $BRANCH && git checkout -q -B $BRANCH origin/$BRANCH; else git clone -q --depth 50 -b $BRANCH $REPO \$D && cd \$D; fi; (command -v node >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt-get install -y nodejs; }); npm ci --no-audit --no-fund >/dev/null; node scripts/check-config.mjs; [ ! -f scripts/check-docs.mjs ] || node scripts/check-docs.mjs; node scripts/test-unit.mjs; bash scripts/test-compose.sh; RUN_AS=$RUN_AS $EXTRA_ENV bash scripts/test-docker.sh $IMAGE"
+rexec "set -e; DOCKER=docker; \$DOCKER info >/dev/null 2>&1 || DOCKER='sudo -n docker'; export DOCKER; D=\${HOME:-/tmp}/pgs-src; if [ -d \$D/.git ]; then cd \$D && git fetch -q origin $BRANCH && git checkout -q -B $BRANCH origin/$BRANCH; else git clone -q --depth 50 -b $BRANCH $REPO \$D && cd \$D; fi; (command -v node >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt-get install -y nodejs; }); npm ci --prefer-offline --no-audit --no-fund >/dev/null; node scripts/check-config.mjs; [ ! -f scripts/check-docs.mjs ] || node scripts/check-docs.mjs; node scripts/test-unit.mjs; bash scripts/test-compose.sh; RUN_AS=$RUN_AS $EXTRA_ENV bash scripts/test-docker.sh $IMAGE"
 
 if [ -n "${UPDATE_RUNNING:-}" ]; then
-  echo "== 4. 更新运行中的容器 $UPDATE_RUNNING → $IMAGE(保留旧容器为 ${UPDATE_RUNNING}-old)=="
-  rexec "set -e; C=$UPDATE_RUNNING; docker inspect \$C >/dev/null; \
-    CMD=\$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ghcr.io/nicholasgasior/runlike \$C 2>/dev/null || true); \
-    echo \"旧容器 run 命令: \$CMD\"; \
-    docker stop \$C && docker rename \$C \${C}-old; \
-    if [ -n \"\$CMD\" ]; then eval \"\$(echo \"\$CMD\" | sed \"s#\$(docker inspect -f '{{.Config.Image}}' \${C}-old)#$IMAGE#\")\" ; else echo 'runlike 不可用:请手动用原参数 docker run 新镜像'; fi"
+  echo "== 4. 更新运行中的容器 $UPDATE_RUNNING → $IMAGE =="
+  rexec "set -e; DOCKER=docker; \$DOCKER info >/dev/null 2>&1 || DOCKER='sudo -n docker'; C=$UPDATE_RUNNING; \$DOCKER inspect \$C >/dev/null; \
+    OLD_IMG=\$(\$DOCKER inspect -f '{{.Config.Image}}' \$C); \
+    OLD_ID=\$(\$DOCKER inspect -f '{{.Image}}' \$C); \
+    CDIR=\$(\$DOCKER inspect -f '{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}' \$C 2>/dev/null || true); \
+    echo \"原容器镜像: \$OLD_IMG (\$OLD_ID)  Compose目录: \${CDIR:-无}\"; \
+    [ \"\$OLD_IMG\" = \"$IMAGE\" ] || \$DOCKER tag \"$IMAGE\" \"\$OLD_IMG\"; \
+    if [ -n \"\$CDIR\" ] && [ -f \"\$CDIR/docker-compose.yml\" ]; then \
+      cp -a \"\$CDIR/docker-compose.yml\" \"\$CDIR/docker-compose.yml.bak-\$(date +%Y%m%d%H%M%S)\"; \
+      cp -f \"\${HOME:-/tmp}/pgs-src/docker-compose.yml\" \"\$CDIR/docker-compose.yml\"; \
+      cd \"\$CDIR\" && \$DOCKER compose up -d app; \
+    else \
+      CMD=\$(\$DOCKER run --rm -v /var/run/docker.sock:/var/run/docker.sock ghcr.io/nicholasgasior/runlike \$C 2>/dev/null || true); \
+      echo \"旧容器 run 命令: \$CMD\"; \
+      \$DOCKER stop \$C && \$DOCKER rename \$C \${C}-old; \
+      if [ -n \"\$CMD\" ]; then eval \"\$(echo \"\$CMD\" | sed \"s#\$OLD_IMG#$IMAGE#\")\" ; else echo 'runlike 不可用:请手动用原参数 docker run 新镜像'; fi; \
+    fi"
 fi
 echo "完成。回滚: docker stop <新容器> && docker rename <容器>-old <容器> && docker start <容器>"
