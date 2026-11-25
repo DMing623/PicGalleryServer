@@ -252,19 +252,28 @@ async function main() {
   ok(!before.equals(after), "替换后输出内容发生变化");
   // 缓存文件被删除后可自动重新生成
   const shard = path.join(DATA, "cache", "hd", pubId.slice(0, 2));
-  for (const f of await fs.readdir(shard).catch(() => [])) if (f.startsWith(`${pubId}.`)) await unlinkData(path.join(shard, f));
+  const beforeDel = await fs.readdir(shard).catch(() => []);
+  for (const f of beforeDel) if (f.startsWith(`${pubId}.`)) await unlinkData(path.join(shard, f));
+  const afterDel = await fs.readdir(shard).catch(() => []);
+  console.log(`  (删除缓存: 删除前 ${beforeDel.length} 个 → 删除后 ${afterDel.length} 个${afterDel.length ? ` [${afterDel.join(",")}]` : ""})`);
   r = await fetchHd(pubId);
-  ok(r.status === 200 && r.res.headers.get("x-pgs-cache") === "miss", "缓存目录被清空后自动重新生成", `${r.status}`);
+  ok(r.status === 200 && r.res.headers.get("x-pgs-cache") === "miss", "缓存目录被清空后自动重新生成", `status=${r.status} cache=${r.res.headers.get("x-pgs-cache")}`);
   // 水印是真实合成进像素的:缓存里是未加水印的基础图,输出必须不同
   // 基图文件名 <id>.<ver12>.<w>.webp;游客水印成品多一段 8 位指纹,这里只取基图
-  const cached = (await fs.readdir(shard)).find((f) => new RegExp(`^${pubId}\\.[0-9a-f]{12}\\.\\d+\\.webp$`).test(f));
-  const base = await sharp(await fs.readFile(path.join(shard, cached))).raw().toBuffer({ resolveWithObject: true });
-  const out = await sharp(Buffer.from(await (await fetchHd(pubId)).res.arrayBuffer())).raw().toBuffer({ resolveWithObject: true });
-  let diff = 0;
-  for (let i = 0; i < base.data.length; i += 3 * 7) if (Math.abs(base.data[i] - out.data[i]) > 2 || Math.abs(base.data[i + 1] - out.data[i + 1]) > 2) diff++;
-  const sampled = base.data.length / (3 * 7);
-  ok(base.info.width === out.info.width && diff / sampled > 0.002, `水印已合成进像素 (采样差异 ${((diff / sampled) * 100).toFixed(2)}%)`);
-  ok(diff / sampled < 0.35, "水印覆盖面积适中,不影响观感");
+  const shardFiles = await fs.readdir(shard).catch(() => []);
+  const cached = shardFiles.find((f) => new RegExp(`^${pubId}\\.[0-9a-f]{12}\\.\\d+\\.webp$`).test(f));
+  if (!cached) {
+    // 磁盘上没有基图缓存:像素比较无从进行,明确记为失败而不是让整个脚本异常终止
+    ok(false, "磁盘上有基图缓存文件", `目录内容: ${shardFiles.join(", ") || "(空)"}`);
+  } else {
+    const base = await sharp(await fs.readFile(path.join(shard, cached))).raw().toBuffer({ resolveWithObject: true });
+    const out = await sharp(Buffer.from(await (await fetchHd(pubId)).res.arrayBuffer())).raw().toBuffer({ resolveWithObject: true });
+    let diff = 0;
+    for (let i = 0; i < base.data.length; i += 3 * 7) if (Math.abs(base.data[i] - out.data[i]) > 2 || Math.abs(base.data[i + 1] - out.data[i + 1]) > 2) diff++;
+    const sampled = base.data.length / (3 * 7);
+    ok(base.info.width === out.info.width && diff / sampled > 0.002, `水印已合成进像素 (采样差异 ${((diff / sampled) * 100).toFixed(2)}%)`);
+    ok(diff / sampled < 0.35, "水印覆盖面积适中,不影响观感");
+  }
   // 登录用户的动态标识水印与游客不同
   const guestImg = Buffer.from(await (await fetchHd(pubId)).res.arrayBuffer());
   const userImg = Buffer.from(await (await fetchHd(pubId, { token: viewer })).res.arrayBuffer());
