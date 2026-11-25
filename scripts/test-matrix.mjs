@@ -89,6 +89,8 @@ for (const driver of a.drivers.split(",")) {
   let srv;
   const env = {
     ALLOWED_MOUNT_ROOTS: mnt,
+    // 水印成品缓存要求请求域名可信(见 hostTrusted);测试从 127.0.0.1:<端口> 访问
+    ALLOWED_HOSTS: `127.0.0.1:${port},127.0.0.1`,
     ADMIN_PASSWORD: PASS,
     SESSION_SECRET: "test-secret",
     HD_SCAN_DISTINCT: "9",

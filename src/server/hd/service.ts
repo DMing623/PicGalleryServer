@@ -15,13 +15,13 @@ import { bmpToPng, heicToJpeg } from "../media/derive";
 import { isBmp } from "../media/bmp";
 import { estimateMemory, limitMessage } from "../media/estimate";
 import { metaForRow } from "../media/probe";
-import { baseUrl, canSee } from "../media/service";
+import { baseUrl, canSee, hostTrusted } from "../media/service";
 import { isHeic } from "../media/types";
 import { getScheduler, limiter } from "../queue";
 import { driverFor, materialize } from "../storage";
-import { ID_RE, genOf, getCached, hdStats, invalidateHd, putCached } from "./cache";
+import { ID_RE, genOf, getCached, getCachedWm, hdStats, invalidateHd, putCached, putCachedWm } from "./cache";
 import { guardHd, hdStrike } from "./guard";
-import { applyWatermark } from "./watermark";
+import { applyWatermark, wmDependsOnHost, wmFingerprint } from "./watermark";
 
 /**
  * 高清预览服务:令牌签发 → 权限校验 → 缓存/按需转换 → 水印 → 输出。
@@ -180,6 +180,8 @@ export async function serveHd(req: Request, id: string, user: AuthUser | null, i
   if (row.kind !== "image") throw E.badRequest("仅图片支持高清预览");
 
   const width = snapWidth(url.searchParams.get("w") ?? String(tk.payload.w));
+  // 失效代数必须在任何耗时操作之前取得:此后若该图被替换/删除/重处理,本次结果不得写入缓存
+  const gen0 = genOf(row.id);
   const ver = await versionOf(row);
   if (!ver) {
     await invalidateHd(row.id); // 原文件已不存在:旧缓存立即失效
@@ -200,65 +202,85 @@ export async function serveHd(req: Request, id: string, user: AuthUser | null, i
   const wmEst = wmOn ? wmEstimate(row, width).estMB : 1;
   const watermark = (buf: Buffer) => (wmOn ? gate(() => applyWatermark(buf, { host, userId: uid })) : Promise.resolve(buf));
 
+  // 游客水印成品缓存(P1-4):游客水印不含用户标识,结果由「图 + 版本 + 宽度 + 水印指纹」唯一确定。
+  // 登录用户带动态标识(U-XXXXXX),永不读写;水印文字含 {host} 而域名不可信(未配置 PUBLIC_BASE_URL / ALLOWED_HOSTS)时也不缓存。
+  // 到这里令牌、限流、可见性、missingAt 都已校验完毕 —— 缓存的是处理结果,不是访问权限。
+  type WmCache = "off" | "skip-user" | "untrusted-host" | "hit" | "miss";
+  let wmCache: WmCache = !wmOn ? "off" : uid ? "skip-user" : wmDependsOnHost() && !hostTrusted(req) ? "untrusted-host" : "miss";
+  const wmFp = wmCache === "miss" ? wmFingerprint(host) : null;
+
   // 预算按三路分流(绝不在查缓存/inflight 之前无条件申请「未命中」的全量预算):
   //  hit        缓存命中 → 只需申请水印阶段的轻量预算
   //  coalesced  同一张图已有请求在转换 → 先等它产出基图(期间不重复占预算),再申请水印阶段预算
   //  miss       覆盖「转换 + 水印 + 响应」整条流水线的一次预算;转换完成后收缩为水印阶段预算
-  let state: "hit" | "miss" | "coalesced";
-  let out: Buffer;
+  let state: "hit" | "miss" | "coalesced" = "miss";
+  let out: Buffer | null = null;
   try {
-    const key = `${row.id}.${ver}.${width}`;
-    const cached = await getCached(row.id, ver, width);
-    let base: Buffer | null = cached;
-    state = "hit";
-    if (cached) hdStats.hits++;
-    else {
-      const running = inflight.get(key);
-      if (running) {
-        hdStats.coalesced++;
-        state = "coalesced";
-        base = await running;
+    if (wmFp) {
+      const done = await getCachedWm(row.id, ver, width, wmFp);
+      if (done) {
+        out = done;
+        state = "hit";
+        wmCache = "hit";
+        hdStats.hits++;
       }
     }
-    if (base) {
-      const b = base;
-      out = await sched.withHd(wmEst, () => watermark(b), waitOpts);
-    } else {
-      state = "miss";
-      hdStats.misses++;
-      const gen = genOf(row.id);
-      // 必须在任何 await 之前同步登记 inflight,否则并发请求会各自转换(合并失效)
-      let settle!: { resolve: (b: Buffer) => void; reject: (e: unknown) => void };
-      const shared = new Promise<Buffer>((resolve, reject) => (settle = { resolve, reject }));
-      shared.catch(() => undefined); // 没有合并请求时不产生未处理的 rejection
-      inflight.set(key, shared);
-      try {
-        // 估算:优先用数据库里已有的宽高;S3 原图绝不为估算而提前下载
-        const { meta, heic, bmp } = await metaForRow(row);
-        const est = estimateMemory(meta, heic ? "heic" : bmp ? "bmp" : "hd-miss", { filename: row.filename });
-        const hard = config.media.hardMaxMB;
-        if (hard > 0 && est.estMB > hard) throw new ApiError(413, "hd_too_large", limitMessage(est, hard));
-        out = await sched.withHd(
-          Math.max(est.estMB, wmEst),
-          async (res) => {
-            const buf = await gate(() => convert(row, width));
-            await putCached(row.id, ver, width, buf, gen).catch((e) => console.error("[hd] cache write failed", e));
-            settle.resolve(buf);
-            res.adjust(wmEst); // 解码工作集已释放,只需保留水印阶段所需
-            return watermark(buf);
-          },
-          waitOpts,
-        );
-      } catch (e) {
-        settle.reject(e);
-        throw e;
-      } finally {
-        inflight.delete(key);
+    if (!out) {
+      const key = `${row.id}.${ver}.${width}`;
+      const cached = await getCached(row.id, ver, width);
+      let base: Buffer | null = cached;
+      state = "hit";
+      if (cached) hdStats.hits++;
+      else {
+        const running = inflight.get(key);
+        if (running) {
+          hdStats.coalesced++;
+          state = "coalesced";
+          base = await running;
+        }
       }
+      if (base) {
+        const b = base;
+        out = await sched.withHd(wmEst, () => watermark(b), waitOpts);
+      } else {
+        state = "miss";
+        hdStats.misses++;
+        // 必须在任何 await 之前同步登记 inflight,否则并发请求会各自转换(合并失效)
+        let settle!: { resolve: (b: Buffer) => void; reject: (e: unknown) => void };
+        const shared = new Promise<Buffer>((resolve, reject) => (settle = { resolve, reject }));
+        shared.catch(() => undefined); // 没有合并请求时不产生未处理的 rejection
+        inflight.set(key, shared);
+        try {
+          // 估算:优先用数据库里已有的宽高;S3 原图绝不为估算而提前下载
+          const { meta, heic, bmp } = await metaForRow(row);
+          const est = estimateMemory(meta, heic ? "heic" : bmp ? "bmp" : "hd-miss", { filename: row.filename });
+          const hard = config.media.hardMaxMB;
+          if (hard > 0 && est.estMB > hard) throw new ApiError(413, "hd_too_large", limitMessage(est, hard));
+          out = await sched.withHd(
+            Math.max(est.estMB, wmEst),
+            async (res) => {
+              const buf = await gate(() => convert(row, width));
+              await putCached(row.id, ver, width, buf, gen0).catch((e) => console.error("[hd] cache write failed", e));
+              settle.resolve(buf);
+              res.adjust(wmEst); // 解码工作集已释放,只需保留水印阶段所需
+              return watermark(buf);
+            },
+            waitOpts,
+          );
+        } catch (e) {
+          settle.reject(e);
+          throw e;
+        } finally {
+          inflight.delete(key);
+        }
+      }
+      // 游客成品写入缓存(异步、失败不影响响应;转换期间若图被失效,gen0 不匹配会被丢弃)
+      if (wmFp) void putCachedWm(row.id, ver, width, wmFp, out, gen0).catch((e) => console.error("[hd] wm cache write failed", e));
     }
   } catch (e) {
     admissionError(e);
   }
+  if (!out) throw new ApiError(500, "hd_failed", "高清图生成失败");
 
   return new Response(out as unknown as BodyInit, {
     headers: {
@@ -273,6 +295,7 @@ export async function serveHd(req: Request, id: string, user: AuthUser | null, i
       "x-robots-tag": "noindex, noimageindex",
       "cross-origin-resource-policy": "same-origin",
       "x-pgs-cache": state,
+      "x-pgs-wm-cache": wmCache,
       "x-pgs-wm": wmOn ? "1" : "0",
       "x-pgs-hd-width": String(width),
     },

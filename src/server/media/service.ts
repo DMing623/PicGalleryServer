@@ -149,6 +149,21 @@ export function baseUrl(req: Request): string {
 }
 
 /**
+ * 请求域名是否可信(可用于「按域名分桶」的缓存键):配置了 PUBLIC_BASE_URL,或最终采用的 host 命中 ALLOWED_HOSTS。
+ * 未配置任何白名单时返回 false —— 此时任何 Host 头都会被接受,不能让它决定缓存键,否则会被伪造 Host 撑爆缓存。
+ */
+export function hostTrusted(req: Request): boolean {
+  if (config.publicBaseUrl) return true;
+  if (!config.allowedHosts.length) return false;
+  try {
+    const host = new URL(baseUrl(req)).host.toLowerCase();
+    return config.allowedHosts.includes(host) || config.allowedHosts.includes(host.split(":")[0]);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 按角色裁剪元数据(issue §1.7):
  *  - 登录用户:完整 meta;
  *  - 游客 basic:去掉 GPS、机身序列号、原始段 raw、作者/版权邮箱等敏感字段;

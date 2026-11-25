@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import sharp, { type OverlayOptions } from "sharp";
@@ -30,6 +30,33 @@ export function userMarkCode(userId: string): string {
 
 export function expandWatermarkText(host: string): string {
   return config.hd.wm.text.replaceAll("{host}", host).replaceAll("{project}", PROJECT_URL);
+}
+
+/** 水印渲染逻辑版本:改动 buildLayer / applyWatermark 的输出时 +1,使旧成品缓存整体失效 */
+const WM_RENDER_VERSION = 1;
+
+/**
+ * 游客水印成品缓存的「水印指纹」(8 位十六进制):
+ * 文字(已展开 {host}/{project},因此域名变化自动换指纹)、透明度、字号、角度、密度、字体文件(路径+大小+mtime)、渲染版本。
+ * 配置或字体变化 → 指纹变化 → 旧成品不会再命中;不含任何用户信息(仅游客使用)。
+ */
+export function wmFingerprint(host: string): string {
+  const wm = config.hd.wm;
+  const f = wm.fontFile || DEFAULT_FONT;
+  let fst = "";
+  try {
+    const s = fs.statSync(f);
+    fst = `${s.size}:${Math.round(s.mtimeMs)}`;
+  } catch {
+    fst = "missing";
+  }
+  const raw = [WM_RENDER_VERSION, expandWatermarkText(host), wm.opacity, wm.fontSize, wm.angle, wm.density, f, fst].join("\u0001");
+  return createHash("sha1").update(raw).digest("hex").slice(0, 8);
+}
+
+/** 水印文字是否随请求域名变化(模板里没有 {host} 时,成品与域名无关) */
+export function wmDependsOnHost(): boolean {
+  return config.hd.wm.text.includes("{host}");
 }
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

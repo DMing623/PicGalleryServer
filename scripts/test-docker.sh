@@ -44,7 +44,7 @@ for DRIVER in $DRIVERS; do
   cleanup() { docker rm -f "$NAME" "$PGNAME" >/dev/null 2>&1; docker network rm "$NET" >/dev/null 2>&1; }
   cleanup
   step "$DRIVER:启动 $IMAGE (端口 $PORT)"
-  ENVS=(-e ADMIN_PASSWORD="$PASS" -e SESSION_SECRET=test-secret -e MIN_FREE_DISK_MB=0 -e HD_SCAN_DISTINCT=9 -e DB_DRIVER="$DRIVER")
+  ENVS=(-e ADMIN_PASSWORD="$PASS" -e SESSION_SECRET=test-secret -e MIN_FREE_DISK_MB=0 -e HD_SCAN_DISTINCT=9 -e ALLOWED_HOSTS="127.0.0.1:$PORT,127.0.0.1" -e DB_DRIVER="$DRIVER")
   if [ "$DRIVER" = postgres ]; then
     docker network create "$NET" >/dev/null
     docker run -d --name "$PGNAME" --network "$NET" -e POSTGRES_PASSWORD=pgs -e POSTGRES_DB=pgs "$PG_IMAGE" >/dev/null

@@ -82,6 +82,17 @@ async function upload(adminTok, album, buf, name) {
   return res.id;
 }
 
+const shard8 = (id) => path.join(DATA, "cache", "hd", id.slice(0, 2));
+
+async function upload2(adminTok, album, buf, name, mime) {
+  const fd = new FormData();
+  fd.append("file", new Blob([buf], { type: mime }), name);
+  const r = await call("POST", `/media/upload?album=${album}`, { token: adminTok, form: fd });
+  const res = (await r.json()).data?.results?.[0];
+  if (!res?.id) throw new Error(`上传失败: ${name}`);
+  return res.id;
+}
+
 async function waitReady(adminTok, id) {
   for (let i = 0; i < 60; i++) {
     const d = await data(await call("GET", `/media/${id}`, { token: adminTok }));
@@ -101,14 +112,36 @@ async function hdToken(id, { token, ip } = {}) {
   const r = await call("GET", `/media/${id}/hd-token?w=2560`, { token, ip });
   return { status: r.status, body: r.ok ? await data(r) : null };
 }
-async function hdGet(id, t, { token, ip } = {}) {
-  return call("GET", `/media/${id}/hd?t=${encodeURIComponent(t)}&w=2560`, { token, ip });
+async function hdGet(id, t, { token, ip, width = 2560, headers } = {}) {
+  return call("GET", `/media/${id}/hd?t=${encodeURIComponent(t)}&w=${width}`, { token, ip, headers });
 }
 async function fetchHd(id, auth = {}) {
   const t = await hdToken(id, auth);
   if (t.status !== 200) return { status: t.status, res: null };
   const res = await hdGet(id, t.body.token, auth);
   return { status: res.status, res };
+}
+/** 24 位无压缩 BMP(用于验证 HD 对 BMP 的支持) */
+function makeBmp(w, h) {
+  const row = Math.ceil((w * 3) / 4) * 4;
+  const buf = Buffer.alloc(54 + row * h);
+  buf.write("BM", 0);
+  buf.writeUInt32LE(buf.length, 2);
+  buf.writeUInt32LE(54, 10);
+  buf.writeUInt32LE(40, 14);
+  buf.writeInt32LE(w, 18);
+  buf.writeInt32LE(h, 22);
+  buf.writeUInt16LE(1, 26);
+  buf.writeUInt16LE(24, 28);
+  buf.writeUInt32LE(row * h, 34);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const o = 54 + y * row + x * 3;
+      buf[o] = (x * 255) / w;
+      buf[o + 1] = (y * 255) / h;
+      buf[o + 2] = 120;
+    }
+  return buf;
 }
 
 const stamp = Date.now().toString(36);
@@ -204,7 +237,8 @@ async function main() {
   r = await fetchHd(pubId);
   ok(r.status === 200 && r.res.headers.get("x-pgs-cache") === "miss", "缓存目录被清空后自动重新生成", `${r.status}`);
   // 水印是真实合成进像素的:缓存里是未加水印的基础图,输出必须不同
-  const cached = (await fs.readdir(shard)).find((f) => f.startsWith(`${pubId}.`) && f.endsWith(".webp"));
+  // 基图文件名 <id>.<ver12>.<w>.webp;游客水印成品多一段 8 位指纹,这里只取基图
+  const cached = (await fs.readdir(shard)).find((f) => new RegExp(`^${pubId}\\.[0-9a-f]{12}\\.\\d+\\.webp$`).test(f));
   const base = await sharp(await fs.readFile(path.join(shard, cached))).raw().toBuffer({ resolveWithObject: true });
   const out = await sharp(Buffer.from(await (await fetchHd(pubId)).res.arrayBuffer())).raw().toBuffer({ resolveWithObject: true });
   let diff = 0;
@@ -291,6 +325,97 @@ async function main() {
   ok(f2.headers.get("content-type") === "image/jpeg", "管理员(original 权限)仍可取得原图 (jpeg)", f2.headers.get("content-type"));
   const th = await call("GET", `/media/${pubId}/preview`, {});
   ok(th.status === 200, "preview 接口兼容");
+
+
+  section("8. 游客水印成品缓存(P1-4 / T-4)与 BMP 高清预览");
+  // 该组断言依赖「请求域名可信」:服务需配置 ALLOWED_HOSTS 或 PUBLIC_BASE_URL(test-matrix / test-docker 已配置);
+  // 未配置时服务按设计不缓存(x-pgs-wm-cache: untrusted-host),此时只校验「不缓存」本身。
+  const wmId = await upload(admin, pub.code, await makeImage(2800, 1900), "wmcache.jpg");
+  await waitReady(admin, wmId);
+  let w1 = await fetchHd(wmId);
+  const wmState = w1.res.headers.get("x-pgs-wm-cache");
+  if (wmState === "untrusted-host") {
+    ok(true, "未配置可信域名 → 游客水印成品不缓存(x-pgs-wm-cache: untrusted-host)");
+    console.log("  (跳过缓存命中断言:请用 ALLOWED_HOSTS=127.0.0.1:<端口> 启动服务)");
+  } else {
+    ok(wmState === "miss", "游客首次请求:生成并写入水印成品缓存 (x-pgs-wm-cache: miss)", String(wmState));
+    const first = Buffer.from(await w1.res.arrayBuffer());
+    await new Promise((r) => setTimeout(r, 600)); // 成品异步落盘
+    const wmFiles = async () => (await fs.readdir(shard8(wmId)).catch(() => [])).filter((f) => new RegExp(`^${wmId}\\.[0-9a-f]{12}\\.\\d+\\.[0-9a-f]{8}\\.webp$`).test(f));
+    ok((await wmFiles()).length === 1, "磁盘上有 1 个水印成品文件(<id>.<ver>.<w>.<指纹>.webp)");
+    w1 = await fetchHd(wmId);
+    ok(w1.res.headers.get("x-pgs-wm-cache") === "hit" && w1.res.headers.get("x-pgs-cache") === "hit", "游客第二次请求直接命中水印成品");
+    const second = Buffer.from(await w1.res.arrayBuffer());
+    ok(first.equals(second), "命中的成品与首次生成的字节完全一致");
+    ok(/no-store/.test(w1.res.headers.get("cache-control") || ""), "命中成品时响应仍是 private, no-store");
+
+    // ① 命中后每次仍重新校验权限
+    await call("PATCH", `/albums/${pub.code}`, { token: admin, json: { visibility: "private" } });
+    let x = await fetchHd(wmId);
+    ok(x.status === 404, "相册改私有后,成品命中也被拒绝(游客 404)", String(x.status));
+    await call("PATCH", `/albums/${pub.code}`, { token: admin, json: { visibility: "public" } });
+    x = await fetchHd(wmId);
+    ok(x.status === 200 && x.res.headers.get("x-pgs-wm-cache") === "hit", "恢复公开后再次命中(成品未被误删)");
+
+    // ② 令牌校验先于缓存:跨媒体令牌/篡改令牌不能读成品
+    const tokOther = (await hdToken(pubId)).body.token;
+    x = await hdGet(wmId, tokOther);
+    ok(x.status === 403, "他图令牌不能读取该图的水印成品 (403)", String(x.status));
+
+    // ③ Key 隔离:不同宽度各自独立
+    const t1280 = (await hdToken(wmId)).body.token;
+    x = await hdGet(wmId, t1280, { width: 1280 });
+    ok(x.status === 200 && x.headers.get("x-pgs-wm-cache") === "miss", "不同宽度(1280)不串用 2560 的成品", String(x.headers.get("x-pgs-wm-cache")));
+    const b1280 = Buffer.from(await x.arrayBuffer());
+    const m1280 = await sharp(b1280).metadata();
+    ok(m1280.width === 1280, `1280 档输出宽度正确 (${m1280.width})`);
+
+    // ④ 伪造 Host / X-Forwarded-Host 不产生新的缓存变体
+    const nBefore = (await wmFiles()).length;
+    const tF = (await hdToken(wmId)).body.token;
+    x = await hdGet(wmId, tF, { headers: { "x-forwarded-host": "evil.example.com" } });
+    ok(x.status === 200, "带伪造 X-Forwarded-Host 仍正常出图", String(x.status));
+    await new Promise((r) => setTimeout(r, 400));
+    ok((await wmFiles()).length === nBefore, "伪造 Host 不会产生新的成品文件(只会回落到可信域名)");
+    const forgedState = x.headers.get("x-pgs-wm-cache");
+    ok(forgedState === "hit" || forgedState === "untrusted-host", "伪造 Host:要么回落到可信域名并命中同一成品,要么视为不可信而不缓存", String(forgedState));
+    console.log(`  (伪造 X-Forwarded-Host 的结果: ${forgedState})`);
+
+    // ⑤ 登录用户不读写游客成品
+    const u8 = await fetchHd(wmId, { token: viewer });
+    ok(u8.res.headers.get("x-pgs-wm-cache") === "skip-user", "登录用户不使用游客成品缓存 (skip-user)", String(u8.res.headers.get("x-pgs-wm-cache")));
+    const ub = Buffer.from(await u8.res.arrayBuffer());
+    ok(!ub.equals(second), "登录用户输出含动态标识,与游客成品不同");
+    ok((await wmFiles()).length === nBefore, "登录用户请求没有写入新成品");
+
+    // ⑥ 替换原图后旧成品不再命中(版本变化),且旧版本成品被清理
+    const detail8 = await data(await call("GET", `/media/${wmId}`, { token: admin }));
+    await fs.writeFile(path.join(DATA, detail8.storageKey), await makeImage(2700, 1800));
+    x = await fetchHd(wmId);
+    ok(x.res.headers.get("x-pgs-wm-cache") === "miss" && x.res.headers.get("x-pgs-cache") === "miss", "原图被替换后水印成品与基图都不命中");
+    const afterReplace = Buffer.from(await x.res.arrayBuffer());
+    ok(!afterReplace.equals(second), "替换后输出内容变化");
+    await new Promise((r) => setTimeout(r, 600));
+    ok((await wmFiles()).every((f) => !f.includes(".webp.tmp")), "无遗留临时文件");
+
+    // ⑦ 删除后立即 404,且成品被清理
+    await call("DELETE", `/media/${wmId}?purge=0`, { token: admin });
+    x = await fetchHd(wmId);
+    ok(x.status === 404, "媒体删除后 404", String(x.status));
+    await new Promise((r) => setTimeout(r, 300));
+    ok((await wmFiles()).length === 0, "删除后该图的基图与水印成品全部被清理");
+  }
+
+  // BMP:HD 预览支持(此前会 500)
+  const bmpId = await upload2(admin, pub.code, makeBmp(640, 480), "pic.bmp", "image/bmp");
+  await waitReady(admin, bmpId);
+  const bmpRes = await fetchHd(bmpId);
+  ok(bmpRes.status === 200, "BMP 原图可生成高清预览 (200)", String(bmpRes.status));
+  if (bmpRes.status === 200) {
+    const bm = await sharp(Buffer.from(await bmpRes.res.arrayBuffer())).metadata();
+    ok(bm.format === "webp" && bm.width === 640, `BMP 高清预览为 WebP 且尺寸正确 (${bm.format} ${bm.width})`);
+    ok(bmpRes.res.headers.get("x-pgs-wm") === "1", "BMP 高清预览同样合成水印");
+  }
 
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   process.exit(failed ? 1 : 0);
