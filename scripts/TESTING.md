@@ -11,7 +11,7 @@
 | `lib/harness.mjs` | 公共库:断言计数、HTTP 客户端(每请求随机来源 IP 避免互相限流)、服务进程启停(含残留检测、SIGBUS/意外退出提示)、PostgreSQL 重建库、轮询工具 | 被其它脚本 import |
 | `test-e2e.mjs` | **REST API 端到端**(约 400 条断言,分 11 个章节,可用 `ONLY=` 单跑) | 对已运行的服务 |
 | `test-cli.mjs` | **命令行 `cli/pgs.mjs`** 全部子命令 + 错误路径(约 85 条断言) | 对已运行的服务 |
-| `test-hd.mjs` | 高清预览(HD):令牌/水印/缓存/限流/异常批量访问封禁、**游客水印成品缓存**(命中/权限重校验/Key 隔离/伪造 Host/登录用户不串用/替换与删除失效)、BMP 高清预览(约 75 条断言) | 对已运行的服务,需要 `DATA_DIR` 与 `SESSION_SECRET`;水印成品缓存要求服务配置 `ALLOWED_HOSTS` 或 `PUBLIC_BASE_URL`(matrix/docker 脚本已配置,未配置时相关断言降级为校验「不缓存」) |
+| `test-hd.mjs` | 高清预览(HD):令牌/水印/缓存/限流/异常批量访问封禁、**游客水印成品缓存**(命中/权限重校验/Key 隔离/伪造 Host/登录用户不串用/替换与删除失效)、BMP 高清预览(约 73 条断言) | 对已运行的服务,需要 `DATA_DIR` 与 `SESSION_SECRET`;水印成品缓存要求服务配置 `ALLOWED_HOSTS` 或 `PUBLIC_BASE_URL`(matrix/docker 脚本已配置,未配置时相关断言降级为校验「不缓存」);水印成品是**异步落盘**,凡涉及「磁盘成品数量」的断言一律用收敛后计数(连续两次统计一致才算稳定),避免慢机器/高负载下误报 |
 | `test-media.mjs` | 媒体内存治理:`/status` 观测字段、超像素上限 → `[LIMIT]`、自动清理绝不删 `[LIMIT]` 原文件、重处理幂等、预算归零 | 服务须以 `MEDIA_MAX_INPUT_MP=10` 启动(matrix/docker 脚本自动处理) |
 | `test-matrix.mjs` | **一键编排**:对 PostgreSQL 与 SQLite 各起一个全新服务,依次跑 e2e → cli → hd → 重启持久化检查,并扫描服务日志里的未处理异常 | 本机全链路入口 |
 | `test-docker.sh` | **容器镜像测试**:用 docker 起真实镜像(Postgres/SQLite 各一轮),宿主机跑 e2e/cli/hd,再检查应用进程 uid、ffmpeg、jemalloc、数据目录可写、**无前缀环境变量真正进容器并生效**、cgroup 观测与预算推导、重启持久化、HEALTHCHECK;最后单起一个容器跑 `test-media`。`RUN_AS=1000`/任意 uid 可模拟「平台以非 root 直接启动镜像」,`MEM_LIMIT`/`CPUS` 带 cgroup 限制运行 | 需要 Docker;**宿主机用户也不必是 root**(`DOCKER="sudo docker"` 即可;容器写出的文件用一次性 root 容器清理) |
@@ -102,7 +102,7 @@ EXTRA_ENV="RUN_AS=1000 MEM_LIMIT=1g" scripts/instabox-test.sh <机器名>
 |---|---|---|
 | 1 | `scripts/test-compose.sh` | 全部 ✓(compose 变量传递;无需守护进程) |
 | 2 | `scripts/test-docker.sh <新镜像>` | 全部 ✓;关注「配置传递与观测」「HD(水印成品缓存)」「媒体内存治理」三段 |
-| 3 | `RUN_AS=1000 scripts/test-docker.sh <新镜像>`(再试 `RUN_AS=12345`) | 同上;应用 uid = 指定值,无 `EACCES` |
+| 3 | `RUN_AS=1000 scripts/test-docker.sh <新镜像>`(再试 `RUN_AS=12345`) | 同上;应用 uid = 指定值,无 `EACCES`;2026-11-25 已实跑通过(`RUN_AS=12345` 时宿主机用户删不掉容器写出的文件,脚本会自动放开数据目录权限) |
 | 4 | `MEM_LIMIT=1g CPUS=1 scripts/test-docker.sh <新镜像>` | `cgroup.max` 非空,预算推导 `limitMb≈1024`,媒体预算 ≈ 430MB |
 | 5 | `TIERS="1g 2g 4g" scripts/bench-docker.sh <新镜像>` | 三档均完成;把表格里的 `peak` / `p95` 与 `README.md`「资源建议」对照,**用真实 HEIC 放进 `REAL_DIR` 再跑一轮 `queue`**,据此补测 `estimate.ts` 里 `low` 置信度的 HEIC/BMP/视频系数 |
 | 6 | 手工:`docker compose exec app printenv \| grep -E 'HD_\|THUMB_\|MEDIA_\|COOKIE_SECURE'` 与 `GET /api/v1/status` 的 `config` | 与 `.env` 一致;不设置时回落到默认(2 核容器 `thumbConcurrency` 自适应为 2) |
@@ -172,4 +172,5 @@ node scripts/test-unit.mjs        # 纯逻辑单测
 - s3 存储未覆盖正向链路(需要 MinIO/S3);挂载目录的软删除有宽限期(`MISSING_GRACE_MS`),因此「磁盘删除」后首次扫描只会 `missing=1`,不会立刻 `removed`。
 - 限流类测试(登录/搜索/密钥)用固定来源 IP,依赖默认 `TRUST_PROXY=0` 且信任 `X-Real-IP`;若服务放在会覆盖该头的反代后,这一章节会失败,属环境差异。
 - HEIC 未提供素材(需要真实 HEIC 文件),如需覆盖请自行放入 `SAMPLES_DIR/synth/` 并在 `test-e2e.mjs` 里追加;基准侧把真实 `.heic` 放进 `bench` 的 `--real` / `REAL_DIR` 目录即可纳入。
-- 容器相关脚本(`test-docker.sh` / `bench-docker.sh` / `test-compose.sh`)开发环境无 Docker,**只做过 `bash -n` 语法检查与逻辑推演,未在容器内实跑**;首次实跑如有问题请把输出发回修正。
+- **HD 水印成品缓存是异步落盘的**:服务端先响应、后写盘(`putCachedWm` 为 fire-and-forget)。测试脚本对「磁盘成品数量」的断言统一采用收敛后计数;若在负载较高的机器上出现「伪造 Host 不会产生新的成品文件」「登录用户请求没有写入新成品」失败,先确认是计数竞态(基线取早、漏等刚落盘的成品)而非产品缺陷——2026-11-25 的 `RUN_AS=12345` 实测即属此类,已由 `stableCount()` 修复。
+- 容器相关脚本(`test-docker.sh` / `bench-docker.sh` / `test-compose.sh`)已在 **InstaBox 的真实发布镜像**上实跑通过(2026-11-24 v1.4.3;2026-11-25 v1.4.4 多轮:`RUN_AS=1000` / `RUN_AS=12345` / `MEM_LIMIT=1g CPUS=1`,E2E 393、CLI 85、HD 73、media 38 均 0 失败);本地开发环境无 Docker 时仍只能做 `bash -n` 语法检查。
