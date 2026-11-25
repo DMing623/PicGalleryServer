@@ -2,46 +2,44 @@
 
 > 读者:第一次接触本项目的专业程序员。读完本文件应当能 **不遍历代码** 就定位到要改的文件、知道对外暴露了哪些接口、各模块的黑盒契约是什么。
 > 约定:凡是"改 X 去哪个文件"的问题,先查 §3(目录职责)和 §12(常见改动速查)。
-> **校对基线**:本文件已对照代码 `v1.4.3`(提交 `452b181`,2026-11-24)核对。之后的代码变更必须按 §0 同步本文件;发现与代码不符时**以代码为准**并回改文档。
-> 配套文件:`todo.md`(性能/内存/可维护性改进计划与评估依据)、`scripts/TESTING.md`(测试套件)、`README.md`(面向使用者的部署说明)。
+> **当前版本**:`v1.4.3`。每次版本变化或代码改动时,必须按 §0 同步跟进本文件,并执行 `node scripts/check-config.mjs` 与 `node scripts/check-docs.mjs` 校验;发现与代码不符时**以代码为准**并回改文档。
+> 配套文件:`scripts/TESTING.md`(测试与基准套件说明)、`README.md`(面向使用者的功能与部署说明)。
 
 ---
 
-## 0. 文档维护约定与校对基线
+## 0. 文档维护约定
+
+> **维护提示**:每次版本变化或代码改动都必须同步跟进 `project.md`(不在此记录历史改动流水),提交前运行下方自动化脚本确保文档与代码一致。
 
 **事实以谁为准**(文档与它们冲突时,改文档):
 
 | 事实 | 唯一来源 |
 |---|---|
-| 环境变量及默认值、取值范围 | `src/server/config.ts`(`.env.example` 是模板,`docker-compose.yml` 另有 `PGS_*` 映射变量) |
+| 环境变量及默认值、取值范围 | `src/server/config.ts`(`.env.example` 是模板,`docker-compose.yml` 显式映射并兼容旧 `PGS_*` 变量) |
 | REST 路由、所需权限 | `src/server/api/*.ts` 里的 `route(method, path, access, handler)` |
-| 表结构 | `src/db/schema.ts` + `src/db/bootstrap.ts`(两处必须同步) |
-| 版本号 | `package.json`(`config.version` 运行时读取它;`package-lock.json`、`cli/pgs.mjs`、`.env.example` 的 `PGS_TAG`、`docker-compose.yml` 默认 tag 需人工同步) |
+| 表结构 | `src/db/schema.ts` + `src/db/bootstrap.ts`(PG 与 SQLite 两处 DDL 必须同步) |
+| 版本号 | `package.json`(`config.version` 与 `cli/pgs.mjs` 运行时读取它;`package-lock.json`、`.env.example` 的 `PGS_TAG`、`docker-compose.yml` 默认 tag 必须一致) |
 | 文件清单 | `find src cli scripts .github -type f` |
-| 代码里的 `issue §x.y` 注释 | 指向一份**已删除**的外部审查清单,仅作历史标记,不要据此去找文档 |
+| 代码里的 `issue §x.y` 注释 | 指向一份已删除的早期审查清单,仅作历史标记,不要据此去找文档 |
 
 **改了什么 → 同步哪一节**:
 
 | 代码变更 | 必须同步 |
 |---|---|
-| 新增/删除源文件 | §3 目录树 |
-| 新增/改动环境变量或硬编码阈值 | §10(含"硬编码常量"表)、`.env.example`、必要时 `docker-compose.yml` / README |
+| 新增/删除源文件或脚本 | §3 目录树 |
+| 新增/改动环境变量或硬编码阈值 | §10(含"硬编码常量"表)、`.env.example`、`docker-compose.yml`、必要时 README |
 | 新增/改动路由、权限 | §8、§4.5、`cli/pgs.mjs`、`scripts/test-*.mjs` |
-| 改表结构 | §5、`schema.ts` + `bootstrap.ts` 两处 DDL |
-| 改队列 / 并发闸门 / 内存相关逻辑 | §6.11、§7.2、§14、§17(并重跑 §17.3 的方法验证) |
+| 改表结构 | §5、`schema.ts` + `bootstrap.ts`(PG 与 SQLite 双分支) |
+| 改队列 / 准入预算 / 内存相关逻辑 | §6.11、§7.2、§14、§16(并重跑 `scripts/bench/*` 验证) |
 | 改 HD(高清预览)流程 | §6.14、§7.6、§8.11 |
-| 发版 | §16 追加一节、版本号五处一致 |
+| 版本号变更 | `package.json`、`package-lock.json`、`.env.example`、`docker-compose.yml` 及本文档头部版本号 |
 
-**快速核对命令**(在仓库根目录执行,输出与对应章节对照):
+**自动化核对命令**(在仓库根目录执行,CI 同样强制执行):
 
 ```bash
-grep -rn -E '^route\(' src/server/api | sed -E 's/async \(.*//'          # 路由清单 ↔ §8
-grep -o -E '"[A-Z][A-Z0-9_]{2,}"' src/server/config.ts | sort -u          # 环境变量 ↔ §10
-grep -rn "globalThis as" src --include=*.ts                               # 进程内状态 ↔ §2.1
-find src cli scripts .github -type f | sort                               # 文件清单 ↔ §3
+node scripts/check-config.mjs    # 环境变量 ↔ compose 映射 ↔ .env.example ↔ schema/bootstrap ↔ 版本号
+node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10、文件清单 ↔ §3、版本号与文档路径引用
 ```
-
-**最近一次全量核对发现并已修正的偏差**(留作类似问题的检查线索):`THUMB_CONCURRENCY` 默认值写成 15(实为 `min(4, CPU)`);目录树缺 `server/hd/*`、`notices`、`bmp`、`corrupt`、`fetch-url`、PWA 相关文件;HD 接口与 `HD_*` 环境变量未成体系;图库描述为"等高行 + `content-visibility`"(实为固定列瀑布流,代码里没有 `content-visibility`);"分池限流"实为嵌套闸门;水印层缓存写成 LRU(实为 FIFO);§12 有 5 行重复。README 里仍有 1 处未修(见 `todo.md` 的 D-1)。
 
 ## 1. 项目概述
 
@@ -89,45 +87,52 @@ find src cli scripts .github -type f | sort                               # 文�
 
 | 状态 | 位置 | 内容 | 重启/多实例后果 |
 |---|---|---|---|
-| `__pgsQueue` | `server/queue.ts` | 待处理 id 数组+游标、运行中集合、重试计数、`dirty` 集合、统计 | 重启后 `ensureReady()` 把 `status='pending'` 的**最近 20000 条**重新入队;`failed` 不自动重试;多实例会重复处理 |
-| `__pgsHd` | `server/hd/cache.ts` | HD 缓存索引(含 LRU 时间)、失效代数 `gen`、统计 | 首次访问时重扫缓存目录重建;多实例会各自淘汰、容量记账不一致 |
+| `__pgsQueue` | `server/queue.ts` | 单点准入调度器 `Scheduler`(`admission.ts`:类别分池 + 软内存预算 + 老化 + HD 队列)、探测中集合、重试计数、`dirty` 集合、统计与已注册 `limiter` | 重启后 `ensureReady()` 先清 `tmp/`、识别崩溃中断记录(`processing_started_ms`),再把其余 `status='pending'`(最多 20000 条)重新入队;多实例会重复处理 |
+| `__pgsMetrics` | `server/metrics.ts` | 1 秒采样器:最近 10 分钟峰值 RSS/anon 滑动窗口、事件循环延迟直方图、动态内存压力状态(`pressure.ts`) | 重启即清零 |
+| `__pgsHd` | `server/hd/cache.ts` | HD 基图与游客水印成品缓存索引(含 LRU 时间)、失效代数 `gen`、统计 | 首次访问时重扫缓存目录重建;多实例会各自淘汰、容量记账不一致 |
 | `__pgsGuard` | `server/hd/guard.ts` | HD 限流窗口、批量访问检测、封禁表、最近 300 条安全事件 | 重启即清零(封禁解除);`logs/security.log` 落盘保留 |
 | `__pgsRate` | `server/rate.ts` | 匿名搜索 / 无效密钥限流计数 | 清零 |
 | `__pgsScan` / `__pgsScanLocks` | `server/albums.ts` | 扫描状态、同目录并发扫描锁 | 状态丢失;多实例可同时扫同一目录 |
 | `__pgsReady` | `server/ready.ts` | 初始化 Promise | — |
 | `__pgsDb` / `__pgsPool` / `__pgsSqlite` | `db/index.ts`、`db/bootstrap.ts` | drizzle 实例、pg 连接池、SQLite 句柄 | — |
-| 模块级 Map/Set | `albums.ts`(树缓存、统计缓存、`moveLocks`)、`blocklist.ts`(外部键缓存)、`auth.ts`(Basic/用户缓存、登录失败计数)、`media/ingest.ts`(`withHashLock`)、`media/derive.ts`(`localHints`、`heicGate`、`videoGate`)、`hd/service.ts`(`inflight`、`gate`)、`hd/watermark.ts`(`layerCache`) | 见各节 | 全部随进程丢失 |
+| 模块级 Map/Set | `albums.ts`(树缓存、统计缓存、`moveLocks`)、`blocklist.ts`(外部键缓存)、`auth.ts`(Basic/用户缓存、登录失败计数)、`media/ingest.ts`(`withHashLock`)、`media/derive.ts`(`localHints`、`heicGate`、`heicHdGate`、`videoGate`)、`hd/service.ts`(`inflight`、`gate`)、`hd/watermark.ts`(`layerCache`) | 见各节 | 全部随进程丢失 |
 
 ## 3. 目录与文件职责
 
 ```
 .
-├─ project.md / todo.md / README.md   本文件(给开发者) / 改进计划 / 用户说明(功能与部署)
+├─ project.md / README.md             本文件(面向开发者) / 用户说明(功能与部署)
 ├─ LICENSE NOTICE                     PolyForm Noncommercial 1.0.0 与署名要求
-├─ .env.example                       完整环境变量模板(含 PGS_* 容器映射变量);运行时读 .env
+├─ .env.example                       完整环境变量模板(含 PGS_* 兼容变量);运行时读 .env
 ├─ Dockerfile docker-compose.yml      容器化:node:24-bookworm-slim + ffmpeg/tini/jemalloc/tzdata;
 │                                     ENV: UV_THREADPOOL_SIZE=12 MALLOC_ARENA_MAX=2 TZ=Asia/Shanghai;
-│                                     入口脚本 pgs-entrypoint 加载 jemalloc、修正数据目录属主后 setpriv 降权到 uid 1000
+│                                     入口脚本 pgs-entrypoint 加载 jemalloc、修正旧数据属主后降权到 uid 1000(亦兼容平台以 --user 非 root 直接启动)
 ├─ next.config.ts                     serverExternalPackages(sharp/exifr/heic-convert/busboy/aws-sdk) + 全局安全头 + HD 响应禁缓存头 + allowedDevOrigins
 ├─ drizzle.config.json                drizzle-kit 配置(仅开发期 push/export)
 ├─ eslint.config.mjs  tsconfig.json  postcss.config.mjs
 ├─ .github/workflows/
-│    ci.yml                           typecheck + lint + build(Node 22)
+│    ci.yml                           check-config + check-docs + test-unit + typecheck + lint + build(Node 22)
 │    test.yml                         PostgreSQL 15 服务容器 + SQLite 全链路(scripts/test-matrix.mjs,Node 24)
+│    perf.yml                         手动/每周性能与内存回归基准(scripts/bench/* --quick --assert)
 │    docker-publish.yml               多架构镜像构建推送 GHCR
 │    cleanup-image-versions.yml       清理旧镜像版本(调用 scripts/cleanup-image-versions.py)
 ├─ public/                            robots.txt(Disallow: /)、sw.js(Service Worker,仅缓存静态外壳,绝不缓存 /api/ 与 /f/)、offline.html
 ├─ cli/pgs.mjs                        命令行管理工具(零依赖,util.parseArgs,调用 REST API)
-├─ scripts/                           测试与运维脚本(详见 scripts/TESTING.md,本文件不展开):
-│    fetch-samples.mjs  lib/harness.mjs  test-e2e.mjs  test-cli.mjs  test-hd.mjs  test-matrix.mjs
-│    test-docker.sh  instabox-test.sh  cleanup-image-versions.py  TESTING.md
+├─ scripts/                           测试、一致性校验与基准套件(详见 scripts/TESTING.md 与 scripts/bench/README.md):
+│    fetch-samples.mjs  lib/harness.mjs  test-e2e.mjs  test-cli.mjs  test-hd.mjs  test-media.mjs  test-matrix.mjs
+│    test-unit.mjs  unit/admission.test.mjs  unit/cgroup.test.mjs  unit/estimate.test.mjs
+│    check-config.mjs  check-docs.mjs  test-docker.sh  test-compose.sh  bench-docker.sh  instabox-test.sh
+│    bench/generate-images.mjs  bench/bench-memory.mjs  bench/bench-hd.mjs  bench/bench-queue.mjs  bench/bench-scan.mjs  bench/lib.mjs  bench/README.md
+│    bench/baseline-synthetic-quick.json  bench/baseline-hd-synthetic-quick.json  bench/baseline-queue-synthetic-quick.json
+│    cleanup-image-versions.py  TESTING.md
 ├─ data/                              运行时数据目录(DATA_DIR,默认 ./data,git 忽略)
 │   ├─ albums/<albumCode>/            受管相册(local 存储)的原文件;albums/_inbox/ 为未归类收件箱
 │   ├─ derived/<id前2位>/<id>.thumb.webp|.preview.webp   永久派生图
-│   ├─ cache/hd/<id前2位>/<id>.<ver12>.<宽>.webp          HD 临时缓存(LRU+TTL,可随时删除)
+│   ├─ cache/hd/<id前2位>/<id>.<ver12>.<宽>.webp          HD 无水印基图缓存(LRU+TTL,可随时删除)
+│   ├─ cache/hd/wm/<id前2位>/<id>.<ver12>.<宽>.<wmFp8>.webp  游客水印成品缓存(与基图共享容量上限与失效代数)
 │   ├─ branding/icon                  自定义站点图标
 │   ├─ logs/security.log(.1)          HD 安全事件(JSON Lines,>5MB 轮转一次)
-│   ├─ tmp/                           上传/导入/私有副本/视频抽帧临时文件(启动时全清,之后每小时清 6h 前遗留)
+│   ├─ tmp/                           上传/导入/私有副本/BMP 转换/视频抽帧临时文件(启动时全清,之后每小时清 6h 前遗留)
 │   ├─ secret.key                     自动生成的会话签名密钥(0600)
 │   └─ pgs.sqlite                     SQLite 模式的数据文件(DB_DRIVER=sqlite)
 └─ src/
@@ -135,7 +140,7 @@ find src cli scripts .github -type f | sort                               # 文�
    ├─ db/
    │   ├─ index.ts                    双驱动:pg Pool + drizzle/node-postgres,或 node:sqlite + drizzle/sqlite-proxy;导出 db、pool、dbKind、rawQuery、nullSafeEq、pingDb、closeDb(本文件直接读 DATABASE_URL,是 config.ts 之外唯一读 env 的业务文件)
    │   ├─ schema.ts                   表结构定义(8 张表,见 §5)
-   │   └─ bootstrap.ts                幂等建表 DDL(pg 带 advisory lock 7351001;sqlite/pg 两套)。改 schema 必须同步改这里
+   │   └─ bootstrap.ts                幂等建表与老库升级 DDL(pg 带 advisory lock 7351001;sqlite/pg 两套)。改 schema 必须同步改这里
    ├─ lib/                            前后端共用的纯函数(无 IO)
    │   ├─ theme.ts                    主题预设 PRESETS、themeCss()、DEFAULT_THEME
    │   ├─ api.ts                      浏览器 fetch 封装:api<T>() 自动解包信封,错误抛 ApiErr
@@ -143,38 +148,44 @@ find src cli scripts .github -type f | sort                               # 文�
    │   ├─ markdown.ts                 零依赖 Markdown 渲染(先整体 HTML 转义再替换,链接协议白名单)
    │   └─ meta-labels.ts              元数据字段中文标签表(决定 UI 显示哪些字段)
    ├─ server/                         **全部服务端逻辑**(详见 §6)
-   │   ├─ config.ts                   环境变量解析入口,导出 config 与 dirs(含 config.hd.*)
+   │   ├─ config.ts                   环境变量解析入口,导出 config 与 dirs(含 config.media.*、config.hd.*)
+   │   ├─ cgroup.ts                   容器 cgroup v2/v1 内存读取(current/max/anon/inactiveFile)与工作集计算
+   │   ├─ admission.ts                单点准入控制 Scheduler:类别并发池(image/heic/video)+ 软内存预算 + 老化防饥饿 + 交互式 HD 优先 + 嵌套检测
+   │   ├─ pressure.ts                 动态内存压力状态机(normal/elevated/high/critical,基于 anon/limit,带迟滞与永不死锁保证)
+   │   ├─ metrics.ts                  1 秒采样器(10 分钟峰值 RSS/anon、eventLoopDelay 直方图、压力状态更新)与 collectMetrics()
    │   ├─ secret.ts                   SESSION_SECRET 解析:env → DATA_DIR/secret.key → 生产自动生成 → 开发期由管理员密码派生
    │   ├─ rate.ts                     通用内存限流(匿名搜索、无效密钥校验):hit / count / overLimit
    │   ├─ http.ts                     ApiError / E 工厂 / json / ok / fail / readJson(带体积上限) / str / intParam / boolParam
    │   ├─ router.ts                   迷你路由器:route(method, pattern, access, handler)、dispatch()、clientIp()
    │   ├─ auth.ts                     角色权限矩阵、密码哈希、令牌(会话/播放/HD 共用 signToken)、请求鉴权、env 管理员同步、登录限流
    │   ├─ settings.ts                 站点设置(单 JSON,key="site")读写与校验、publicSite()、isValidTimezone()
-   │   ├─ ready.ts                    ensureReady():建表→建目录→同步管理员→恢复队列→定时器
+   │   ├─ ready.ts                    ensureReady():建表→建目录→同步管理员→清理 tmp/→崩溃回路识别与恢复队列→采样器与定时器
    │   ├─ albums.ts                   相册树缓存、可见性、统计、创建/挂载/改/删、目录扫描、文件搬迁(1100+ 行,最大的单文件)
    │   ├─ blocklist.ts                删除黑名单:写入/列出/解除(恢复记录+重生成派生图)/彻底删除
    │   ├─ keys.ts                     下载密钥:创建(upsert)/列表/删除/验证/过期清理
    │   ├─ notices.ts                  站点通知:列表/未读/发布/编辑/删除/已读
-   │   ├─ files.ts                    serveMedia():thumb/preview/file/stream 的授权与输出(Range/ETag)
-   │   ├─ queue.ts                    进程内任务队列(并发=THUMB_CONCURRENCY,重试 3 次指数退避)+ limiter()
+   │   ├─ files.ts                    serveMedia():thumb/preview/file/stream 的授权与输出(Range/ETag;无效密钥限流走 clientIp)
+   │   ├─ queue.ts                    进程内任务队列:解码前轻量探测(probeLimiter)→ Scheduler 准入 → 重试 3 次指数退避 + limiter()
    │   ├─ storage/index.ts            存储驱动抽象:local / ext / s3,materialize()
    │   ├─ hd/                         高清预览(HD)子系统(§6.14)
-   │   │   ├─ service.ts              令牌签发/校验 → 权限 → 缓存/按需转换 → 水印 → 输出
-   │   │   ├─ cache.ts                磁盘缓存(LRU+TTL+版本号)、失效代数、统计
-   │   │   ├─ watermark.ts            水印层生成(平铺旋转文字)、合成、用户动态标识 U-XXXXXX
+   │   │   ├─ service.ts              令牌签发/校验 → 权限 → 游客水印成品缓存/基图缓存/按需转换(三路预算分流)→ 水印 → 输出
+   │   │   ├─ cache.ts                无水印基图 + 游客水印成品磁盘缓存(LRU+TTL+版本号)、失效代数、统计
+   │   │   ├─ watermark.ts            水印层生成(平铺旋转文字,raw 画布直裁 PNG)、合成、水印指纹、用户动态标识 U-XXXXXX
    │   │   └─ guard.ts                HD 专用限流 / 批量访问检测 / 封禁 / 安全日志
    │   ├─ media/
    │   │   ├─ types.ts                扩展名→kind/mime、isHeic、safeName、randomId
    │   │   ├─ upload.ts               parseUpload():busboy 流式 multipart → 临时文件 + sha256
    │   │   ├─ fetch-url.ts            直链上传:SSRF 校验、重定向、体积/超时限制
    │   │   ├─ ingest.ts               resolveTarget()、ingestOne()(含 withHashLock)、collectFiles()/copyToTmp()
-   │   │   ├─ derive.ts               processMedia():派生图 + 元数据入库;derivedPath/removeDerived/heicToJpeg;heicGate/videoGate
-   │   │   ├─ bmp.ts                  BMP 解码器(整文件读入 → RGBA Buffer)
+   │   │   ├─ probe.ts                解码前轻量文件头探测 probeMedia()/metaForRow()(256KB 头/BMP 26B 头/HEIC ispe box,不下载远程文件)
+   │   │   ├─ estimate.ts             像素×格式布局加权内存估算 estimateMemory()、[LIMIT]/[INTERRUPTED] 非损坏错误前缀
+   │   │   ├─ derive.ts               processMedia():派生图(.toFile 原子写)+ 元数据入库;derivedPath/removeDerived/heicToJpeg/bmpInput
+   │   │   ├─ bmp.ts                  BMP 内置解码器(无 ffmpeg 时作为 bmpInput 回退)
    │   │   ├─ metadata.ts             extractImageMeta()、probeVideo()、grabVideoFrame()、buildSearchText()
    │   │   ├─ png.ts                  PNG 文本块读取、隐写(alpha LSB,≤16MP)提取
    │   │   ├─ ai.ts                   AI 生成参数解析(A1111/NovelAI/ComfyUI/InvokeAI)
-   │   │   ├─ corrupt.ts              疑似损坏文件(failed)汇总与自动清理
-   │   │   └─ service.ts              listMedia()、mediaDetail()、updateMedia()、batchAction()、可见性判断
+   │   │   ├─ corrupt.ts              疑似损坏文件汇总与自动清理(硬性排除 [LIMIT]/[INTERRUPTED],绝不误删超限或中断原图)
+   │   │   └─ service.ts              listMedia()、mediaDetail()、updateMedia()、batchAction()、可见性判断、baseUrl/hostTrusted
    │   └─ api/                        路由注册模块(导入即注册)
    │       ├─ index.ts                汇总导入并导出 dispatch
    │       ├─ auth.ts                 /auth/*  /site  /branding/icon  /settings*
@@ -202,7 +213,7 @@ find src cli scripts .github -type f | sort                               # 文�
        ├─ AppProvider.tsx             上下文:me(user/perms/site/features)、can(perm)、reload()
        ├─ Splash.tsx                  启动页:粒子 canvas + 3D 光环 + 3D 挤出文字;url 模式支持图片/视频/iframe
        ├─ Shell.tsx                   毛玻璃顶栏、导航、搜索框(相册页自动限定范围)、上传入口、账户菜单、底部工具栏
-       ├─ Gallery.tsx                 固定列等宽瀑布流(最矮列优先)、游标无限滚动(每页 80)、处理中轮询;导出 MediaItem
+       ├─ Gallery.tsx                 固定列等宽瀑布流 + 视口窗口化(仅渲染视口±1.5 屏瓦片)、游标无限滚动(每页 80)、处理中轮询;导出 MediaItem
        ├─ Viewer.tsx                  全屏查看器:HD 图(加载中转圈→带水印大图)、文件链接、备注编辑、元数据侧栏、删除/重处理
        ├─ useHd.ts                    HD 加载 hook:申请令牌→取图→Blob URL;只保留当前±1 张,预加载相邻 2 张
        ├─ DialogProvider.tsx          内置对话框:choose/confirm/prompt/alert/confirmCheck
@@ -299,7 +310,7 @@ find src cli scripts .github -type f | sort                               # 文�
 
 **pgs_albums**:`id`(PK) `code`(唯一,对外使用) `name` `description` `parent_id` `kind`(`managed|mounted`) `storage`(`local|s3|ext`) `root_path`(挂载目录,唯一) `visibility` `readonly`(挂载相册默认 true) `cover_media_id` `sort_order` `last_scan_at` `created_at` `updated_at`;索引:`parent_id`、`root_path` 唯一。
 
-**pgs_media**:`id`(12 位随机,PK) `album_id`(null=未归类) `kind`(`image|video`) `filename` `mime` `size` `mtime_ms`(源文件修改时间,变更检测/重命名配对) `width` `height` `duration`(秒) `taken_at` `sort_at`(= taken_at ?? 文件时间/上传时间,排序与游标依据) `storage` `storage_key` `hash`(SHA-256,上传才有) `color`(平均色,占位用) `status`(`pending|ready|failed`) `error` `note`(管理员备注,**不进 search_text**) `meta`(jsonb,见 §7.3) `search_text` `missing_at`(软删除标记) `uploaded_by` `created_at`;索引:`(sort_at,id)`、`(album_id,sort_at,id)`、`(storage,storage_key)` 唯一、`hash`、`status`、`missing_at`、`search_text` 的 GIN(trigram)、`status <> 'ready'` 部分索引。
+**pgs_media**:`id`(12 位随机,PK) `album_id`(null=未归类) `kind`(`image|video`) `filename` `mime` `size` `mtime_ms`(源文件修改时间,变更检测/重命名配对) `width` `height` `duration`(秒) `taken_at` `sort_at`(= taken_at ?? 文件时间/上传时间,排序与游标依据) `storage` `storage_key` `hash`(SHA-256,上传才有) `color`(平均色,占位用) `status`(`pending|ready|failed`) `error` `attempts`(处理中断计数,默认 0) `processing_started_ms`(任务开始处理毫秒时间戳,用于启动时识别崩溃中断并防止无限崩溃回路) `note`(管理员备注,**不进 search_text**) `meta`(jsonb,见 §7.3) `search_text` `missing_at`(软删除标记) `uploaded_by` `created_at`;索引:`(sort_at,id)`、`(album_id,sort_at,id)`、`(storage,storage_key)` 唯一、`hash`、`status`、`missing_at`、`search_text` 的 GIN(trigram)、`status <> 'ready'` 部分索引。
 
 **pgs_blocklist**(删除黑名单):`id`(PK) `media_id`(原记录 id,仅追溯) `album_id` `album_code` `kind` `filename` `mime` `size` `storage` `storage_key` `hash` `taken_at` `sort_at` `meta` `note` `created_by` `created_at`;唯一索引 `(storage,storage_key)`、普通索引 `album_id`。记录"被排除但源文件仍在"的文件;扫描时按 `(ext, 绝对路径)` 跳过。
 
@@ -307,11 +318,11 @@ find src cli scripts .github -type f | sort                               # 文�
 
 **pgs_settings**:`key`(PK) `value`(jsonb) `updated_at`。目前只有 `key="site"`,内容为 `SiteSettings`(见 `server/settings.ts`):`siteName, theme{preset,mode,accent,background}, splash{enabled,mode,url,durationMs,title}, iconVersion, iconMime, guestBrowse, timezone`。
 
-**pgs_notices**(站点通知,v1.4.0):`id`(PK) `title` `body`(Markdown 原文) `pinned` `created_by` `created_by_name`(用户名快照) `created_at` `updated_at`;索引 `created_at`。发布需要 `notice.publish`(admin / manager)。
+**pgs_notices**(站点通知):`id`(PK) `title` `body`(Markdown 原文) `pinned` `created_by` `created_by_name`(用户名快照) `created_at` `updated_at`;索引 `created_at`。发布需要 `notice.publish`(admin / manager)。
 
-**pgs_notice_reads**(通知已读,v1.4.0):`user_id` + `notice_id` 复合主键 `read_at`;索引 `user_id`。存在即已读,「一键已读」= 批量插入缺失行。游客没有账户,其已读状态保存在浏览器 localStorage。
+**pgs_notice_reads**(通知已读):`user_id` + `notice_id` 复合主键 `read_at`;索引 `user_id`。存在即已读,「一键已读」= 批量插入缺失行。游客没有账户,其已读状态保存在浏览器 localStorage。
 
-> 修改表结构:① 改 `schema.ts` ② 同步改 `bootstrap.ts` 的 DDL(`npx drizzle-kit export --sql` 可对照)③ 开发库可 `npx drizzle-kit push`。已发布版本的字段变更需在 `bootstrap.ts` 追加 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`。
+> 修改表结构:① 改 `schema.ts` ② 同步改 `bootstrap.ts` 的 `PG_DDL`(含 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`)与 `LITE_DDL`(含 `LITE_UPGRADE` 数组)③ 运行 `node scripts/check-config.mjs` 校验双驱动列定义一致。
 
 ## 6. 服务端模块黑盒契约
 
@@ -373,31 +384,34 @@ find src cli scripts .github -type f | sort                               # 文�
   - `ingestOne(file, target, {user,note,duplicate})`:去重(同相册同 hash,`duplicate=skip` 默认)→ 唯一文件名 → 放入存储 → 插入 `pending` → `enqueue(id, priority)`。返回 `{status: created|duplicate|error, id, link, ...}`。
     - **入库串行化(v1.3.5)**:外层包 `withHashLock(hash:albumId, ...)`,同一 `(hash, 相册)` 的入库互斥,消除"先查后插"的并发竞态(20 路并发同一文件曾入库 2 条)。未加数据库唯一约束,因为 `album_id` 可为 NULL 且历史数据可能已有重复。
   - `collectFiles / copyToTmp`:服务器路径导入使用。
-- `derive.ts`:导出 `processMedia(id)`(队列 runner,流程见 §7.2)、`derivedPath(id, 'thumb'|'preview')`、`removeDerived(id)`(同时 `invalidateHd`)、`hintLocalCopy(id, file)` / `dropLocalHint(id)`(S3 上传时保留本地副本,处理后删除)、`heicToJpeg(file): Promise<Buffer>`(HD 也调用)。模块加载时设置 `sharp.cache(false)` 与 `sharp.concurrency(2)`(**全进程生效**);内部有 `heicGate`(`HEIC_CONCURRENCY`)与 `videoGate`(`VIDEO_CONCURRENCY`)两个 `limiter`。
-- `bmp.ts`:`isBmp(filename)`、`decodeBmp(buf)` → `{data: RGBA Buffer, width, height}`;支持 BI_RGB 1/4/8/16/24/32 位与 BI_BITFIELDS 16/32 位,不支持 RLE(抛错 → 记录 `failed`)。调用方 `derive.ts#bmpToPng` 整文件 `readFile` 后解码,再经 sharp raw 输入编成 PNG Buffer。
+- `probe.ts`:解码前轻量探测 `probeMedia(id)` 与 `metaForRow(row)`——只读文件头(常规图片 256KB Buffer 交给 `sharp().metadata()`、BMP 读前 26B 头、HEIC 扫描 `ispe` box),**绝不解码整图,也不为探测下载 S3 远程文件**(无本地副本的 S3 文件按 `size + mime` 低置信度估算)。超出 `MEDIA_MAX_INPUT_MP` 或 `MEDIA_MAX_EST_MB` 时直接返回 `reject`(`[LIMIT]` 前缀)。
+- `estimate.ts`:纯函数 `estimateMemory(meta, stage)` 按「格式布局(流式 / 渐进隔行 / CMYK)× 百万像素 × 位深」估算工作集 MB,低置信度(`low`)自动 ×1.5;导出 `NON_CORRUPT_ERROR_PREFIXES = ["[LIMIT]", "[INTERRUPTED]"]`。
+- `derive.ts`:导出 `processMedia(id)`(队列 runner,流程见 §7.2)、`rejectMedia(id, reason)`、`derivedPath(id, 'thumb'|'preview')`、`removeDerived(id)`(同时 `invalidateHd`)、`hintLocalCopy(id, file)` / `localHintFor(id)` / `dropLocalHint(id)`、`heicToJpeg(file, interactive?)`、`bmpInput(file)`(优先调 `ffmpeg` 文件进文件出转临时 PNG,回退 `bmpToPng`)。模块加载时设置 `sharp.cache(false)` 与 `sharp.concurrency(config.media.sharpConcurrency)`(`SHARP_CONCURRENCY`);内部有 `heicGate`、`heicHdGate`(交互式 HD 独立容量)与 `videoGate`。
+- `bmp.ts`:`isBmp(filename)`、`decodeBmp(buf)` → `{data: RGBA Buffer, width, height}`;支持 BI_RGB 1/4/8/16/24/32 位与 BI_BITFIELDS 16/32 位,不支持 RLE(抛错 → 记录 `failed`),作为无 `ffmpeg` 时 `bmpInput` 的回退。
 - `corrupt.ts`:见 §6.13。`fetch-url.ts`:见 §8.4 的 `/media/upload-url`。
 - `metadata.ts`、`png.ts`、`ai.ts`:见 §7.3。
-- `service.ts`:`listMedia`(游标分页、可见性、范围、搜索)、`getVisible`、`canSee`、`mediaDetail`、`updateMedia`、`batchAction`、`reprocessFailed`、`baseUrl`。
+- `service.ts`:`listMedia`(游标分页、可见性、范围、搜索)、`getVisible`、`canSee`、`mediaDetail`、`updateMedia`、`batchAction`、`reprocessFailed`、`baseUrl`、`hostTrusted`。
 
 ### 6.9 `keys.ts`
 `createKey({key?,label?,expires:'never'|'24h'|'custom',ttlHours?,createdBy})`(相同密钥重复提交 = 更新标签与有效期)、`listKeys`、`deleteKeyById`、`deleteKeyByValue`、`verifyKey(key, countUse)`(过期即惰性删除)、`purgeExpiredKeys()`(每小时定时)。明文密钥只在创建响应里出现一次。
 
 ### 6.10 `files.ts`
-`serveMedia(req, id, variant, user)`,`variant ∈ thumb|preview|file|stream`,实现 §4.3 的授权表;派生图带 `ETag` 与 `Cache-Control`(游客可公共缓存,登录态 private);派生图未生成时返回占位 SVG(`x-pgs-state: processing`,不缓存);原文件支持 `Range`(206/416)与 `Content-Disposition`(`dl=1` 为 attachment)。
+`serveMedia(req, id, variant, user)`,`variant ∈ thumb|preview|file|stream`,实现 §4.3 的授权表;无效密钥限流通过 `router.ts#clientIp(req)` 取客户端 IP(遵守 `TRUST_PROXY`);派生图带 `ETag` 与 `Cache-Control`(游客可公共缓存,登录态 private);派生图未生成时返回占位 SVG(`x-pgs-state: processing`,不缓存);原文件支持 `Range`(206/416)与 `Content-Disposition`(`dl=1` 为 attachment)。
 
-### 6.11 `queue.ts` 与 `ready.ts`
+### 6.11 `queue.ts`、`admission.ts`、`pressure.ts` 与 `ready.ts`
 
-**队列(`queue.ts`,状态在 `globalThis.__pgsQueue`)**
-- `enqueue(id, priority?)`:同 id 去重(`queued` 集合);`priority=true` 插到队首。若该 id **正在运行**,只登记进 `dirty`,运行结束后补跑一次(处理期间源文件又变化/用户要求重处理不会丢)。
-- **并发模型**:全局只有**一个**队列和 `THUMB_CONCURRENCY` 个槽位(默认 `min(4, CPU 核数)`,范围 1-128)。图片、视频、HEIC **共用这些槽位**,`pump()` 只看 `running < thumbConcurrency`。
-- **二级闸门是嵌套的**:`derive.ts` 里的 `videoGate`(`VIDEO_CONCURRENCY`,默认 2,只包 ffprobe 与 ffmpeg 抽帧)和 `heicGate`(`HEIC_CONCURRENCY`,默认 1,包 HEIC 转 JPEG,**HD 转换也共用它**)是任务**已占用槽位之后**才排队的 `limiter`。后果:批量导入 HEIC 时,多个槽位被"占着等闸门",真正在解码的只有 1 个,同时其它 JPEG 拿不到槽位(队首阻塞,见 `todo.md` P1-3)。
-- 失败重试:runner 抛错后最多重试 3 次(`MAX_ATTEMPTS`),间隔 1s / 4s / 16s(`setTimeout(...).unref()`);超过后计入 `failed`(记录的 `status='failed'` 由 `processMedia` 自己写库,队列只管计数)。重试期间 `queued` 中已无该 id,可被新的 `enqueue` 插入。
-- `queueStats()` → `{concurrency, running, waiting, done, failed, retrying}`;`idle(timeoutMs)`(整队列排空);`idleIds(ids, timeoutMs)`(上传接口 `wait=1` 只等本次文件,200ms 轮询);`limiter(n)`(通用小闸门,FIFO,`derive.ts`/`hd/service.ts`/上传并发都用它)。
-- `waiting` 是 id 字符串数组 + 游标 `head`(避免 `shift()` O(n)),游标超过 4096 且过半时压缩;队列只存 id,不存任务体,内存占用与待处理数量成线性、很小。
+**单点准入调度(`admission.ts` + `queue.ts`,状态在 `globalThis.__pgsQueue`)**
+- `enqueue(id, priorityOrOpts?)`:支持传入 `{priority, cls}`(`cls ∈ image|heic|video`,缺省由文件名后缀或探测补全);同 id 去重;若该 id 正在运行,登记进 `dirty`,运行结束后自动补跑一次。
+- **解码前轻量探测**:`pump()` 对队首窗口未探测的任务调用 `probeMedia(id)`(`probeLimiter(4)` 并发,不占解码内存预算);若探测返回 `reject`(超过 `MEDIA_MAX_INPUT_MP` 或 `MEDIA_MAX_EST_MB`),直接调 `rejectMedia(id, reason)` 写 `[LIMIT]` 失败并摘除,不进入解码。
+- **单点准入(`Scheduler`)**:所有等待只发生在 `admission.ts` 一处,判定顺序固定为:
+  1. **总并发与类别并发池**:`totalConcurrency`(`THUMB_CONCURRENCY`)且类别池未满(`image = THUMB_CONCURRENCY`、`heic = HEIC_CONCURRENCY`、`video = VIDEO_CONCURRENCY`),某类别满额时跳过队首继续挑选后面可运行的其它类别任务(消除 HEIC 阻塞 JPEG 的队首阻塞);
+  2. **软内存预算(`MEDIA_BUDGET_MB`)与压力折扣**:并发任务估算内存总和 ≤ 有效预算;单个超软预算的大任务仅在当前无任何媒体任务运行时允许**独占启动**(`exclusive`);`MEDIA_BUDGET_MB=0` 时关闭预算约束;
+  3. **老化防饥饿(aging)与交互式优先**:被预算阻塞超过 10 秒的队首大任务成为栅栏,阻止后来的小任务继续插队;交互式 HD 请求(`withHd`)优先于后台派生任务,支持 `AbortSignal` 断开取消与 15 秒超时(`503 hd_busy` + `Retry-After`),并用 `AsyncLocalStorage` 禁止同一调用链嵌套申请预算。
+- **动态内存压力状态机(`pressure.ts` + `metrics.ts`)**:每秒读取 cgroup 工作集 `anon / limit`(无 cgroup 限制时取 `RSS / totalmem`):`<70% normal`、`70%~85% elevated`(有效预算 ×0.7)、`85%~93% high`(暂停 HEIC/视频/大图重任务,轻任务继续)、`>93% critical`(有任务运行时暂停新准入,空闲时仍放行最小任务以保证永不死锁);升级立即生效,降级需回落 5 个百分点并连续 3 次采样。
+- **失败重试**:非 `[LIMIT]` 异常最多重试 3 次,间隔 1s / 4s / 16s;手动点击"重新处理"时重置 `attempts = 0`。
 
-**初始化(`ready.ts`)**
-- `ensureReady()` 进程内只执行一次(失败会重试;`instrumentation.ts` 与每个 API 请求都会 await 它):`assertSecureConfig`(生产环境拒绝占位管理员密码)→ `runBootstrap` → 创建 `dirs` 全部目录 → `syncEnvAdmin` → `setRunner(processMedia)` → 把 `status='pending'` 的记录按 `created_at` 倒序**最多 20000 条**重新入队(超出只打警告)→ 启动定时器。
-- 定时器:每小时 `purgeExpiredKeys` + `cleanTmp`(清 6 小时前遗留)+ `sweepHdCache`;启动时额外 `cleanTmp(0)`(全清)、`sweepHdCache`、`startCorruptSweeper`(10 分钟一次);`SCAN_INTERVAL_MIN>0` 时按间隔 `scanAllMounted()`。所有定时器 `unref()`。
+**初始化与崩溃回路保护(`ready.ts`)**
+- `ensureReady()` 进程内只执行一次:`assertSecureConfig` → `runBootstrap` → 创建 `dirs` 全部目录 → `syncEnvAdmin` → **先执行 `await cleanTmp(0)` 清空遗留临时文件**(防止误删随后刚启动任务的临时文件)→ 扫描 `status='pending'` 记录:若 `processing_started_ms` 非空(说明上次进程在处理该文件时因 OOM/`SIGBUS` 崩溃中断),将 `attempts + 1`,达到 3 次则直接标记 `status='failed'` 且 `error='[INTERRUPTED] ...'` 不再入队(阻断无限崩溃回路),其余按 `created_at` 倒序最多 20000 条重新入队 → 启动 `startMetricsSampler()` 与定时任务。
 
 ### 6.12 `blocklist.ts`
 - `blockedExtKeys()`:黑名单中 `storage='ext'` 的绝对路径集合(5 秒内存缓存,`invalidateBlocklist()` 失效),扫描时用于跳过。
@@ -409,31 +423,38 @@ find src cli scripts .github -type f | sort                               # 文�
 
 ### 6.13 `media/corrupt.ts`(疑似损坏文件)
 - `noteUploadActivity()`:每次入库(含失败)调用,重置自动清理倒计时。
-- `corruptSummary(limit)`:返回 `{count, items[≤limit], autoPurgeHours, purgeInSec}`;`items` 只含 `id/filename/kind/size/error/createdAt`。
-- `purgeCorrupt(ids?)`:ids 为空 = 全部 `status='failed'`。受管存储(local/s3)连源文件删除;挂载目录(ext)只删登记,不动用户文件。
-- `startCorruptSweeper()`:每 10 分钟检查,若「距上次上传 ≥ `CORRUPT_AUTO_PURGE_HOURS`」则自动清理;`0` 关闭。进程启动时 `lastUploadAt = now`,不会一上线就清。
-- 图库默认不展示 failed 记录(`listMedia` 的 `includeFailed` 默认 false),避免损坏文件干扰浏览。
+- **非损坏错误硬性排除**:凡是 `error` 以 `[LIMIT]`(像素或内存估算超限)或 `[INTERRUPTED]`(处理多次中断)开头的记录,属于资源限制或运行中断而非文件损坏,`corruptSummary()`、未指定 `ids` 的 `purgeCorrupt()` 与定时 `sweep()` 均将其排除,**绝不自动物理删除用户原文件**。
+- `corruptSummary(limit)`:返回 `{count, items[≤limit], autoPurgeHours, purgeInSec}`。
+- `purgeCorrupt(ids?)`:受管存储(local/s3)连源文件删除;挂载目录(ext)只删登记,不动用户文件。
+- `startCorruptSweeper()`:每 10 分钟检查,若「距上次上传 ≥ `CORRUPT_AUTO_PURGE_HOURS`」则自动清理真正的损坏文件;`0` 关闭。
 
-### 6.14 `hd/*`(高清预览,v1.1.0 引入)
+### 6.14 `hd/*`(高清预览)
 
 对外入口(`server/api/hd.ts` 调用):`requestHdToken(req,id,user,ip,w)`、`serveHd(req,id,user,ip)`、`recentSecurityEvents(limit)`、`userMarkCode(userId)`;`hdCacheInfo()` 由 `/status` 使用。
 
 - `service.ts`
-  - **宽度档位**:`hdWidths()` = `[1280,1600,1920,2560,3840]` 中小于 `HD_WIDTH` 的项加上 `HD_WIDTH`;`snapWidth(raw)` 吸附到不小于请求值的最小档(缺省取最大档),目的是提高缓存命中。
-  - **令牌**:payload `{m:媒体id, s:"hd", u:用户id|null, w:宽度, exp}`,由 `auth.signToken` 签发,TTL `HD_TOKEN_TTL_SEC`(默认 90s);`checkHdToken` 校验 scope / 媒体 / 用户绑定。**HD 不接受下载密钥**,不返回原文件,不暴露存储路径。
-  - **`serveHd` 流程**:① 验令牌(失败 → `hdStrike` + 403 `hd_token_invalid`)→ ② `guardHd(...,'serve')` 限流与异常检测 → ③ `loadVisibleImage`(**整行 select**,每次请求都重新校验可见性,缓存命中同样)→ ④ `snapWidth` + `versionOf(row)` = `sha1(hash|size|stat.size|mtime)` 前 12 位(原文件不存在 → `invalidateHd` + 404)→ ⑤ `getBase`:命中 → `readFile` 成 Buffer;未命中 → 经 `gate`(`HD_CONCURRENCY`)调 `convert`,同一 `(id,ver,宽)` 的并发请求合并成同一个 Promise(`inflight`,统计 `coalesced`),结果 `putCached` → ⑥ `HD_WM_ENABLED` 时**每次请求**再经**同一个 `gate`** 调 `applyWatermark(buf,{host,userId})`,**结果不缓存**(因为含请求 host 与用户标识)→ ⑦ 返回 `Response(Buffer)`,头含 `cache-control: private, no-store, max-age=0`、`x-pgs-cache: hit|miss|coalesced`、`x-pgs-wm`、`x-pgs-hd-width`。
-  - **`convert`**:`materialize` 原文件 → HEIC 先 `heicToJpeg`(共用 `heicGate`)→ `sharp(input,{failOn:"none", limitInputPixels: HD_MAX_INPUT_MP*1e6}).rotate().resize({width, height: HD_MAX_HEIGHT, fit:"inside", withoutEnlargement:true}).webp({quality: HD_QUALITY}).toBuffer()`。**未设 `sequentialRead`**;视频不支持(400)。
-  - **闸门**:`gate = limiter(HD_CONCURRENCY)`(默认 3)被 `convert` 与 `applyWatermark` 共用;它与后台派生队列(`THUMB_CONCURRENCY`)**互相不感知**,两者可同时满载。缓存命中时的 `readFile` 和 `loadVisibleImage` 不受 `gate` 约束。
-- `cache.ts`:文件 `cache/hd/<id前2位>/<id>.<ver12>.<宽>.webp`,保存的是**无水印**基图;内存索引首次使用时扫目录重建;`putCached` 先写 `.tmp` 再 rename,并先删同 id 的旧版本;`evict()` 按 `lastAccess` LRU 淘汰到 ≤ `HD_CACHE_MAX_MB`;读时超过 `HD_CACHE_TTL_DAYS` 即删;`invalidateHd(id)` 自增失效代数 `gen` 并删文件,在途转换因代数不符丢弃结果;`sweepHdCache()` 启动与每小时执行(过期 / 超量 / 超过 1 小时的 `.tmp`)。`HD_CACHE_MAX_MB` 只约束**磁盘**,不约束请求时的内存。
-- `watermark.ts`:`applyWatermark(webp,{host,userId})` → `metadata()` 取 W×H → `layerFor(...)` → `sharp(webp).composite([layer]).webp({quality: min(95, HD_QUALITY+3)}).toBuffer()`。水印层 = pango 渲染文字(DejaVu Sans,白字 + 1px 黑投影双层,透明度 `HD_WM_OPACITY`%)→ 旋转 `HD_WM_ANGLE` → 按 `HD_WM_DENSITY` 交错平铺到 `(W+2·pad)×(H+2·pad)` 的 RGBA 画布 → 裁回 W×H 的 PNG。奇数行用 `userMarkCode(userId)`(`U-` + HMAC(sessionSecret,`wm|<id>`) 前 6 位)交替站点文字。`layerFor` 以参数为键缓存 Promise(≤24 个,**FIFO** 淘汰,命中不刷新顺序)。字体缺失直接抛错,**不会退回无水印图**。
-- `guard.ts`:1 分钟滑动窗口限流(令牌 `HD_RATE_TOKEN_PER_MIN`=60;取图 IP 30 / 用户 40 / 媒体 120);批量访问检测:`HD_SCAN_WINDOW_SEC`(300s)内同一 IP 访问不同图片数 > `HD_SCAN_DISTINCT`(150)→ 封禁 `HD_SCAN_BLOCK_SEC`(300s);`hdStrike`(无效/跨媒体/越权令牌)1 分钟累计 20 次 → 封禁。事件写内存(最近 300 条)与 `logs/security.log`;同源同事件 10 秒只记一条。超限统一 429 + `retry-after`。
+  - **宽度档位**:`hdWidths()` = `[1280,1600,1920,2560,3840]` 中小于 `HD_WIDTH` 的项加上 `HD_WIDTH`;`snapWidth(raw)` 吸附到不小于请求值的最小档(缺省取最大档)。
+  - **令牌**:payload `{m:媒体id, s:"hd", u:用户id|null, w:宽度, exp}`,TTL `HD_TOKEN_TTL_SEC`(默认 90s);`checkHdToken` 校验 scope / 媒体 / 用户绑定。
+  - **`serveHd` 流程与三路预算分流**:
+    1. 验令牌(失败 → `hdStrike` + 403 `hd_token_invalid`)→ `guardHd(...,'serve')` → `loadVisibleImage`(`HD_COLS` 列投影,排除大字段,并检查 `row.missingAt` 与相册可见性)→ `versionOf(row)`(原文件不存在 → `invalidateHd` + 404);
+    2. **游客水印成品磁盘缓存(`cache/hd/wm/`)**:当水印开启、请求者为未登录游客(`uid === null`)且域名可信(`!wmDependsOnHost() || hostTrusted(req)`)时,以 `id + ver + width + wmFingerprint(host)` 查找成品缓存,命中直接返回(零 sharp 解码/合成开销);
+    3. **未命中成品缓存时按三路申请 `Scheduler` 预算**:
+       - `hit`(无水印基图缓存命中):仅申请轻量水印阶段预算 `wmEst`,执行 `applyWatermark`;
+       - `coalesced`(同图同尺寸已有请求正在 `convert`):先等待 `inflight` Promise 拿到基图(期间不重复扣减解码预算),再申请 `wmEst` 执行 `applyWatermark`;
+       - `miss`(基图未命中):用 `metaForRow(row)` 估算解码内存(超 `MEDIA_MAX_EST_MB` 返回 413 `hd_too_large`),申请覆盖 `convert + applyWatermark` 的预算,`convert` 产生产物并写入缓存后调用 `res.adjust(wmEst)` 立即释放解码差额,再完成水印合成;游客可缓存请求异步写入 `putCachedWm`;
+    4. 响应头含 `cache-control: private, no-store, max-age=0`、`x-pgs-cache: hit|miss|coalesced`、`x-pgs-wm-cache: hit|miss|off|skip-user|untrusted-host`、`x-pgs-wm`、`x-pgs-hd-width`。
+  - **`convert`**:`materialize` 原文件 → `storage==='ext'` 的常规图片先 `COPYFILE_FICLONE` 复制私有副本防 `SIGBUS` → HEIC 走 `heicToJpeg(file, true)`(`heicHdGate`),BMP 走 `bmpInput(file)` → `sharp().rotate().resize().webp().toBuffer()`。
+- `cache.ts`:管理基图(`cache/hd/<id前2位>/`)与游客水印成品(`cache/hd/wm/<id前2位>/`),共享 `HD_CACHE_MAX_MB` 容量上限、`HD_CACHE_TTL_DAYS` 过期时间与失效代数 `gen`(`invalidateHd(id)` 同步清理两类缓存)。
+- `watermark.ts`:`buildLayer` 将旋转文字瓦片合成到 `(W+2·pad)×(H+2·pad)` raw 画布后直接 `extract` 裁回 `W×H` 并单次编码 PNG(消除双重 PNG 编解码);`layerFor` 缓存 ≤24 个水印层(FIFO);登录用户奇数行叠加 `userMarkCode(userId)`(`U-XXXXXX`)。
+- `guard.ts`:1 分钟滑动窗口限流 + 批量访问检测 + 封禁 + `logs/security.log`。
 
 ### 6.15 其余服务端文件速览
 
-- `db/index.ts`:`DB_DRIVER` 选驱动;导出 `db`(drizzle,类型按 pg 声明)、`pool`(仅 pg)、`dbKind`、`rawQuery(sql)`(两驱动都返回 `{rows}`)、`nullSafeEq(col,val)`(pg 用 `IS NOT DISTINCT FROM`,sqlite 用 `IS`)、`pingDb()`、`closeDb()`。连接池/SQLite 句柄缓存在 `globalThis`;pg 池监听 `error`。
-- `db/bootstrap.ts`:`runBootstrap()` 幂等建表/索引(pg 在 `pg_advisory_lock(7351001)` 下执行并尝试 `CREATE EXTENSION pg_trgm`,失败只告警);SQLite 模式注册 `now()` / `gen_random_uuid()`。
-- `secret.ts`:`resolveSessionSecret()`(同步读取,因为 `config` 是模块级常量)、`isPlaceholderSecret()`。
-- `rate.ts`:`hit(key, perMinute, message?)`(记一次,超限抛 429)、`count(key)`(只记)、`overLimit(key, perMinute)`(只查);1 分钟滑动窗口,最多 20000 个键(超出淘汰最早)。
+- `cgroup.ts` / `metrics.ts`:`readCgroup()` 解析容器 cgroup v2(`/sys/fs/cgroup/memory.current`、`memory.max`、`memory.stat` 的 `anon`/`inactive_file`)与 v1 回落;`startMetricsSampler()` 每秒采样更新 10 分钟峰值 RSS/anon、事件循环延迟(`perf_hooks.monitorEventLoopDelay`)与 `pressure.ts` 压力状态;`collectMetrics()` 供 `/status` 读取。
+- `db/index.ts`:`DB_DRIVER` 选驱动;导出 `db`、`pool`、`dbKind`、`rawQuery(sql)`、`nullSafeEq(col,val)`、`pingDb()`、`closeDb()`。
+- `db/bootstrap.ts`:`runBootstrap()` 幂等建表/索引与老库列升级(`PG_DDL` + `LITE_DDL` + `LITE_UPGRADE`)。
+- `secret.ts`:`resolveSessionSecret()`、`isPlaceholderSecret()`。
+- `rate.ts`:`hit(key, perMinute, message?)`、`count(key)`、`overLimit(key, perMinute)`;1 分钟滑动窗口,最多 20000 个键。
 - `notices.ts`:`listNotices(user)`、`unreadCount`、`createNotice`、`updateNotice`、`deleteNotice`、`markAllRead`、`markRead`;表见 §5。
 
 ## 7. 关键流程
@@ -447,26 +468,25 @@ POST /media/upload  (multipart)
      去重 → uniqueKey → driver.put → INSERT pending → enqueue(priority)
   返回 {target:{album,albumName,storage}, summary, results[]}
   (wait=1 时用 idleIds 只等本次上传的文件处理完)
-后台: processMedia(id) → 生成派生图 + 元数据 → status=ready
+后台: probeMedia(id) 轻量探测 → Scheduler 准入 → processMedia(id) → status=ready
 ```
 上传的文件落在哪:响应 `target` 明确给出相册与存储;前端上传对话框在选择相册时显示"将保存到"的路径,完成后提示"已上传到「相册名」"并提供跳转。未选择相册 → "未归类(收件箱)",登录用户在「全部」与「相册 → 未归类」中可见。全部文件失败时响应为 `ok:false` + HTTP 422。
 
 ### 7.2 派生图(`media/derive.ts#processMedia`)
 
-入口是队列 runner。先 `invalidateHd(id)`(原文件可能已变);记录不存在则清理本地副本提示后返回。
+任务在进入 `processMedia` 前已由 `probe.ts#probeMedia` 完成文件头探测与上限检查,并由 `Scheduler` 分配类别槽位与内存预算。
 
-1. **取得本地路径**:`localHints`(上传到 S3 时保留的本地副本)→ 否则 `materialize()`(local/ext 直接返回路径,S3 下载到 `tmp/`)。`finally` 里必定 `cleanup()`。
-2. **图片**
-   - ext(挂载目录)的图片(HEIC/BMP 除外)先 `copyFile(..., COPYFILE_FICLONE)` 成 `tmp/src-*` **私有副本**再交给 sharp:外部程序在 libvips `mmap` 期间截断/覆盖源文件会让整个 Node 进程 `SIGBUS` 崩溃。
-   - **输入**:HEIC → `heicToJpeg()`(`heicGate` 限流;整文件 `readFile` → `heic-convert`(quality 0.92)→ JPEG **Buffer**);BMP → `bmpToPng()`(整文件 `readFile` → `decodeBmp` RGBA Buffer → sharp raw → PNG **Buffer**);其它 → 文件路径(或私有副本)。
-   - `sharp(input, INPUT_OPTS).metadata()` 读尺寸/方向/色彩空间/位深(只读头部,廉价);EXIF 方向 5–8 时宽高互换后入库。
-   - `makeDerived(id, input)`:`rotate()` → `resize(PREVIEW_WIDTH 方框, fit inside, withoutEnlargement)` → `webp q84` → `toBuffer()` 得 **preview**;再以 **preview Buffer** 为输入缩到 `THUMB_WIDTH × THUMB_WIDTH*2`(inside)→ `webp q84` 得 **thumb**;thumb 缩成 1×1 取平均色 `#rrggbb`。两个 Buffer 经 `writeAtomic()`(同目录 tmp + rename)写入 `derived/`。不调用 `keepMetadata`,输出不含 EXIF/XMP/ICC。
-   - `INPUT_OPTS = {failOn:"none", limitInputPixels:268_000_000, sequentialRead:true}`,**硬编码**(§10.2)。注意 `metadata()` 与 `makeDerived` 是对同一输入的两次独立打开。
-   - `extractImageMeta(file, facts, tz)` 另行读取**原文件头部**(`EXIF_READ_BYTES`,读不到再放大到 8MB;TIFF 逐级放大到 64MB),与出图互不共享;PNG 另读文本块;带 alpha 且 ≤16MP 的 PNG 再用 sharp 全解码一次 alpha 通道找 NovelAI 隐写。
-3. **视频**:`videoGate(probeVideo)`(ffprobe;宽/高/时长全空 → 抛错 → `failed`)→ 候选时间点 `[min(1, 时长/2), 0, 时长25%, 时长75%]`(后两个仅时长 >4s)依次 `videoGate(grabVideoFrame)` 抽帧到 `tmp/frame-*.png`(ffmpeg `scale=min(PREVIEW_WIDTH,1600):-2`,单线程,60s 超时),`isBlankFrame()`(64×64 缩略图的标准差/均值)判纯色则换点重试;全失败或无 ffmpeg → SVG 占位图 → 同一个 `makeDerived`。
-4. **写回**:宽/高/时长;拍摄时间在 `1990 ≤ 年份` 且 `≤ 明天` 时写 `taken_at` 与 `sort_at`;`color`、`meta`、`search_text`、`status='ready'`、`error=null`。任何异常 → `status='failed'` + `error`(≤500 字)→ 重新抛出,由队列按 §6.11 重试。
+1. **列投影与启动标记**:按 `PROCESS_COLS` 查询必要列(不拉 `meta`/`search_text`),调 `invalidateHd(id)`,写入 `processing_started_ms = Date.now()`。
+2. **取得本地路径**:优先复用 `localHints`(上传到 S3 时保留的本地副本),否则 `materialize()`。`finally` 中必定清理临时文件。
+3. **图片**:
+   - `storage === 'ext'` 的常规图片先 `copyFile(..., COPYFILE_FICLONE)` 复制到 `tmp/src-*` 私有副本,防止外部截断引发 `SIGBUS`。
+   - HEIC 调 `heicToJpeg(file)` 转 JPEG Buffer;BMP 调 `bmpInput(file)`(优先 `ffmpeg` 文件进文件出转 `tmp/bmp-*.png`,失败回退内置 `decodeBmp`)。
+   - `makeDerived(id, input)`:`sharp(input, INPUT_OPTS).rotate().resize(PREVIEW_WIDTH).webp({quality:84}).toFile(previewTmp)`,再以 `previewTmp` 为输入缩到 `THUMB_WIDTH` 写 `thumbTmp`,取 1×1 平均色后原子 `rename` 到 `derived/`。
+   - `extractImageMeta(file, facts, tz)` 读取原文件头部(`EXIF_READ_BYTES`,TIFF 逐级放大到 64MB)提取 EXIF/XMP/IPTC/ICC/PNG 文本块与 AI 参数。
+4. **视频**:`videoGate(probeVideo)` → 多候选时间点 `videoGate(grabVideoFrame)` 抽帧并用 `isBlankFrame()` 跳过纯黑片头 → `makeDerived`。
+5. **写回**:更新宽高/时长/拍摄时间/`color`/`meta`/`search_text`,置 `status='ready'`、`attempts=0`、`processing_started_ms=null`。触发像素上限时写 `[LIMIT]` 前缀并不再重试。
 
-> 内存/并发特性(哪些输入格式最耗内存、闸门如何叠加)见 §17。
+> 内存估算系数与实测基准见 §16。
 
 ### 7.3 元数据结构(`pgs_media.meta`)
 ```ts
@@ -510,14 +530,17 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(源�
 ```
 前端 Viewer(useHd.ts)
   GET /media/:id/hd-token?w=<屏宽×DPR>   → guardHd('token') → loadVisibleImage → {token, width, expiresIn}
-  GET /media/:id/hd?t=<token>&w=<档位>    → serveHd()  (见 §6.14 的 ①~⑦)
-        命中: readFile(cache) ─┐
-        未命中: gate → convert(原图→WebP) → putCached(无水印基图) ─┤
-                                              gate → applyWatermark(每次请求) → Response(no-store)
+  GET /media/:id/hd?t=<token>&w=<档位>    → serveHd()  (见 §6.14)
+        1) 每次请求先校验: 令牌 + 限流 + 可见性 + missingAt + versionOf
+        2) 游客且域名可信: 先查 cache/hd/wm/ 成品缓存 → 命中直接返回(零 sharp 合成)
+        3) 未命中成品缓存: 按 hit / coalesced / miss 三路向 Scheduler 申请内存预算:
+             hit / coalesced → 仅申请水印阶段预算 wmEst → applyWatermark
+             miss            → 申请全流水线预算 → convert → putCached → adjust(wmEst) → applyWatermark
+                               (游客可缓存时异步 putCachedWm) → Response(no-store)
   浏览器: res.blob() → URL.createObjectURL;只保留当前 ±1 张,切换即 revoke;当前图就绪 250ms 后预加载相邻 2 张
 ```
-- 缓存的是无水印基图;水印每次请求合成(host、登录用户标识不同,不能共享)。因此**同一张图再次打开仍要付出一次 WebP 解码 + 合成 + 编码**,`no-store` 也让浏览器不会复用。
-- 失效:`processMedia` 开头、`removeDerived`、文件被删/不存在、`versionOf` 变化(大小/mtime/hash 任一改变)。
+- **缓存的是处理结果,不是访问权限**:无论命中基图还是游客水印成品缓存,每次请求都先完整执行令牌、限流、可见性与 `missingAt` 校验;登录用户因含动态标识 `U-XXXXXX` 不读写游客成品缓存。
+- 失效:`processMedia` 开头、`removeDerived`、文件被删/不存在、`versionOf` 变化(大小/mtime/hash 任一改变)、水印配置或 `host` 变化(`wmFingerprint` 改变自动 miss)。
 - 运维接口:`GET /security/events`(最近事件)、`GET /security/watermark?code=U-XXXXXX`(由水印反查用户,需 `users` 权限)、`/status` 里的 `hd` 块(命中/未命中/合并/淘汰/过期/失效/转换次数 + 缓存文件数与字节)。
 
 ## 8. REST API(`/api/v1`)
@@ -615,10 +638,10 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(源�
 |---|---|---|
 | GET `/health` | public | liveness:`{status:"ok",version}`,不查数据库(容器 HEALTHCHECK 用;平台用 `/api/health` 同为 liveness) |
 | GET `/health/ready` | public | readiness:数据库连通 + `DATA_DIR` 可写 + 磁盘剩余;不满足返回 503 |
-| GET `/status` | status | 版本、运行时长、计数、队列、`hd` 缓存统计、工具可用性、内存(**仅 `{rss, heapUsed}`**)、磁盘、关键配置(结果缓存 5 秒;ffmpeg 探测缓存 60 秒) |
-| GET `/status/queue` | status | `{concurrency,running,waiting,done,failed,retrying}` |
-| GET `/status/corrupt` | status | 疑似损坏文件:`{count, items[≤20], autoPurgeHours, purgeInSec}` |
-| POST `/status/corrupt/purge` | media.delete | 清理疑似损坏文件,body `{ids?}`(空 = 全部);受管存储连源文件删除,挂载目录只删登记 |
+| GET `/status` | status | 版本、运行时长、计数、队列(含类别池 `byClass`、各闸门 `gates`、预算准入 `admission` 与压力状态 `pressure`)、`hd` 缓存统计、工具可用性、`memory` (`{rss,heapUsed,heapTotal,external,arrayBuffers,maxRss,peak10m,cgroup}`)、`sharp` (`{cache,counters,concurrency}`)、`eventLoop` (`{p99Ms,maxMs}`)、磁盘、关键配置与预算推导(结果缓存 5 秒) |
+| GET `/status/queue` | status | `{concurrency,running,waiting,probing,done,failed,rejected,retrying,byClass,gates,admission,pressure}` |
+| GET `/status/corrupt` | status | 疑似损坏文件(已排除 `[LIMIT]`/`[INTERRUPTED]`):`{count, items[≤20], autoPurgeHours, purgeInSec}` |
+| POST `/status/corrupt/purge` | media.delete | 清理疑似损坏文件,body `{ids?}`(空 = 全部损坏项);受管存储连源文件删除,挂载目录只删登记 |
 
 ### 8.8 删除黑名单(仅 `media.delete`,即管理者及以上)
 
@@ -666,12 +689,12 @@ curl $A -X POST $B/blocklist/<bid>/restore        # 解除黑名单并重生成�
 | 方法 路径 | 权限 | 参数 | 说明 |
 |---|---|---|---|
 | GET `/media/:id/hd-token` | public | `w`(期望宽度,服务端吸附到档位) | `{id, token, expiresIn, width}`;媒体不可见 → 404(并计入异常检测);非图片 → 400;被限流 → 429 + `retry-after` |
-| GET `/media/:id/hd` | public | `t`(令牌,必填)、`w` | 带水印的 `image/webp`;令牌无效/过期/跨媒体 → 403 `hd_token_invalid`;`cache-control: private, no-store`;头 `x-pgs-cache`(`hit` / `miss` / `coalesced`)、`x-pgs-wm`(`0` / `1`)、`x-pgs-hd-width` |
+| GET `/media/:id/hd` | public | `t`(令牌,必填)、`w` | 带水印的 `image/webp`;令牌无效/过期/跨媒体 → 403 `hd_token_invalid`;超估算硬限制 → 413 `hd_too_large`;预算等待超时 → 503 `hd_busy`(带 `retry-after`);`cache-control: private, no-store`;头 `x-pgs-cache`(`hit` / `miss` / `coalesced`)、`x-pgs-wm-cache`(`hit` / `miss` / `off` / `skip-user` / `untrusted-host`)、`x-pgs-wm`(`0` / `1`)、`x-pgs-hd-width` |
 | GET `/security/events` | status | `limit`(≤300,默认 100) | `{events[]}`:内存中最近的安全事件(`hd_denied / hd_rate_limited / hd_scan_detected / hd_blocked / hd_abuse_blocked`),落盘在 `DATA_DIR/logs/security.log` |
 | GET `/security/watermark` | users | `code=U-XXXXXX` | `{matches:[{id,username,role}]}`:由水印里的动态标识反查用户(遍历全部用户计算 HMAC) |
 
 ## 9. 支持的文件类型
-图片:`jpg jpeg png gif webp avif bmp tif tiff heic heif hif`(GIF 仅取首帧;HEIC 由 `heic-convert` 解码)。
+图片:`jpg jpeg png gif webp avif bmp tif tiff heic heif hif`(GIF 仅取首帧;HEIC 由 `heic-convert` 解码;BMP 优先由 `ffmpeg` 转临时 PNG,无 `ffmpeg` 时回退 `media/bmp.ts`)。
 视频:`mp4 m4v mov webm mkv avi wmv flv 3gp mpg mpeg ts`(封面/元数据依赖 ffmpeg/ffprobe,浏览器能否播放取决于编码)。
 增减类型:改 `server/media/types.ts` 的 `IMAGE_EXT / VIDEO_EXT`,并同步 `cli/pgs.mjs` 的 `EXT`。
 
@@ -694,16 +717,21 @@ curl $A -X POST $B/blocklist/<bid>/restore        # 解除黑名单并重生成�
 | `DATA_DIR` | `./data` | 数据目录 |
 | `THUMB_CONCURRENCY` | `min(4,CPU)` | 图片处理并发(1-128) |
 | `VIDEO_CONCURRENCY` / `HEIC_CONCURRENCY` | 2 / 1 | 视频与 HEIC 解码单独限流 |
+| `SHARP_CONCURRENCY` | 2 | 每个 sharp 任务的 libvips 线程数(1-16;1C1G 低内存机器建议设 1) |
+| `MEDIA_MAX_INPUT_MP` | 268 | 派生图允许的最大输入百万像素(1-2000;超出以 `[LIMIT]` 拒绝,绝不被 `corrupt.ts` 误删原文件) |
+| `MEDIA_BUDGET_MB` | 自动推导 | 媒体处理软内存预算(MB,0-65536;默认按 `(limit×0.85 − baseRss)×0.7` 钳制在 256~2048;`0` 关闭预算约束) |
+| `MEDIA_MAX_EST_MB` | `MEDIA_BUDGET_MB×1.5` | 单任务估算内存硬上限(MB,0-65536;超出直接以 `[LIMIT]` 拒绝;`0` 关闭硬上限) |
+| `MEDIA_PRESSURE_GUARD` | true | 动态内存压力保护开关(根据 cgroup `anon`/RSS 水位自动折扣预算或暂停重任务) |
 | `THUMB_WIDTH` / `PREVIEW_WIDTH` | 720 / 1600 | 派生图最大宽度 |
 | `EXIF_READ_BYTES` | 1048576 | EXIF 只读文件头字节数(读不到再放大到 8MB) |
 | `MAX_UPLOAD_MB` | 2048 | 单文件上限,0=不限 |
 | `MIN_FREE_DISK_MB` | 1024 | 上传前要求的最小剩余磁盘,0=不检查 |
-| `CORRUPT_AUTO_PURGE_HOURS` | 5 | 疑似损坏文件在停止上传满该小时数后自动清理,0=关闭 |
+| `CORRUPT_AUTO_PURGE_HOURS` | 5 | 疑似损坏文件在停止上传满该小时数后自动清理(排除 `[LIMIT]`/`[INTERRUPTED]`),0=关闭 |
 | `JSON_BODY_MAX_KB` | 1024 | JSON 请求体上限 |
 | `DB_POOL_MAX` / `DB_STATEMENT_TIMEOUT_MS` / `DB_CONNECT_TIMEOUT_MS` / `DATABASE_SSL` | 10 / 20000 / 5000 / false | 连接池与慢查询保护 |
 | `ALLOWED_MOUNT_ROOTS` | 空 | 逗号分隔白名单;留空时只允许数据目录与 `/photos /mnt /media /srv /home /volume1` |
 | `SCAN_INTERVAL_MIN` | 0 | 挂载相册自动重扫间隔(分钟),0=关闭 |
-| `SCAN_MAX_DEPTH` | 32 | 递归扫描最大目录深度(1-128);超出时计入 `truncated` 并在扫描结果中提示(**`.env.example` 未列出**) |
+| `SCAN_MAX_DEPTH` | 32 | 递归扫描最大目录深度(1-128);超出时计入 `truncated` 并在扫描结果中提示 |
 | `SCAN_PRUNE_MAX_RATIO` / `SCAN_PRUNE_MIN_COUNT` | 0.3 / 20 | 扫描熔断:一次允许清理的最大消失比例与最小样本数 |
 | `GUEST_META` | `basic` | 游客元数据级别:`full` / `basic`(去 GPS/序列号/作者邮箱/raw)/ `none` |
 | `GUEST_NOTE` | false | 游客是否可见管理员备注 |
@@ -721,8 +749,8 @@ curl $A -X POST $B/blocklist/<bid>/restore        # 解除黑名单并重生成�
 | `HD_QUALITY` | 82 | 40-95 | 基图 WebP 质量;水印合成后的输出质量为 `min(95, HD_QUALITY+3)` |
 | `HD_MAX_INPUT_MP` | 200 | 10-1000 | 单张原图允许的最大输入像素(百万),传给 sharp `limitInputPixels` |
 | `HD_CONCURRENCY` | 3 | 1-32 | `convert` 与水印合成**共用**的并发闸门 |
-| `HD_CACHE_DIR` | `DATA_DIR/cache/hd` | — | 缓存目录 |
-| `HD_CACHE_MAX_MB` / `HD_CACHE_TTL_DAYS` | 2048 / 7 | 16-1048576 / 0.01-365 | 缓存**磁盘**上限(LRU)与过期天数;**不是内存上限** |
+| `HD_CACHE_DIR` | `DATA_DIR/cache/hd` | — | 缓存目录(容器内固定随 `/app/data` 卷持久化) |
+| `HD_CACHE_MAX_MB` / `HD_CACHE_TTL_DAYS` | 2048 / 7 | 16-1048576 / 0.01-365 | 缓存**磁盘**上限(LRU,基图 + 游客水印成品合计)与过期天数;**不是内存上限** |
 | `HD_TOKEN_TTL_SEC` | 90 | 15-3600 | 令牌有效期 |
 | `HD_RATE_IP_PER_MIN` / `HD_RATE_USER_PER_MIN` / `HD_RATE_MEDIA_PER_MIN` / `HD_RATE_TOKEN_PER_MIN` | 30 / 40 / 120 / 60 | 1-100000 | 取图(IP/用户/媒体)与申请令牌(IP)的每分钟上限 |
 | `HD_SCAN_DISTINCT` / `HD_SCAN_WINDOW_SEC` / `HD_SCAN_BLOCK_SEC` | 150 / 300 / 300 | 5+ / 30-86400 / 10-86400 | 批量访问检测:窗口内不同图片数上限 / 窗口秒数 / 封禁秒数 |
@@ -734,41 +762,34 @@ curl $A -X POST $B/blocklist/<bid>/restore        # 解除黑名单并重生成�
 
 ### 10.2 硬编码常量(**没有**环境变量)
 
-调参前先确认是否真的需要把它们提升为配置(对应计划见 `todo.md`)。
-
 | 常量 | 值 | 位置 | 影响 |
 |---|---|---|---|
-| 派生图输入像素上限 `limitInputPixels` | 268,000,000 | `media/derive.ts#INPUT_OPTS` | 超过即解码失败 → `failed`;HD 用 `HD_MAX_INPUT_MP` |
-| `sequentialRead` | true(仅派生图;HD 未设置) | `derive.ts` / `hd/service.ts` | — |
-| `sharp.concurrency` / `sharp.cache` | 2 / false | `derive.ts` 模块加载时 | 全进程 libvips 线程数/缓存 |
-| preview / thumb WebP 质量 | 84 / 84;thumb 高度上限 = 2×`THUMB_WIDTH` | `derive.ts#makeDerived` | — |
-| HEIC→JPEG 质量 | 0.92 | `derive.ts#heicToJpeg` | 中间 JPEG 体积 |
+| `sequentialRead` | true(派生图) | `media/derive.ts` | 流式读取降低常规格式峰值 |
+| `sharp.cache` | false | `media/derive.ts` 模块加载时 | 关闭 libvips 操作缓存(线程数由 `SHARP_CONCURRENCY` 控制) |
+| preview / thumb WebP 质量 | 84 / 84;thumb 高度上限 = 2×`THUMB_WIDTH` | `media/derive.ts#makeDerived` | — |
+| HEIC→JPEG 质量 | 0.92 | `media/derive.ts#heicToJpeg` | 中间 JPEG 体积 |
 | EXIF 最大读取 `EXIF_MAX_BYTES` | 64MB(TIFF 逐级放大 `EXIF_READ_BYTES`→8MB→64MB) | `media/metadata.ts` | 每个并发任务最多一个该大小的 Buffer |
 | PNG 隐写提取像素上限 | 16,000,000 | `media/png.ts#readStealthInfo` | 超过不提取 |
-| 队列重试 | 3 次,1s/4s/16s | `queue.ts` | — |
+| 队列重试与崩溃回路上限 | 3 次(运行时退避 1s/4s/16s;崩溃中断达 3 次写 `[INTERRUPTED]`) | `queue.ts` / `ready.ts` | — |
+| 老化阈值 `agingMs` / HD 等待超时 | 10s / 15s | `admission.ts` / `hd/service.ts` | 防大任务饥饿 / 超时返回 503 `hd_busy` |
 | 启动恢复 pending 上限 | 20000 条 | `ready.ts` | 超出只警告 |
 | 缓存 TTL | 相册树 10s、相册统计 5s、黑名单外部键 5s、`/status` 5s、ffmpeg 探测 60s、Basic 认证 60s、用户对象 15s | `albums.ts` `blocklist.ts` `api/admin.ts` `auth.ts` | — |
 | 软删除宽限期 `MISSING_GRACE_MS` | 7 天 | `albums.ts` | — |
-| 扫描并发 | 目录项 `stat` 8 路 | `albums.ts` | — |
+| 扫描并发 / 探测并发 | 目录项 `stat` 8 路 / `probeLimiter` 4 路 | `albums.ts` / `queue.ts` | — |
 | 登录失败限流 | IP 10 次 / 用户名 20 次 / 10 分钟 | `auth.ts` | — |
 | 限流表上限 | `rate.ts` 20000 键;HD 安全事件内存 300 条、日志 5MB 轮转 | `rate.ts` `hd/guard.ts` | — |
-| 水印层缓存 | ≤24 个,FIFO | `hd/watermark.ts` | 每项是一张 W×H 的 PNG Buffer |
+| 水印层缓存 / 游客成品缓存条目上限 | 水印层 ≤24 个(FIFO);游客成品 ≤4000 条 | `hd/watermark.ts` / `hd/cache.ts` | — |
 | 导入/上传并发 | 上传 `concurrency` 默认 4(≤`THUMB_CONCURRENCY`);直链上传 `min(3, THUMB_CONCURRENCY)`;服务器路径导入默认 4(≤`THUMB_CONCURRENCY`),单次最多 20000 个文件 | `api/media.ts` | 只影响入库(落盘+哈希),不是解码并发 |
 | 直链下载 | 超时 120s、最多 5 次重定向 | `media/fetch-url.ts` | — |
-| 镜像环境 | `UV_THREADPOOL_SIZE=12`、`MALLOC_ARENA_MAX=2`、`LD_PRELOAD=libjemalloc`、`NODE_OPTIONS=--max-old-space-size=${PGS_NODE_HEAP_MB:-1024}`(compose) | `Dockerfile` / `docker-compose.yml` | libuv 线程池(sharp/fs/scrypt/DNS 共用)与内存碎片 |
+| 镜像环境 | `UV_THREADPOOL_SIZE=12`(compose 可覆盖)、`MALLOC_ARENA_MAX=2`、`LD_PRELOAD=libjemalloc`、`NODE_OPTIONS=--max-old-space-size=${PGS_NODE_HEAP_MB:-1024}` | `Dockerfile` / `docker-compose.yml` | libuv 线程池与内存碎片 |
 
 ### 10.3 docker compose 的变量传递规则(重要)
 
-`docker-compose.yml` 的 `app.environment` 是**白名单**,且**没有 `env_file:`**。`.env` 里的变量只用于 compose 文件内的 `${...}` 插值,**不会自动进入容器**。按此语义(基于 Compose 行为判断,尚未在真实容器内用 `printenv` 验证),当前只有下列变量能从 `.env` 传到应用:
+`docker-compose.yml` 的 `app.environment` 采用**最小权限显式白名单映射**(不使用整份 `env_file:` 注入,以免把 `PGS_DB_PASSWORD` 等宿主机/数据库变量暴露进应用容器):
 
-| 传递方式 | 变量 |
-|---|---|
-| `${PGS_*}` 映射 | `DB_DRIVER`←`PGS_DB_DRIVER`、`SQLITE_FILE`←`PGS_SQLITE_FILE`、`ADMIN_USER/ADMIN_PASSWORD/SESSION_SECRET`←`PGS_ADMIN_USER/PGS_ADMIN_PASSWORD/PGS_SESSION_SECRET`、`THUMB_CONCURRENCY`←`PGS_THUMB_CONCURRENCY`(默认 4)、`VIDEO_CONCURRENCY`←`PGS_VIDEO_CONCURRENCY`、`HEIC_CONCURRENCY`←`PGS_HEIC_CONCURRENCY`、`NODE_OPTIONS`←`PGS_NODE_HEAP_MB`(默认 1024)、`TRUST_PROXY`←`PGS_TRUST_PROXY` |
-| 同名直通 | `TZ` |
-| 固定值 | `DATABASE_URL`(指向 compose 内的 `db` 服务) |
-| 仅注释示例 | `PUBLIC_BASE_URL`、`ALLOWED_MOUNT_ROOTS` |
-
-**未传递**(在 `.env` 里写了也无效,除非自行加进 `environment:` 或增加 `env_file:`):全部 `HD_*`(含 README 内存建议里的 `HD_CONCURRENCY`、`HD_CACHE_MAX_MB`)、`S3_*`、`COOKIE_SECURE`、`MAX_UPLOAD_MB`、`MIN_FREE_DISK_MB`、`THUMB_WIDTH`、`PREVIEW_WIDTH`、`SCAN_*`、`GUEST_*`、`SEARCH_RATE_PER_MIN`、`KEY_RATE_PER_MIN`、`ALLOWED_HOSTS`、`EXIF_READ_BYTES`、`CORRUPT_AUTO_PURGE_HOURS` 等。这是内存调优与 HTTPS 部署的实际障碍,见 `todo.md` 的 D-2。另:`docker-compose.yml` 与 `.env.example` 的 `PGS_TAG` 默认值仍是 `1.4.0`,与 `package.json` 的 `1.4.3` 不一致。
+1. **无前缀标准名优先 + 兼容历史 `PGS_*` 前缀**:对曾有 `PGS_*` 别名的变量统一写为 `${THUMB_CONCURRENCY:-${PGS_THUMB_CONCURRENCY:-}}`,其余变量写为 `${NAME:-}`;未设置时传空串交由 `src/server/config.ts` 计算默认值(例如 `THUMB_CONCURRENCY` 的 `Math.min(4, cpu)` 与 `MEDIA_BUDGET_MB` 的容器内存自适应推导),**禁止在 compose 中硬编码数字默认值**。
+2. **显式不映射项**:`PORT`(容器内固定 3000)、`DATA_DIR`(容器内固定 `/app/data`)、`HD_CACHE_DIR`(默认随 `/app/data` 卷持久化)。
+3. **自动化门禁**:`node scripts/check-config.mjs` 强制校验 `src/` 读取的每一个环境变量均已在 `docker-compose.yml` 映射(或在 `NOT_MAPPED` 白名单登记理由)且已在 `.env.example` 说明。
 
 ## 11. 命令行(`cli/pgs.mjs`)
 
@@ -826,12 +847,12 @@ node cli/pgs.mjs reprocess | regenerate-derived
 | 改端口 / 管理员 / 并发 | `.env`,无需改代码 |
 | 改 HD 宽度档位 / 令牌 / 流程 | `server/hd/service.ts`(`hdWidths`、`convert`、`serveHd`);前端 `components/useHd.ts` |
 | 改 HD 限流 / 封禁规则 | `config.hd.rate`、`server/hd/guard.ts`;安全日志在 `DATA_DIR/logs/security.log` |
-| 改 HD 缓存策略 | `server/hd/cache.ts`(版本号在 `service.ts#versionOf`);容量/TTL 用 `HD_CACHE_*` |
-| 改队列并发 / 闸门 / 重试 | `server/queue.ts`(槽位、重试)、`media/derive.ts`(`heicGate`/`videoGate`/`sharp.concurrency`);影响内存模型,先读 §17 |
-| 改派生图输入限制 / 质量 | `media/derive.ts#INPUT_OPTS`、`#makeDerived`;HD 用 `HD_MAX_INPUT_MP`/`HD_QUALITY` |
-| 改 `/status` 指标 | `server/api/admin.ts#/status`(内存目前只有 `rss/heapUsed`);前端 `components/settings/SystemTab.tsx` |
+| 改 HD 缓存策略 | `server/hd/cache.ts`(基图 + 游客水印成品缓存,版本号在 `service.ts#versionOf`);容量/TTL 用 `HD_CACHE_*` |
+| 改队列 / 准入预算 / 内存估算 / 压力保护 | `server/admission.ts`、`server/queue.ts`、`server/pressure.ts`、`media/probe.ts`、`media/estimate.ts`;改动后重跑 `scripts/bench/*` 并对照 §16 |
+| 改派生图输入限制 / 质量 | `MEDIA_MAX_INPUT_MP`、`MEDIA_MAX_EST_MB`、`media/derive.ts#makeDerived`;HD 用 `HD_MAX_INPUT_MP`/`HD_QUALITY` |
+| 改 `/status` 指标 | `server/metrics.ts`、`server/cgroup.ts`、`server/api/admin.ts#/status`;前端 `components/settings/SystemTab.tsx` |
 | 改 PWA / 离线 | `public/sw.js`(`VERSION` 变更才会更新缓存)、`app/manifest.ts`、`app/pwa-icon/[name]/route.ts`、`components/Pwa.tsx` |
-| 改 docker 环境变量传递 | `docker-compose.yml` 的 `app.environment`(白名单,见 §10.3);镜像内环境在 `Dockerfile` |
+| 改 docker 环境变量传递 | `docker-compose.yml` 的 `app.environment`(白名单,见 §10.3)与 `scripts/check-config.mjs`;镜像内环境在 `Dockerfile` |
 
 ## 13. 前端约定
 
@@ -845,202 +866,95 @@ node cli/pgs.mjs reprocess | regenerate-derived
 - 全局事件(`window.dispatchEvent`):`pgs:changed`(媒体变更,图库刷新)、`pgs:albums`(相册变更,相册视图刷新)。
 - 高清图查看:`Viewer.tsx` 在 HD 就绪前只显示转圈加载态,不先渲染无水印预览图;HD 响应本身已在服务端合成水印(`x-pgs-wm: 1`)。
 - 登录态与权限来自 `AppProvider`(`/auth/me`)。页面是否展示管理控件只做体验层判断,**真正的授权永远在服务端 `route()` 的 access 参数**。
-- 图库(`Gallery.tsx`):**固定列数等宽瀑布流**(每张图放入当前最矮的列,高度由 `aspect-ratio` 决定,宽高比钳制在 0.35~3);游标分页每页 80 条,`IntersectionObserver`(`rootMargin` 1200px)触底加载;**已加载项只增不减**(没有虚拟列表,代码中也没有 `content-visibility`),缩略图 `<img loading="lazy" decoding="async">`;存在 `pending` 项时每 3 秒请求一次前 80 项刷新状态,最多 40 次(约 2 分钟)后停止。
+- 图库(`Gallery.tsx`):**固定列数等宽瀑布流 + 视口窗口化**(每张图放入当前最矮的列,高度由 `aspect-ratio` 精确计算,宽高比钳制在 0.35~3;按列累计高度只渲染视口 ±1.5 屏内的瓦片,其余合并为等高透明占位块,使万级图库滚动时 DOM 节点数与图片解码内存近似常数);游标分页每页 80 条,`IntersectionObserver`(`rootMargin` 1200px)触底加载;存在 `pending` 项时每 3 秒请求一次前 80 项刷新状态,最多 40 次(约 2 分钟)后停止。
 - 启动页每个标签页会话只显示一次(`sessionStorage["pgs-splash"]`);`url` 模式按扩展名选择 `<img>`/`<video>`/`<iframe sandbox="allow-scripts">`。
 
 ## 14. 性能与安全设计要点
 
-- 上传全程流式,不进内存;SHA-256 边写边算;派生任务共用 `THUMB_CONCURRENCY` 个槽位,视频/HEIC 再经**嵌套**闸门(`VIDEO_CONCURRENCY`/`HEIC_CONCURRENCY`,见 §6.11);HD 另有独立的 `HD_CONCURRENCY` 闸门,与前者互不感知;`sharp.cache(false)` 避免缓存膨胀;缩略图由预览图再缩小,避免二次解码大图;输入统一加 `limitInputPixels` 与 `sequentialRead` 防解压炸弹。
+- 上传全程流式,不进内存;SHA-256 边写边算;后台派生与交互式 HD 共用单点准入调度器 `Scheduler`(`admission.ts`:类别并发池 `image/heic/video` + 软内存预算 `MEDIA_BUDGET_MB` + 老化防饥饿 + 动态内存压力折扣 `pressure.ts`),解码前先经 `probe.ts` 轻量读文件头做估算与硬上限(`MEDIA_MAX_INPUT_MP`/`MEDIA_MAX_EST_MB`)拦截;`sharp.cache(false)` 避免缓存膨胀;缩略图由预览图再缩小,避免二次解码大图;输入统一加 `limitInputPixels` 与 `sequentialRead` 防解压炸弹。
 - EXIF 只读文件头(`EXIF_READ_BYTES`,默认 1MB,读不到再放大到 8MB),不再整文件读入。
 - 列表走键集分页 `(sort_at,id)` 与复合索引;相册树、统计与游客可见集合在内存短时缓存,`loadTree/loadStats` 有 in-flight 合并;媒体入库只做 2 秒防抖失效,避免批量上传期间反复全表聚合;搜索走 `pg_trgm` GIN 索引。
-- 文件输出只 select 必要列(不含 `meta`/`search_text`);派生图 `ETag` + `max-age=300`,原文件 `no-store`;所有 S3 访问懒加载 SDK。
-- 密码 scrypt;失败路径只跑 1 次 scrypt(时序均衡复用固定哈希);Basic 与登录共用 IP + 用户名双维度限流;下载密钥只存哈希、最小长度 16、校验单条 SQL 完成并限流;令牌 HMAC 常量时间比较并携带 `token_version`(改密码即失效);`local` 存储路径防穿越;挂载路径 `realpath` 后比对白名单并检查重叠;自定义图标光栅化重编码、SVG 以 `sandbox` CSP 输出;媒体 `Content-Type` 来自扩展名白名单且附带 `nosniff`。
+- 文件输出与派生/HD 查询均做列投影(不含 `meta`/`search_text`);派生图 `ETag` + `max-age=300`,原文件 `no-store`;所有 S3 访问懒加载 SDK。
+- 密码 scrypt;失败路径只跑 1 次 scrypt(时序均衡复用固定哈希);Basic 与登录共用 IP + 用户名双维度限流;下载密钥只存哈希、最小长度 16、校验单条 SQL 完成并通过 `clientIp()` 限流;令牌 HMAC 常量时间比较并携带 `token_version`(改密码即失效);`local` 存储路径防穿越;挂载路径 `realpath` 后比对白名单并检查重叠;自定义图标光栅化重编码、SVG 以 `sandbox` CSP 输出;媒体 `Content-Type` 来自扩展名白名单且附带 `nosniff`。
 - 全局安全响应头在 `next.config.ts` 统一注入;`/f/*` 与 `/api/v1/media/*` 带 `X-Robots-Tag: noindex`;`public/robots.txt` 默认 `Disallow: /`;游客元数据按 `GUEST_META` 裁剪(GPS/序列号/作者邮箱/raw 不返回),备注不进公开搜索、`error` 对游客置空。
-- 水印在服务端合成进最终 WebP 像素(默认透明度 8%),前端不会先展示无水印大图;高清缓存目录不对外暴露,只能经带令牌与权限校验的 `/media/:id/hd` 读取;水印层缓存变体上限 24,**FIFO** 淘汰(命中不刷新顺序)。
+- 水印在服务端合成进最终 WebP 像素(默认透明度 8%),前端不会先展示无水印大图;游客且域名可信时缓存水印成品(`cache/hd/wm/`),每次请求仍先完整校验令牌、限流与可见性;高清缓存目录不对外暴露;水印层缓存变体上限 24,**FIFO** 淘汰。
 - 数据库连接池无条件缓存到 `globalThis` 并监听 `error` 事件(避免空闲连接出错杀死进程),带 `statement_timeout`。
-- **内存模型**:进程 RSS 的主要来源是 sharp/libvips 的解码工作集(随输入像素、格式、并发数增长),而不是 V8 堆,也不是输出 Buffer;实测数据与推导见 §17。
+- **内存模型**:进程 RSS 的主要来源是 sharp/libvips 的解码工作集(随输入像素、格式布局、并发数增长),而不是 V8 堆,也不是输出 Buffer;实测数据与推导见 §16。
 - 已知边界:播放令牌 + `Sec-Fetch-Dest` 校验只能防"直接下载",无法阻止录屏/抓包;进程内队列、限流与缓存均为单进程内存,**仅支持单实例部署**;`/media/import` 仍是同步长请求。
 
 ## 15. 开发与验证
 
-> 全量自动化测试(API / CLI / PostgreSQL+SQLite / local+ext / Docker)见 `scripts/TESTING.md`;日常只需 `node scripts/test-matrix.mjs --drivers sqlite`。
+> 全量自动化测试(API / CLI / PostgreSQL+SQLite / local+ext / Docker / 基准)见 `scripts/TESTING.md` 与 `scripts/bench/README.md`;日常只需 `node scripts/test-matrix.mjs --drivers sqlite`。
 
 ```bash
 npm install
 cp .env.example .env            # 填写 DATABASE_URL 等
 npm run dev                     # 开发
+node scripts/check-config.mjs && node scripts/check-docs.mjs && node scripts/test-unit.mjs
 npm run typecheck && npm run lint && npm run build   # 提交前校验(CI 同样执行)
 ```
-CI:`ci.yml`(typecheck + lint + build,Node 22);`test.yml`(PostgreSQL 15 + SQLite 全链路,Node 24,素材 8 图 1 视频)。**没有**性能/内存回归用例(见 `todo.md` T-1)。
+CI:`ci.yml`(一致性校验 + 单元测试 + typecheck + lint + build,Node 22);`test.yml`(PostgreSQL 15 + SQLite 全链路,Node 24,素材 8 图 1 视频);`perf.yml`(手动/每周性能与内存回归基准 `--quick --assert`)。
 
 端到端冒烟:启动后依次验证 `POST /albums` → `POST /media/upload` → `GET /media?q=` → `GET /f/:id`(无 key=预览,有 key=原图)→ `POST /keys` → 游客访问私有相册应 404。
 
-## 16. 版本历史与遗留项(v1.3.0 起)
+## 16. 性能与内存模型(实测基线)
 
-本轮依据一份外部代码审查清单(整合版 issue,已在完成后移除)逐条落地,共完成 41 项。要点:
+> 本节回答"内存/并发到底由什么决定"。基准套件位于 `scripts/bench/`(详见 `scripts/bench/README.md`),改动队列 / 准入预算 / 估算系数 / 出图流程后请重跑基准并更新本节。
 
-- 数据安全:扫描熔断 + `missing_at` 软删除、先搬文件后改库、`(size,mtime)` 变更与重命名识别、删除事务化、黑名单复用原 id。
-- 认证:Basic 与登录共用限流、`TRUST_PROXY`、生产环境拒绝占位密码、`token_version`。
-- 隐私:游客元数据裁剪、备注不进搜索、`error` 置空、`robots.txt`。
-- 性能:分池并发、EXIF 只读头部、只选必要列、可见集合缓存、失效防抖、`pg_trgm`、队列游标。
-- 部署:tini + 非 root + healthcheck + jemalloc、连接池 `error` 监听、CI 工作流。
+### 16.1 结论摘要
 
-**v1.3.0 时明确未做**(其中"自动化测试骨架"已在 v1.4.3 补齐为 `scripts/` + `test.yml`,其余至今仍未做):视频转码预览(720p/HLS)、`/media/import` 异步 Job、列表接口统一分页、个人访问令牌 PAT 与作用域、drizzle 迁移体系与 FK/CHECK 约束、ext 文件 hash 与感知哈希、前端虚拟列表与 SSE、Caddy/Cloudflare 反代示例。
+1. **RSS 峰值 ≈ 基线 + Σ(同时在解码的任务的工作集)**。单个任务的工作集由「输入像素数 × 每像素字节 × 格式布局系数」决定,**与输出 Buffer 无关**:preview/thumb 输出均值仅约 176KB / 50KB,把 `toBuffer()` 改成 `toFile()` 仅作为代码卫生,峰值完全相同。
+2. **格式布局系数差异巨大**:常规 PNG / TIFF / 基线 JPEG 在 `sequentialRead` 下是流式解码,工作集约 0.7~1.5 字节/像素;**隔行(interlaced)PNG** 与**渐进式(progressive)JPEG** 必须整幅缓冲,约 3.4~3.8 字节/像素;**CMYK** 色彩空间转换最重(可达 15~30 MB/MP)。`sharp().metadata()` 的 `isProgressive` / `space` / `depth` 在解码前由 `probe.ts` 只读文件头(256KB)即可零解码识别。
+3. **像素加权单点准入(`admission.ts` + `estimate.ts`)**:仅按"任务个数"限制并发会让 4 个 100MP 隔行 PNG 打出 1430MB 峰值;引入按「格式布局 × 百万像素」估算的软预算(`MEDIA_BUDGET_MB`)与硬限制(`MEDIA_MAX_EST_MB`)后,4×100MP 隔行 PNG 峰值降至约 500MB,而常规小图吞吐不受影响;类别并发池(`image/heic/video`)同时消除了 HEIC 嵌套闸门造成的队首阻塞。
+4. **HD 水印合成与游客成品缓存**:水印层通过 raw 画布直裁单次编码 PNG(消除双重 PNG 编解码);未登录游客在可信域名下命中 `cache/hd/wm/` 成品缓存时不再执行 sharp 水印合成,重复打开同一张大图服务端 CPU 与瞬时内存开销接近零。
+5. **动态内存压力保护(`pressure.ts`)**:每秒根据容器 cgroup `memory.stat` 的 `anon`(不计可回收文件页缓存)与 `memory.max` 比值调整 `normal / elevated / high / critical` 四级水位,即使估算偏低也能防止容器 OOM kill。
 
-**升级注意**:新增字段由 `bootstrap.ts` 的 `ALTER TABLE ... IF NOT EXISTS` 自动补齐,老库直接启动即可;`pg_trgm` 索引在数据库无权限时只告警不影响启动。挂载相册新增 `readonly` 且**默认 true**,升级后向挂载相册上传/移动会被拒绝,需要时用 `PATCH /albums/:code {readonly:false}` 或 `pgs album set <code> --no-readonly` 关闭。
-
-### 16.1 v1.3.1 ~ v1.3.4 复查与实测修补(2026-11-23)
-
-v1.3.0 的改动在代码复查与 InstaBox 真机部署中暴露出 8 处问题,均已修复:
-
-1. 只读挂载可被物理删除:`deleteMediaByIds(ids, purge=true)` 与 `blocklist.purgeBlocked()` 原先不检查 `readonly`。现 `purge` 前先整体校验,命中只读挂载直接 403(而不是「删记录、留文件」——后者会让用户以为已删除,且下次扫描又把文件重新入库);黑名单彻底删除同样 403。
-2. 扫描熔断误判:`gone` 原先包含「上次扫描已标记 `missing_at`」的记录,一次合法的大批量删除会让比例长期超阈值,导致此后每次扫描都抛错。现熔断只统计本次新消失的文件,且判断前移到任何写库动作之前(先熔断,后重命名/插入/软删除)。
-3. 前端无法感知只读:上传对话框不显示只读状态,用户上传后才收到 403。现 `UploadDialog` 在选择只读挂载相册时禁用「开始上传」并给出说明,相册下拉标注「目录(只读)」;`AlbumActions` 增加「只读 ↔ 允许写入」切换(需 `album.mount`);挂载对话框增加「只读挂载(推荐)」勾选项;设置页相册列表显示「挂载·只读 / 挂载·可写」。
-4. CLI 无法关闭只读:`util.parseArgs` 的 boolean 不接受 `--readonly=false`,新增 `--no-readonly`(`album mount` 与 `album set` 均支持),并修正帮助文本。
-5. **升级后数据目录不可写(实测发现)**:旧版本容器以 root 运行,`DATA_DIR` 下的 `albums/derived/tmp` 属主为 root;v1.3.0 改为 `USER node` 后,这些目录对新容器只读,上传直接 `EACCES`(表现为 500)。现改为「容器以 root 启动入口脚本 → 仅修正本系统管理的子目录属主 → `setpriv` 降权到 uid 1000 再启动应用」,进程本身仍非 root,且不触碰用户自行挂载的照片目录。
-6. 生产环境弱口令拦截生效(实测):`ADMIN_PASSWORD=admin123456` 会被拒绝启动。升级时若沿用旧测试口令需同步更换。
-7. **受管相册移动不搬文件(实测发现)**:`batchAction('move')` 与 `PATCH /media/:id` 原先只对 `storage='ext'` 调 `relocateExtFile`,受管相册(`local`)的文件只改了 `album_id`,文件仍留在原相册目录——接口返回 `affected:6` 但磁盘上 `A=6 / B=0`。现新增 `relocateLocalFile()`,受管相册移动同样先搬文件后改库;`deleteAlbum` 的移交逻辑也改为同名冲突自动换名重试,不再因 `EEXIST` 中断整个移交。
-8. **`local` 存储的 `storageKey` 是相对路径(实测发现)**:第一版 `relocateLocalFile` 直接把 `albums/<code>/x.jpg` 当绝对路径做 `fs.link`,全部 `ENOENT`。现统一经 `localAbs()` / `localKey()` 在「相对 DATA_DIR 的 key」与「绝对路径」之间转换,与 `storage/index.ts` 的 `localDriver` 保持同一规则;`deleteAlbum` 的移交路径同样修正。
-
-版本号 `1.3.4`(`package.json`、`package-lock.json`、`config.ts`、`cli/pgs.mjs`、`.env.example` 的 `PGS_TAG` 一致)。`tsc --noEmit`、`eslint .`、`node --check cli/pgs.mjs` 均通过;InstaBox 真机 `scripts/test-hd.mjs` **46/46 通过**。
-
-### 16.2 v1.3.5 外部检测报告缺陷修复(2026-11-23)
-
-一份基于 208 个真实 NASA 素材、351 项检查的外部检测报告(裸机 `npm start`)指出 9 类问题,v1.3.5 全部修复并在容器内复测通过。
-
-**元数据**
-1. **TIFF 元数据几乎全部丢失(B1)**:`extractImageMeta` 用 `Object.keys(out).length` 判断 exifr 是否解析成功,而截断缓冲区时 exifr 返回 `{errors:[{}]}`,该判定为真 → 停止放大读取。TIFF 的条带偏移表在文件后部,因此 32 个 TIFF 只有 1 个能取到字段。现改为 `hasSegments()`:忽略 `errors` 键,只有真正解析出段才算成功;TIFF 的读取上限从固定 8MB 改为逐级放大到 `EXIF_MAX_BYTES`(64MB)。实测 33MB 的 NASA TIFF 在 1MB/8MB 处均为空壳,整文件解析后 Make/Model/ISO/镜头/拍摄时间/标题/关键词全部正确。
-2. **仅含 XMP 的字段取不到(B4)**:exifr 把 XMP 按命名空间拆成独立段(`dc` / `photoshop` / `aux`),旧代码只读 `parsed.xmp`,因此 `dc:title`、`dc:subject`、`photoshop:DateCreated` 全部丢失。现按 `ifd0 → exif → gps → iptc → xmp → dc → photoshop → aux → …` 的顺序合并所有段;`fmt()` 对 XMP 的 `{lang,value}` 结构取 `value`;`time.taken` 在无 `DateTimeOriginal` 时回落到 `DateCreated`。
-3. **XMP 字符串日期未识别**:`takenAt` 原先只接受 `Date` 实例,而 XMP 日期多为字符串。新增 `toDate()`,统一解析 `Date` / ISO 字符串 / EXIF 的 `YYYY:MM:DD HH:MM:SS` / 扫描件的 `YYYYMMDD`。
-4. **展示值不可读(B10)**:`colorSpace` 的 `"1"` → `sRGB`、`"65535"` → `未校准`,无 EXIF 时回落到 sharp 的 `srgb/rgb/cmyk` 并转成常见写法;`bitDepth` 的 `uchar/ushort/float` → `8-bit/16-bit/32-bit`。
-
-**相册与并发**
-5. **并发建相册偶发幽灵 404(B2)**:`loadTree()` 的惊群合并会让「插入前启动的旧查询」在 `invalidateAlbums()` 之后把过期树写回缓存,新相册在 10 秒缓存期内查不到。现引入**缓存代数** `treeGen`:查询开始时记录代数,写回前比对,不一致则丢弃;同时若 in-flight 查询的代数已过期,新请求不再复用它。实测 120 并发建相册 120/120 返回 201(修复前 300 并发有 8 个 404)。
-6. **相册名含 NUL 触发 500 并留孤儿目录(B6)**:`cleanName()` 过滤 `\u0000-\u001f` 与 `\u007f`;`createManaged()` 在 insert 失败时回滚已创建的目录。
-7. **并发搬同一文件残留孤儿硬链接(B7)**:`link→unlink` 在并发下互相穿插,旧目录残留 nlink=2 的不可见文件。现为每个媒体 id 加键控互斥 `withMoveLock()`,并让 `moveNoOverwrite()` 容忍 `unlink` 的 `ENOENT`(另一请求已删源时目标文件仍有效)。实测 12 路并发搬 3 个文件:源目录 0 残留、目标 3/3。
-
-**入库与视频**
-8. **并发上传同一文件重复入库(B12)**:去重是「先查后插」且 `hash` 列无唯一约束。现按 `(hash, 相册)` 加键控互斥 `withHashLock()` 串行化入库(不引入唯一约束,因为 `album_id` 可为 NULL 且历史数据可能已有重复)。实测 20 路并发:created=1 / duplicate=19 / 相册内 1 条。
-9. **损坏视频被标记 ready(B11)**:`probeVideo` 失败时返回全 null 但仍走 `status=ready` 与占位封面。现三个关键字段全 null 直接抛错 → `failed`,并给出「文件可能已损坏或不是有效视频」。
-10. **视频封面可能是纯黑帧(B9)**:新增 `isBlankFrame()`,抽帧后检测标准差与均值,命中纯色/黑场则依次换 `duration/2 → 0 → 25% → 75%` 重试。
-
-**运维**
-11. **崩溃后 tmp 遗留(B8)**:`cleanTmp()` 增加阈值参数,启动时以 `0` 调用(进程刚启动不可能有进行中的上传),每小时定时清理仍保留 6 小时阈值。
-12. **readiness 不反映磁盘阈值**:`/health/ready` 的磁盘检查从固定 64MB 改为 `max(64, MIN_FREE_DISK_MB)`,与上传的 507 保护同阈值。
-
-**CLI**
-13. **三处文档与实现不一致(B5)**:`OPTIONS` 补注册 `links`、`watch`(此前 `parseArgs` 严格模式直接退出码 2);`album list --parent <code>` 真正把 `parent` 传给接口(此前忽略该参数返回全部相册)。
-
-**实测结果(容器内,4 vCPU / 8GB,PostgreSQL 16)**
-- 修复验证 18/18 通过(12 项元数据/并发/异常文件 + 6 项搬移/tmp/CLI)。
-- 内存:99 个 NASA 文件全量上传 5.5s / 峰值 733MB;24 路 HD 并发峰值 **1897MB**;静置 20 秒回落到 **709MB**。对比裸机 `npm start`(报告数据)峰值 2490MB 且压测后 2168MB 不回落 —— 差异来自镜像内的 `jemalloc` 与 `MALLOC_ARENA_MAX=2`,已在 README 的部署章节写明。
-
-版本号 `1.3.5`(`package.json`、`package-lock.json`、`config.ts`、`cli/pgs.mjs`、`.env.example` 的 `PGS_TAG`、`docker-compose.yml` 的默认 tag 一致)。CI(`tsc --noEmit` + `eslint .` + `next build`)通过;镜像 `ghcr.io/dming623/picgalleryserver:1.3.5` 已发布。
-
-### 16.3 v1.4.0(2026-11-24):通知 / 时区 / 直链上传 / SQLite / UI 修复
-
-**新增能力**
-
-1. **站点通知**:`pgs_notices` + `pgs_notice_reads` 两张表;`server/notices.ts` 提供列表/未读数/发布/编辑/删除/已读;接口 `server/api/notices.ts`。权限新增 `notice.publish`(admin / manager)。前端 `components/NoticeBell.tsx`(顶栏铃铛 + 覆盖式面板)与 `components/settings/NoticeTab.tsx`(Markdown 编辑 + 预览)。Markdown 渲染为自写的 `lib/markdown.ts`(零依赖:先整体 HTML 转义再替换,链接走 http/https/mailto/相对路径白名单)。
-2. **时区**:`SiteSettings.timezone`(默认取 `TZ` 环境变量,回落 `Asia/Shanghai`),`isValidTimezone()` 用 `Intl` 校验;通知发布时间与日期分组按它换算,改时区后历史通知显示时间同步变化。设置页入口在「系统状态」顶部。
-3. **直链上传**:`server/media/fetch-url.ts` 下载远端图片/视频到 tmp 后复用 `ingestOne`;接口 `POST /media/upload-url`。SSRF 防护按「全部解析结果都是内网地址才拒绝」(双栈环境会同时返回 ULA 与公网 IPv4,一刀切会误杀正常域名——实测 `images-assets.nasa.gov` 解析出 `fc00::3d` + `198.20.0.62`)。限制重定向 5 次、总时长 120s、体积 `MAX_UPLOAD_MB`;支持裸域名自动补 `https://` 与含空格的文件名。
-4. **双数据库驱动**:`src/db/index.ts` 按 `DB_DRIVER` 选择 pg 或 `node:sqlite` + `drizzle/sqlite-proxy`;新增 `rawQuery()`(两驱动都返回 `{rows}`)、`nullSafeEq()`、`pingDb()`、`closeDb()`。`bootstrap.ts` 维护两套 DDL。SQLite 模式注册 `now()` / `gen_random_uuid()` 兼容函数,并在读回时把 `disabled` / `readonly` 的 0/1 还原为布尔。
-5. **Docker**:基础镜像升到 `node:24-bookworm-slim`(`node:sqlite` 在 Node 24 默认可用),运行阶段装 `tzdata` 并设 `ENV TZ=Asia/Shanghai`;compose 增加 `DB_DRIVER` / `SQLITE_FILE` / `TZ` 三个变量。
-
-**SQL 可移植性改造**(原先用了 pg 专有语法,SQLite 会直接报错)
-
-- `count(*)::int` → `CAST(count(*) AS INTEGER)`;`sum(size)::float8` → `CAST(... AS DOUBLE PRECISION)`。
-- `DISTINCT ON (album_id)` → `row_number() OVER (PARTITION BY album_id ORDER BY sort_at DESC)`。
-- `to_char(sort_at,'YYYY-MM')` → SQLite 走 `substr(sort_at,1,7)`(按驱动分支)。
-- `now()` → 参数传 ISO 时间串;`a IS NOT DISTINCT FROM b` → `nullSafeEq()`(SQLite 用 `IS`)。
-- 去掉 `::timestamptz` 强转(ISO 字符串在两种驱动下都能正确比较)。
-
-**UI 缺陷修复**
-
-6. **通知面板塌成一条细线(实测)**:面板渲染在 `.topbar` 内,而 `.topbar` 带 `backdrop-filter` —— 带该属性的元素会成为 `fixed` 后代的包含块,`inset-0` 只等于 36px 高的顶栏。改为 `createPortal` 挂到 `document.body`,并用 `flex` 居中 + `padding` 让出顶栏/底部工具栏。
-7. **挂载目录弹窗被顶栏遮挡 / 位置偏低**:容器改为 `flex` 居中 + `padding` 让出顶栏与底部工具栏;面板 `marginBottom: 4cm`(居中布局下等于上移 2cm),`maxHeight: calc(100% - 4cm)`;内容区 `min-h-0 flex-1 overflow-y-auto overscroll-contain` 独立滚动,打开时锁 `body` 滚动。
-8. **启动页可能永久卡住**:新增纯 CSS 兜底动画 `splash-auto-hide`,即使客户端脚本未执行也会在 `durationMs + 1.2s` 后自动淡出。开发模式下 Next 会拦截跨源 dev 资源(`Blocked cross-origin request ... from "127.0.0.1"`),已在 `next.config.ts` 加 `allowedDevOrigins`。
-9. **`AppProvider.reload()` 未捕获拒绝**:服务重启时日志刷 `unhandledRejection: Failed to fetch`,已补 `catch`。
-
-**实测(SQLite 模式,沙箱内 `npm run dev`)**
-
-- `tsc --noEmit` / `eslint .` 通过;`/`、`/albums`、`/settings`、`/login` 均 200。
-- 建相册、multipart 上传(2 个文件,派生图与元数据 ready)、挂载目录扫描(子目录自动建嵌套相册)、删除→黑名单→解除、下载密钥创建与原图访问、用户创建、批量移动、通知发布/未读/一键已读 全部通过。
-- 直链上传:NASA 星云 PNG(3.3MB)与 NASA 视频 MP4(167MB,1920×1080 / 93s)均下载入库成功,视频封面与 ffprobe 元数据正常。
-
-**许可证表述修正**:PolyForm Noncommercial 1.0.0 **不是开源许可证**(OSI 开源定义不允许限制商业用途),README 与徽章说明统一改为「非商业许可证 / 源码公开但非商业」,不再称其为开源许可证。
-
-
-### 16.4 v1.3.6 ~ v1.4.3(2026-11-23 ~ 11-24)
-
-- **v1.3.6**:图库默认不展示 `failed` 记录;系统状态新增「疑似损坏文件」卡片与 `GET /status/corrupt`、`POST /status/corrupt/purge`;停止上传满 `CORRUPT_AUTO_PURGE_HOURS`(默认 5)小时自动清理(受管存储连源文件删除,挂载目录只删登记);设置页加载态;挂载弹窗可滚动。(`media/corrupt.ts`)
-- **v1.4.1**(挂载扫描):① 并发扫描竞态——`scanAlbum` 在任何 `await` 之前同步占位 `scanLocks`,非 `wait` 模式也如实返回同步阶段失败;② 子目录改名不再产生幽灵相册——`dirSignature()`(直接子文件数 + `size:mtime` **多重集**)识别改名,`moveAlbumRoot()` 迁移 `rootPath` 前缀并改写 ext 的 `storage_key`,保留相册代码/记录/缩略图;③ 子目录删除后"先软删除 → 第二次扫描仍缺失/空相册才移除相册子树",仅 `ENOENT/ENOTDIR` 判定消失,权限/IO 错误一律保留;④ 深层目录不再静默丢失——`SCAN_MAX_DEPTH`(默认 32),超出计入 `truncated`。扫描统计新增 `albumsRemoved / albumsMoved / truncated`。挂载弹窗改为严格落在顶栏与底栏之间、`blur(14px)` 遮罩、Esc 关闭。
-- **v1.4.2**:`dirSignature` 由 Set 改为排序数组(同尺寸同 mtime 的多个文件不再被去重);改名比对纳入已 `missing_at` 的记录并在迁移时清除标记;`storage_key` 前缀迁移改为"新前缀 + `substr` 去旧前缀";`config.version` 改读 `package.json`。
-- **v1.4.3**(全链路测试发现的缺陷 + 测试套件):PG ≤15 子查询别名;BMP 解码(`media/bmp.ts`);`dir=` 绕过只读;ext 文件移到受管相册只改库;CLI 幂等上传漏传 / `-r` 无效 / `version`;ext 图片 `SIGBUS`(私有副本,§7.2);队列"处理中变更丢失"(`dirty`)与"重试永不发生"(§6.11);删除不存在通知应 404;`THUMB_WIDTH` 文档统一;EXIF 无时区拍摄时间改按**站点时区**解释(不再随进程 `TZ` 漂移,带 `OffsetTimeOriginal` 的仍按绝对时刻)。新增 `scripts/` 测试套件与 `.github/workflows/test.yml`,README 补充依赖版本建议。
-
-> 版本号一致性提醒:`docker-compose.yml` 与 `.env.example` 的 `PGS_TAG` 仍为 `1.4.0`(见 §10.3)。
-
-
-## 17. 性能与内存模型(实测基线)
-
-> 本节回答"内存/并发到底由什么决定"。数据来自 2026-11-24 的一组**合成素材微基准**(方法与局限见 §17.3、§17.4),不是对生产环境的复现;README 里 NASA 素材的容器实测(空载 ~250MB、HD 24 并发峰值 ~1.9GB)是另一组数据,二者互补。改动队列/闸门/出图流程后,请按 §17.3 重新测量并更新本节。
-
-### 17.1 结论摘要
-
-1. **RSS 峰值 ≈ 基线 + Σ(同时在解码的任务的工作集)**。单个任务的工作集由「输入像素数 × 每像素字节 × 格式系数」决定,**与输出 Buffer 无关**:preview/thumb 输出均值仅约 176KB / 50KB(README 实测),把 `toBuffer()` 改成 `toFile()` 在实测中**峰值完全相同**。
-2. **格式系数差异巨大**:常规 PNG / TIFF / 基线 JPEG 在 `sequentialRead` 下是流式解码,工作集约 0.7~1.5 字节/像素;**隔行(interlaced)PNG** 与**渐进式(progressive)JPEG** 必须整幅解码,约 3.4~3.6 字节/像素(100MP 隔行 PNG 单任务峰值 405MB,48MP 渐进 JPEG 235MB)。4 并发时:基线 JPEG 195MB、非隔行 PNG 355MB,而渐进 JPEG 753MB、隔行 PNG 1430MB。`sharp().metadata().isProgressive` 对 PNG 隔行与 JPEG 渐进都为 `true`(已实测),可以零成本识别。
-3. **并发数按"任务个数"限制是粗糙的**:4 个 24MP 基线 JPEG 和 4 个 100MP 隔行 PNG 占用 `THUMB_CONCURRENCY=4` 的槽位完全一样,内存却差 9 倍。按**像素加权**的闸门(§17.3 的演示)能把后者的峰值压到约 1/3,代价只落在这类极端输入上。
-4. HD 水印合成是**每请求**一次 W×H×4 级别的瞬时分配(2560×1707 ≈ 4.4MP,实测约 +35~75MB/次,折合 12~17 字节/像素),被 `HD_CONCURRENCY` 约束;若没有这个闸门,24 并发可到 ~930MB。
-5. 各类闸门(派生槽位 / `heicGate` / `videoGate` / `HD gate`)**互相独立**,理论峰值是它们各自峰值之和。
-
-### 17.2 内存来源清单
+### 16.2 内存来源清单
 
 | 来源 | 量级 | 受什么控制 | 备注 |
 |---|---|---|---|
-| Next + Node 基线 | 空载 ~250MB(README)| — | 裸 sharp 进程仅 ~61MB |
-| libvips 解码工作集(派生图) | 见 §17.3 表 | `THUMB_CONCURRENCY`、`limitInputPixels`(硬编码 268MP)| 受格式影响最大 |
-| libvips 解码工作集(HD `convert`) | 同上 | `HD_CONCURRENCY`、`HD_MAX_INPUT_MP`(200)| 未设 `sequentialRead`(实测对常规输入无差异) |
-| HD 水印合成 | 每次 W×H×4 的数份副本 | `HD_CONCURRENCY` | 每请求都做,结果不缓存 |
-| 输出 Buffer(preview/thumb/HD 基图) | 几十 KB ~ 数百 KB | — | 可忽略 |
-| HEIC | 整文件 Buffer + libheif(wasm)RGBA + JPEG 编码 + 中间 JPEG Buffer | `HEIC_CONCURRENCY`(1);**占用派生槽位**(§6.11) | wasm 线性内存**只增不减**(Wasm 规范特性,本项目未实测),长期含大 HEIC 的库 RSS 可能不回落 |
-| BMP | 整文件 + RGBA(4 B/px)+ PNG Buffer | 无专门闸门 | 罕见格式;大 BMP 单任务可达数百 MB(推算,未实测) |
+| Next + Node 基线 | 空载 ~250MB | — | 裸 sharp 进程仅 ~61MB |
+| libvips 解码工作集(派生图) | 见 §16.3 表 | `Scheduler`(`THUMB_CONCURRENCY` + `MEDIA_BUDGET_MB`)、`MEDIA_MAX_INPUT_MP`、`MEDIA_MAX_EST_MB`、`SHARP_CONCURRENCY` | 受格式布局影响最大 |
+| libvips 解码工作集(HD `convert`) | 同上 | `Scheduler`(`withHd` 三路预算分流)、`HD_CONCURRENCY`、`HD_MAX_INPUT_MP` | 转换完成后 `res.adjust(wmEst)` 立即释放解码差额 |
+| HD 水印合成 | 每次输出尺寸 W×H×12B 量级 | `Scheduler`(`wmEst`)、`HD_CONCURRENCY`、游客成品缓存 `cache/hd/wm/` | 游客命中成品缓存时为 0 |
+| HEIC | 整文件 Buffer + libheif(wasm)RGBA + JPEG 编码 | 类别池 `heic`(`HEIC_CONCURRENCY`,默认 1)+ 高权重估算(`HEIC_COEF`,低置信度自动 ×1.5) | HD 路径有独立 `heicHdGate(1)`,不排在后台批量任务之后 |
+| BMP | `ffmpeg` 子进程文件进文件出转临时 PNG(无 `ffmpeg` 回退 `decodeBmp`) | `probe.ts` 读前 26B 头做像素/内存拦截 + `Scheduler` | 有 `ffmpeg` 时不在 Node 堆内整图展开 |
 | EXIF 读取 | ≤64MB Buffer(仅 TIFF 的最坏情况) | 随派生并发 | — |
-| 视频 | ffmpeg/ffprobe 子进程,不计入 V8 堆 | `VIDEO_CONCURRENCY`(嵌套闸门) | 子进程 RSS 同样计入容器 cgroup |
-| HD 缓存读取 | 命中时 `readFile` 整张基图(数百 KB) | 无闸门 | 可忽略 |
-| V8 堆 | 通常 <100MB | `NODE_OPTIONS=--max-old-space-size`(compose 默认 1024) | **不约束**上述任何原生内存 |
+| 视频 | ffmpeg/ffprobe 子进程,不计入 V8 堆 | 类别池 `video`(`VIDEO_CONCURRENCY`,默认 2)+ `VIDEO_COEF` | 子进程 RSS 同样计入容器 cgroup |
+| V8 堆 | 通常 <100MB | `NODE_OPTIONS=--max-old-space-size`(compose 默认 1024) | 不约束原生内存;1GB 容器建议调低至 384 |
 
-### 17.3 实测方法与结果(可重复)
+### 16.3 实测方法与基准套件(`scripts/bench/`)
 
-环境:沙箱 4 vCPU / 3.9GB,Node 22.23.4,`sharp@0.35.5`(libvips 8.18.7),**glibc 默认 malloc**(无 jemalloc、未设 `MALLOC_ARENA_MAX`),非容器。每个场景在**独立进程**中运行,峰值取 `/proc/self/status` 的 `VmHWM`;进程启动基线 61MB。设置同项目:`sharp.cache(false)`、`sharp.concurrency(2)`;派生图用 `INPUT_OPTS`(`sequentialRead`),HD 用 `limitInputPixels=200e6`、宽 2560、q82。素材由脚本合成:24MP JPEG(q90)、40MP TIFF(deflate)、100MP PNG(非隔行 / 隔行)、48MP JPEG(基线 / 渐进)。脚本摘要见 `todo.md` 附录 A。
+环境与复现入口见 `scripts/bench/README.md`:
+- `node scripts/bench/bench-memory.mjs`:每个场景在独立子进程中运行,取 `/proc/self/status` 的 `VmHWM` 与静置回落 RSS,自动对照 `estimateMemory()` 输出「估算 vs 实测 ΔRSS」偏差表。
+- `node scripts/bench/bench-hd.mjs`:黑盒测试 HD 水印冷启动、基图缓存命中、游客水印成品缓存命中、登录用户绕过成品缓存、同图并发 `coalesced` 合并与混合尺寸请求。
+- `node scripts/bench/bench-queue.mjs`:黑盒测试大小图混合(1 大图 + 20 小图)、HEIC + JPEG 混合入队(验证分池不队首阻塞、不饿死)。
+- `node scripts/bench/bench-scan.mjs`:挂载目录平铺大目录扫描的堆增量与耗时。
+- `scripts/bench-docker.sh`:在真实容器镜像(`1g / 2g / 4g` cgroup 档位、jemalloc、非 root)内一键运行上述基准。
+
+合成素材代表性数据(沙箱 4 vCPU / 3.9GB,Node 22,`sharp@0.35.5` / libvips 8.18.7,独立进程基线 61MB):
 
 | 场景 | 输入 | 并发 | 峰值 RSS(MB) |
 |---|---|---|---|
 | 派生图,`toBuffer` vs `toFile` | 24MP JPEG / 40MP TIFF / 100MP PNG | 1 | **86/86、123/123、135/135(完全相同)** |
 | 派生图 | 24MP JPEG | 4 | 158 |
-| 派生图 | 48MP 基线 JPEG | 1 / 4 | 96 / 195 |
-| 派生图 | 48MP **渐进** JPEG | 1 / 4 | 235 / **753** |
-| 派生图 | 100MP PNG(非隔行) | 1 / 4 | 135 / 355 |
-| 派生图 | 100MP PNG(**隔行**) | 1 / 4 | 405 / **1430** |
-| HD `convert` | 24MP JPEG | 1 | 111 |
-| HD `convert` | 40MP TIFF | 1 / 3 | 122 / 241 |
-| HD `convert` | 100MP PNG(非隔行) | 1 / 3 | 145 / 311 |
-| HD `convert` | 100MP PNG(**隔行**) | 1 / 3 | 409 / **1099**(开 `sequentialRead` 无变化:1098) |
-| HD 水印合成(基图 2560×1707 WebP) | 叠一张同尺寸半透明 PNG 层 | 1 / 3 / 24(无闸门) | 166 / 336 / **931**(合成前 112) |
-| 像素加权闸门演示 | 4×100MP 隔行 PNG | 无预算 vs 预算 150MP | 1434MB·2.6s → **500MB·9.6s** |
-| 像素加权闸门演示 | 1×100MP 隔行 PNG + 20×24MP JPEG | 无预算 vs 预算 150MP | 549MB·2.5s → 406MB·3.7s |
+| 派生图 | 48MP 基线 JPEG vs **渐进** JPEG | 1 / 4 | 基线 96 / 195;渐进 235 / **753** |
+| 派生图 | 100MP 非隔行 PNG vs **隔行** PNG | 1 / 4 | 非隔行 135 / 355;隔行 405 / **1430** |
+| 派生图(**启用像素加权预算**) | 4×100MP 隔行 PNG | 4 | 1434MB → **500MB** |
+| 派生图(**启用像素加权预算**) | 1×100MP 隔行 PNG + 20×24MP JPEG | 4 | 549MB·2.5s → **406MB·3.7s** |
+| HD `convert` | 100MP 非隔行 PNG vs **隔行** PNG | 1 / 3 | 非隔行 145 / 311;隔行 409 / **1099** |
+| HD 水印合成(2560×1707 WebP) | 首次合成 vs 游客成品缓存命中 | 1 / 24 | 未缓存 24 并发 ~931MB;游客成品缓存命中零重合成 |
 
-按峰值反推的派生图工作集(扣除 61MB 基线,含固定开销,仅作量级参考):基线 JPEG ≈ 0.7 B/px、非隔行 PNG ≈ 0.7、deflate TIFF ≈ 1.5、渐进 JPEG ≈ 3.6、隔行 PNG ≈ 3.4;HD 水印合成 ≈ 12~17。
+### 16.4 局限与校准约定
 
-闸门演示的权重 = `ceil(宽×高/1e6 × (渐进/隔行 ? 1.5 : 1))`,`宽/高/isProgressive` 来自 `sharp().metadata()`——而 `processMedia` **本来就已经在出图前调用了 `metadata()`**,所以估算权重不需要额外 IO。
+- `estimate.ts` 中标注 `confidence: "low"` 的格式(如真实 iPhone 12MP/48MP HEIC、高位深/特殊色彩空间)已自动乘 `1.5` 保守系数,并在 `/status` 的 `queue.admission.lowConfidenceCount` 中计数;在容器环境使用 `REAL_DIR=/path/to/heic scripts/bench-docker.sh` 实测后可按 `scripts/bench/README.md` 规则更新系数表。
+- glibc 默认分配器的内存碎片会导致峰值过后 RSS 不立即回落,生产部署请使用官方 Docker 镜像(内置 `libjemalloc2` 与 `MALLOC_ARENA_MAX=2`)。
 
-### 17.4 局限与未验证项(不要把本节当作生产结论)
+### 16.5 运行时观测指标(`GET /api/v1/status`)
 
-- 素材是合成的(渐变 + 轻噪声),真实照片的压缩特征不同;**未测**:HEIC(`heic-convert`)、BMP、视频、16-bit PNG、带 ICC 的 CMYK TIFF、WebP/AVIF 大图。
-- 未测 jemalloc / `MALLOC_ARENA_MAX=2` 的效果(README 已有容器实测:裸机峰值 2.49GB 不回落 vs 容器 1.90GB 回落到 0.71GB)。
-- 未复现 README 的 "24 并发 HD 峰值 1897MB"。依本节数据的推测:`HD_CONCURRENCY=3` 个同时 `convert` 隔行/渐进/16-bit 的 NASA 大图 + 同期的水印合成与后台派生,已足够解释;**需要用真实素材 + 容器 + `printenv`/`/proc` 逐项验证**,在此之前不要据此调小 `HD_WIDTH` 等画质参数。
-- 峰值 RSS 不等于"必须的内存":glibc 的碎片会让 RSS 不回落(README 已说明用 jemalloc)。
-
-### 17.5 现有观测手段与缺口
-
-- 现有:`GET /status` 返回 `memory:{rss, heapUsed}`、`queue`、`hd` 缓存统计;`/status/queue`。
-- 缺口(`todo.md` P0-2):`external`、`arrayBuffers`、`sharp.cache()`/`sharp.counters()`(队列/处理中数)、`process.resourceUsage().maxRSS`、容器 `memory.current`/`memory.max`、各闸门的排队长度与等待时长、峰值 RSS 的滑动最大值。没有这些,无法区分"V8 堆 / Buffer / libvips 原生 / ffmpeg 子进程",也无法回答"哪个任务导致的峰值"。
+`/status` 与设置页「系统状态」面板实时暴露:
+- `memory`:`{rss, heapUsed, heapTotal, external, arrayBuffers, maxRss, peak10m:{rss, anon, windowSec}, cgroup:{version, current, max, anon, inactiveFile, workingSet}}`
+- `sharp`:`{cache, counters:{queue, process}, concurrency}`
+- `eventLoop`:`{p99Ms, maxMs}`(当媒体任务长期显著拖高 `p99Ms` 时,作为未来拆分独立媒体 Worker 子进程的量化依据)
+- `queue`:`{concurrency, running, waiting, probing, done, failed, rejected, retrying, byClass:{image,heic,video}, gates:{heic,heic-hd,video,hd}, admission:{usedMB,budgetMB,effectiveBudgetMB,waiting,hdRunning,hdWaiting,exclusive,lowConfidenceCount,agedCount,pressureState}, pressure:{state,ratio,workingSetMB,limitMB,reason,changedAt}}`
+- `config.mediaBudget`:自动推导详情(`limitMb, source, baseRssMb, margin, factor, autoBudgetMb`)与当前生效的 `budgetMB / hardMaxMB`。

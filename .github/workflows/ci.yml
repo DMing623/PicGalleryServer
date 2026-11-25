@@ -22,6 +22,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: 配置与文档一致性检查
+        run: |
+          node scripts/check-config.mjs
+          node scripts/check-docs.mjs
+      - name: 单元测试
+        run: node scripts/test-unit.mjs
       - name: TypeScript 类型检查
         run: npm run typecheck
       - name: ESLint

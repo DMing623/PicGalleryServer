@@ -18,7 +18,7 @@
 | `test-compose.sh` | **compose 变量传递校验**:`docker compose config` 展开不同 `.env`,验证无前缀名直接生效、`PGS_*` 旧名兼容且无前缀优先、不设置时传空串(默认值交还 `config.ts`)、必填项缺失即报错、镜像默认 tag = `package.json` 版本;并跑 `check-config` | 只需 `docker compose` CLI,**不启动容器、不需要守护进程、不需要 root** |
 | `bench-docker.sh` | 在**真实镜像**里按 1G/2G/4G 档位(`--memory`/`--cpus`、jemalloc、非 root)跑 `bench/*` 基准并把结果落到宿主机目录 | 需要 Docker;结果用于校准估算系数、写进 `bench/README.md` |
 | `instabox-test.sh` | 在 **InstaBox** 测试机上更新容器到新镜像并跑 `test-docker.sh`(`EXTRA_ENV="RUN_AS=1000 MEM_LIMIT=1g"` 可传入) | 需要 `INSTABOX_API_KEY` |
-| `check-docs.mjs` | **文档 ↔ 代码一致性**(零依赖,秒级):`route()` 清单 ↔ `project.md` §8、`config.ts` 环境变量 ↔ 文档、文件清单 ↔ §3 目录树(双向)、版本号(`package.json` ↔ lock ↔ §0 版本表)、文档里的仓库路径引用是否存在 | 无需构建/数据库/Docker/root;CI 与提交前必跑 |
+| `check-docs.mjs` | **文档 ↔ 代码一致性**(零依赖,秒级):`route()` 清单 ↔ `project.md` §8、`config.ts` 环境变量 ↔ §10、文件清单 ↔ §3 目录树(双向)、版本号(`package.json` ↔ lock ↔ `project.md`)、文档里的仓库路径引用是否存在 | 无需构建/数据库/Docker/root;CI 与提交前必跑 |
 | `check-config.mjs` | **静态一致性校验**(零依赖,秒级):代码读取的环境变量 ↔ compose 映射 ↔ `.env.example`、版本号 ↔ `PGS_TAG`、`schema.ts` ↔ `bootstrap.ts` 的 PG/SQLite DDL | 无需构建/数据库/Docker/root;CI 与提交前必跑 |
 | `test-unit.mjs` + `unit/*.test.mjs` | **纯逻辑单元测试**(`node:test`):cgroup 解析、准入控制、内存估算、压力状态机等不依赖 sharp/DB 的模块 | Node ≥ 22.6;不需要构建 |
 | `bench/` | **内存/耗时基准**:`bench-memory`(sharp 解码本身)、`bench-hd`(HD 水印/成品缓存)、`bench-queue`(队列分池/大小图混合/HEIC 混合)、`bench-scan`(挂载目录扫描),详见 `bench/README.md` | 不需要 root/联网/DB;`bench-hd`/`bench-queue` 需先 `npm run build` |
@@ -125,7 +125,7 @@ node scripts/test-unit.mjs        # 纯逻辑单测
 
 - **本机/CI 冒烟**:`.github/workflows/perf.yml`(手动或每周)跑 `bench-memory` / `bench-hd --assert` / `bench-queue --assert` 的 `--quick` 版本,断言很宽松,只防「明显坏了」。
 - **精确对比**:固定环境(同机/同容器档位/同素材/同 `--quick`)用 `--save` + `--compare`,**内存与耗时一起看**,见 `bench/README.md`。
-- 改了队列 / 闸门 / 准入 / 估算 / HD 流程后,必须重跑 `bench-hd` 与 `bench-queue` 并把结果同步到 `project.md` §17。
+- 改了队列 / 闸门 / 准入 / 估算 / HD 流程后,必须重跑 `bench-hd` 与 `bench-queue` 并把结果同步到 `project.md` §16。
 
 ## 3. 环境变量速查
 
