@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, qs } from "@/lib/api";
 import { duration } from "@/lib/format";
 import { useApp } from "./AppProvider";
@@ -46,6 +46,8 @@ interface Tile {
   h: number;
 }
 
+type Segment = { kind: "tile"; t: Tile } | { kind: "gap"; key: string; h: number };
+
 /**
  * 固定列数:
  *  - 手机(竖屏或横屏,按短边判断)恒为 2 列;
@@ -59,6 +61,120 @@ function columnsFor(w: number, h: number): number {
   if (w < 1900) return 6;
   if (w < 2400) return 7;
   return 8;
+}
+
+/**
+ * 单个瀑布流瓦片(Memo 化):
+ * 窗口滚动步进时,已在视口内的瓦片 props 引用不变,跳过 React 重渲染与 DOM 调和。
+ */
+const MasonryTile = memo(function MasonryTile({
+  it,
+  idx,
+  ar,
+  onSelect,
+}: {
+  it: MediaItem;
+  idx: number;
+  ar: number;
+  onSelect: (idx: number) => void;
+}) {
+  return (
+    <button
+      onClick={() => onSelect(idx)}
+      className="mtile"
+      style={{ aspectRatio: String(ar), background: it.color ?? "var(--border)" }}
+      title={it.filename}
+      aria-label={it.filename}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        key={it.status}
+        src={`${it.thumbUrl}?s=${it.status}`}
+        alt={it.filename}
+        loading="lazy"
+        decoding="async"
+        draggable={false}
+      />
+      {it.kind === "video" && (
+        <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-px text-[10px] text-white">
+          ▶ {duration(it.duration)}
+        </span>
+      )}
+      {it.status === "pending" && (
+        <span className="absolute inset-x-0 bottom-0 bg-black/50 py-0.5 text-center text-[10px] text-white">
+          处理中…
+        </span>
+      )}
+      {it.status === "failed" && (
+        <span className="absolute inset-x-0 bottom-0 bg-red-700/70 py-0.5 text-center text-[10px] text-white">
+          处理失败
+        </span>
+      )}
+    </button>
+  );
+});
+
+/**
+ * 利用列内瓦片纵向坐标严格递增的单调性,通过二分查找在 O(log N) 时间内定位可见区间,
+ * 将不可见的上下区域分别合并为单个等高占位块,保持列高与布局完全不变。
+ */
+function segmentsOf(col: Tile[], winTop: number, winBottom: number): Segment[] {
+  const n = col.length;
+  if (n === 0) return [];
+
+  // 二分查找第一个满足 t.top + t.h >= winTop 的索引
+  let lo = 0;
+  let hi = n;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (col[mid].top + col[mid].h < winTop) lo = mid + 1;
+    else hi = mid;
+  }
+  const firstVis = lo;
+
+  // 二分查找最后一个满足 t.top <= winBottom 的索引
+  lo = firstVis;
+  hi = n;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (col[mid].top <= winBottom) lo = mid + 1;
+    else hi = mid;
+  }
+  const lastVis = lo - 1;
+
+  if (firstVis > lastVis) {
+    const first = col[0];
+    const last = col[n - 1];
+    return [{ kind: "gap", key: `g${first.it.id}`, h: last.top + last.h - first.top }];
+  }
+
+  const segs: Segment[] = [];
+  if (firstVis > 0) {
+    const first = col[0];
+    const last = col[firstVis - 1];
+    segs.push({ kind: "gap", key: `gt-${first.it.id}`, h: last.top + last.h - first.top });
+  }
+  for (let i = firstVis; i <= lastVis; i++) {
+    segs.push({ kind: "tile", t: col[i] });
+  }
+  if (lastVis < n - 1) {
+    const first = col[lastVis + 1];
+    const last = col[n - 1];
+    segs.push({ kind: "gap", key: `gb-${first.it.id}`, h: last.top + last.h - first.top });
+  }
+  return segs;
+}
+
+function sameMediaRow(a: MediaItem, b: MediaItem): boolean {
+  return (
+    a.status === b.status &&
+    a.width === b.width &&
+    a.height === b.height &&
+    a.color === b.color &&
+    a.duration === b.duration &&
+    a.hasNote === b.hasNote &&
+    a.filename === b.filename
+  );
 }
 
 export default function Gallery({ album }: { album?: string }) {
@@ -78,12 +194,14 @@ export default function Gallery({ album }: { album?: string }) {
   /** 当前应渲染的纵向范围(相对于瀑布流容器顶部的像素) */
   const [win, setWin] = useState({ top: -1e9, bottom: 1e9 });
   const box = useRef<HTMLDivElement>(null);
+  const boxDocTop = useRef(0);
   const sentinel = useRef<HTMLDivElement>(null);
   const reqId = useRef(0);
   const cursorRef = useRef<string | null>(null);
   const busy = useRef(false);
 
   const params = useMemo(() => ({ album, q, kind, order, limit: 80 }), [album, q, kind, order]);
+  const handleSelect = useCallback((idx: number) => setOpen(idx), []);
 
   const fetchPage = useCallback(
     async (reset: boolean) => {
@@ -130,18 +248,28 @@ export default function Gallery({ album }: { album?: string }) {
   useEffect(() => {
     const el = sentinel.current;
     if (!el) return;
-    const io = new IntersectionObserver((es) => es[0].isIntersecting && cursorRef.current && void fetchPage(false), { rootMargin: "1200px" });
+    const io = new IntersectionObserver(
+      (es) => es[0].isIntersecting && cursorRef.current && void fetchPage(false),
+      { rootMargin: "1200px" },
+    );
     io.observe(el);
     return () => io.disconnect();
   }, [fetchPage, items.length]);
 
-  // 容器宽度与列数(横竖屏切换时同步更新)
+  // 容器宽度与列数(仅在宽度或列数真正变化时更新状态,忽略分页追加引起的高度变化)
   useEffect(() => {
     const el = box.current;
     if (!el) return;
+    let lastW = -1;
     const update = () => {
-      setWidth(el.clientWidth);
-      setCols(columnsFor(window.innerWidth, window.innerHeight));
+      boxDocTop.current = el.getBoundingClientRect().top + window.scrollY;
+      const w = el.clientWidth;
+      if (Math.abs(w - lastW) >= 0.5) {
+        lastW = w;
+        setWidth((prev) => (Math.abs(prev - w) < 0.5 ? prev : w));
+      }
+      const nextCols = columnsFor(window.innerWidth, window.innerHeight);
+      setCols((prev) => (prev === nextCols ? prev : nextCols));
     };
     const ro = new ResizeObserver(update);
     ro.observe(el);
@@ -156,41 +284,57 @@ export default function Gallery({ album }: { album?: string }) {
   // 窗口化:只渲染视口附近的瓦片,其余用等高占位(DOM 节点数与内存近似常数,几万张也不卡)
   useEffect(() => {
     let raf = 0;
-    const calc = () => {
+    const calc = (measureTop = false) => {
       raf = 0;
       const el = box.current;
       if (!el) return;
+      if (measureTop) {
+        boxDocTop.current = el.getBoundingClientRect().top + window.scrollY;
+      }
       const vh = window.innerHeight;
-      const rel = -el.getBoundingClientRect().top; // 视口顶部相对容器顶部
+      const rel = window.scrollY - boxDocTop.current; // 视口顶部相对容器顶部(零同步布局回流)
       const margin = vh * OVERSCAN_VIEWPORTS;
       const top = Math.floor((rel - margin) / WINDOW_STEP) * WINDOW_STEP;
       const bottom = Math.ceil((rel + vh + margin) / WINDOW_STEP) * WINDOW_STEP;
       setWin((p) => (p.top === top && p.bottom === bottom ? p : { top, bottom }));
     };
-    const on = () => {
-      if (!raf) raf = requestAnimationFrame(calc);
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(() => calc(false));
     };
-    window.addEventListener("scroll", on, { passive: true });
-    window.addEventListener("resize", on);
-    calc();
+    const onResize = () => {
+      if (!raf) raf = requestAnimationFrame(() => calc(true));
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onResize, { passive: true });
+    calc(true);
     return () => {
-      window.removeEventListener("scroll", on);
-      window.removeEventListener("resize", on);
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onResize);
       if (raf) cancelAnimationFrame(raf);
     };
   }, []);
 
-  // 有处理中的文件时轮询前几十项的状态
-  const pending = items.some((i) => i.status === "pending");
+  // 有处理中的文件时轮询前几十项的状态(仅当字段实际变化时才更新对应项引用)
+  const pending = useMemo(() => items.some((i) => i.status === "pending"), [items]);
   useEffect(() => {
     if (!pending) return;
     let n = 0;
     const t = setInterval(async () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       if (++n > 40) return clearInterval(t);
       try {
         const page = await api<Page>(`/media${qs({ ...params, limit: 80 })}`);
         const map = new Map(page.items.map((i) => [i.id, i]));
-        setItems((prev) => prev.map((i) => map.get(i.id) ?? i));
+        setItems((prev) => {
+          let changed = false;
+          const next = prev.map((i) => {
+            const u = map.get(i.id);
+            if (!u || sameMediaRow(i, u)) return i;
+            changed = true;
+            return u;
+          });
+          return changed ? next : prev;
+        });
       } catch {
         /* 忽略 */
       }
@@ -215,27 +359,10 @@ export default function Gallery({ album }: { album?: string }) {
     return out;
   }, [items, cols, width]);
 
-  /** 把一列切成「可见瓦片」与「合并后的占位块」:占位块高度 = 被替换瓦片的高度之和 + 它们之间的间距,布局保持不变 */
-  const segmentsOf = (col: Tile[]) => {
-    const segs: Array<{ kind: "tile"; t: Tile } | { kind: "gap"; key: string; h: number }> = [];
-    let gapFrom = -1;
-    const flush = (end: number) => {
-      if (gapFrom < 0) return;
-      const first = col[gapFrom];
-      const last = col[end];
-      segs.push({ kind: "gap", key: `g${first.it.id}`, h: last.top + last.h - first.top });
-      gapFrom = -1;
-    };
-    col.forEach((t, i) => {
-      const visible = t.top + t.h >= win.top && t.top <= win.bottom;
-      if (visible) {
-        flush(i - 1);
-        segs.push({ kind: "tile", t });
-      } else if (gapFrom < 0) gapFrom = i;
-    });
-    flush(col.length - 1);
-    return segs;
-  };
+  const columnSegments = useMemo(
+    () => columns.map((col) => segmentsOf(col, win.top, win.bottom)),
+    [columns, win.top, win.bottom],
+  );
 
   return (
     <div>
@@ -246,29 +373,12 @@ export default function Gallery({ album }: { album?: string }) {
       )}
 
       <div ref={box} className="masonry w-full">
-        {columns.map((col, ci) => (
+        {columnSegments.map((segs, ci) => (
           <div key={ci} className="masonry-col">
-            {segmentsOf(col).map((seg) => {
+            {segs.map((seg) => {
               if (seg.kind === "gap") return <div key={seg.key} aria-hidden style={{ height: seg.h, flex: "none" }} />;
               const { it, idx, ar } = seg.t;
-              return (
-                <button
-                  key={it.id}
-                  onClick={() => setOpen(idx)}
-                  className="mtile"
-                  style={{ aspectRatio: String(ar), background: it.color ?? "var(--border)" }}
-                  title={it.filename}
-                  aria-label={it.filename}
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img key={it.status} src={`${it.thumbUrl}?s=${it.status}`} alt={it.filename} loading="lazy" decoding="async" draggable={false} />
-                  {it.kind === "video" && (
-                    <span className="absolute bottom-1 left-1 rounded bg-black/55 px-1 py-px text-[10px] text-white backdrop-blur">▶ {duration(it.duration)}</span>
-                  )}
-                  {it.status === "pending" && <span className="absolute inset-x-0 bottom-0 bg-black/50 py-0.5 text-center text-[10px] text-white">处理中…</span>}
-                  {it.status === "failed" && <span className="absolute inset-x-0 bottom-0 bg-red-700/70 py-0.5 text-center text-[10px] text-white">处理失败</span>}
-                </button>
-              );
+              return <MasonryTile key={it.id} it={it} idx={idx} ar={ar} onSelect={handleSelect} />;
             })}
           </div>
         ))}
