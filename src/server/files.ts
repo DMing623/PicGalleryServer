@@ -9,6 +9,7 @@ import { verifyKey } from "./keys";
 import { derivedPath, type Variant } from "./media/derive";
 import { canSee } from "./media/service";
 import { count, overLimit } from "./rate";
+import { clientIp } from "./router";
 import { driverFor } from "./storage";
 import { db } from "@/db";
 import { media } from "@/db/schema";
@@ -149,7 +150,7 @@ export async function serveMedia(
   let keyOk = false;
   if (key) {
     // 无效密钥限流:只对「校验失败」计数,正常带 key 下载不受影响(issue §10.5)
-    const ip = req.headers.get("x-real-ip")?.trim() || "unknown";
+    const ip = clientIp(req);
     if (overLimit(`key:${ip}`, config.keyRatePerMin)) {
       throw E.tooMany("密钥校验失败次数过多,请稍后再试", 60);
     }

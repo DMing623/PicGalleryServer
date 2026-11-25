@@ -80,6 +80,12 @@ services:
       THUMB_WIDTH: ${THUMB_WIDTH:-}
       PREVIEW_WIDTH: ${PREVIEW_WIDTH:-}
       EXIF_READ_BYTES: ${EXIF_READ_BYTES:-}
+      # 媒体内存治理:预算 / 硬限制 / 输入像素上限 / libvips 线程数 / 压力保护(空 = 按容器内存自动推导)
+      MEDIA_BUDGET_MB: ${MEDIA_BUDGET_MB:-}
+      MEDIA_MAX_EST_MB: ${MEDIA_MAX_EST_MB:-}
+      MEDIA_MAX_INPUT_MP: ${MEDIA_MAX_INPUT_MP:-}
+      MEDIA_PRESSURE_GUARD: ${MEDIA_PRESSURE_GUARD:-}
+      SHARP_CONCURRENCY: ${SHARP_CONCURRENCY:-}
       # libuv 线程池:镜像默认 12;1C1G 小机器建议 4
       UV_THREADPOOL_SIZE: ${UV_THREADPOOL_SIZE:-12}
       # 容器内存限制下必须显式给 V8 堆上限,否则按宿主机内存估算会被 OOM Killer 杀掉

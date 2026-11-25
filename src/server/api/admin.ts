@@ -199,6 +199,8 @@ route("GET", "/status", "status", async () => {
       dataDir: config.dataDir, thumbConcurrency: config.thumbConcurrency, videoConcurrency: config.videoConcurrency,
       heicConcurrency: config.heicConcurrency, thumbWidth: config.thumbWidth, previewWidth: config.previewWidth,
       hdWidth: config.hd.width, hdCacheMaxMb: Math.round(config.hd.cacheMaxBytes / 1048576), hdCacheTtlDays: config.hd.cacheTtlMs / 86400000,
+      mediaMaxInputMp: config.media.maxInputMp, sharpConcurrency: config.media.sharpConcurrency, mediaPressureGuard: config.media.pressureGuard,
+      mediaBudget: { budgetMB: config.media.budgetMB, hardMaxMB: config.media.hardMaxMB, heavyMB: config.media.heavyMB, derivation: config.media.derivation },
       hdConcurrency: config.hd.concurrency, maxUploadMb: config.maxUploadMb, scanIntervalMin: config.scanIntervalMin,
       guestMeta: config.guestMeta, trustProxy: config.trustProxy, sessionSecretSource: config.sessionSecretSource,
     },

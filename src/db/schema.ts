@@ -68,6 +68,10 @@ export const media = pgTable(
     size: bigint("size", { mode: "number" }).notNull().default(0),
     /** 源文件修改时间(毫秒):与 size 一起做变更检测,并用于重命名配对(issue §2.3) */
     mtimeMs: bigint("mtime_ms", { mode: "number" }),
+    /** 处理中断计数:启动恢复时发现「上次处理到一半进程就没了」则 +1,达到 3 次不再自动重试(崩溃回路保护) */
+    attempts: integer("attempts").notNull().default(0),
+    /** 开始处理的时间(毫秒);完成/失败时清空。启动时若 pending 记录仍有值 = 上次进程在处理它时崩溃/被杀 */
+    processingStartedMs: bigint("processing_started_ms", { mode: "number" }),
     width: integer("width"),
     height: integer("height"),
     duration: real("duration"),

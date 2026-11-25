@@ -296,7 +296,7 @@ export async function batchAction(body: { action?: unknown; ids?: unknown; album
       return { affected: results.filter((r) => r.ok).length, results };
     }
     case "reprocess":
-      await db.update(media).set({ status: "pending", error: null }).where(inArray(media.id, ids));
+      await db.update(media).set({ status: "pending", error: null, attempts: 0, processingStartedMs: null }).where(inArray(media.id, ids));
       ids.forEach((i) => enqueue(i, true));
       return { affected: ids.length };
     default:
@@ -306,6 +306,8 @@ export async function batchAction(body: { action?: unknown; ids?: unknown; album
 
 export async function reprocessFailed(): Promise<number> {
   const rows = await db.select({ id: media.id }).from(media).where(inArray(media.status, ["failed", "pending"]));
+  // 用户主动「重新处理」:清零中断计数,[INTERRUPTED] / [LIMIT] 的文件也给一次机会
+  await db.update(media).set({ status: "pending", error: null, attempts: 0, processingStartedMs: null }).where(inArray(media.status, ["failed"]));
   rows.forEach((r) => enqueue(r.id));
   return rows.length;
 }

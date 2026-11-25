@@ -10,10 +10,11 @@ import { syncEnvAdmin } from "./auth";
 import { config, dirs } from "./config";
 import { purgeExpiredKeys } from "./keys";
 import { sweepHdCache } from "./hd/cache";
-import { processMedia } from "./media/derive";
+import { processMedia, rejectMedia } from "./media/derive";
+import { probeMedia } from "./media/probe";
 import { startCorruptSweeper } from "./media/corrupt";
 import { startMetrics } from "./metrics";
-import { enqueue, setRunner } from "./queue";
+import { enqueue, setProber, setRunner } from "./queue";
 
 /**
  * 进程启动初始化(幂等,只执行一次): 建表 → 目录 → 同步 env 管理员 → 恢复未完成任务 → 定时器。
@@ -47,16 +48,42 @@ async function init() {
   await runBootstrap();
   await Promise.all(Object.values(dirs).map((d) => fs.mkdir(d, { recursive: true })));
   await syncEnvAdmin();
+  // 先清理上次进程遗留的临时文件,再启动队列:启动即恢复的任务会立刻在 tmp/ 里创建私有副本,
+  // 若清理(异步)晚于入队,可能把刚创建的临时文件删掉。进程刚启动时不可能有正在进行的上传,
+  // tmp/ 里的文件必然是异常中断(崩溃、kill -9)留下的残骸。
+  await cleanTmp(0).catch(() => undefined);
+  setProber(probeMedia, rejectMedia);
   setRunner(processMedia);
 
   // 恢复上次未处理完的任务:分批入队,避免一次性把几十万 id 塞进内存(issue §2.9)
   const pending = await db
-    .select({ id: media.id })
+    .select({ id: media.id, attempts: media.attempts, startedMs: media.processingStartedMs })
     .from(media)
     .where(eq(media.status, "pending"))
     .orderBy(desc(media.createdAt))
     .limit(20_000);
-  pending.forEach((r) => enqueue(r.id));
+  // 崩溃回路保护:processing_started_ms 非空 = 上次进程在处理它的途中消失(OOM / SIGBUS / kill -9)。
+  // 累计中断 MAX_INTERRUPTS 次仍未完成的文件不再自动重试,标记 [INTERRUPTED](不会被疑似损坏清理删除原图)。
+  const MAX_INTERRUPTS = 3;
+  let stopped = 0;
+  for (const r of pending) {
+    if (r.startedMs == null) {
+      enqueue(r.id);
+      continue;
+    }
+    const n = (r.attempts ?? 0) + 1;
+    if (n >= MAX_INTERRUPTS) {
+      await db
+        .update(media)
+        .set({ status: "failed", attempts: n, processingStartedMs: null, error: "[INTERRUPTED] 处理多次中断(疑似导致进程崩溃),已停止自动重试;确认原文件无误后可点击「重新处理」" })
+        .where(eq(media.id, r.id));
+      stopped++;
+    } else {
+      await db.update(media).set({ attempts: n, processingStartedMs: null }).where(eq(media.id, r.id));
+      enqueue(r.id);
+    }
+  }
+  if (stopped) console.warn(`[ready] ${stopped} 个文件因多次处理中断(疑似导致崩溃)已停止自动重试`);
   if (pending.length >= 20_000) {
     console.warn("[ready] pending 任务超过 20000 条,已优先恢复最近的 20000 条;其余请用「重新处理」触发");
   }
@@ -69,9 +96,6 @@ async function init() {
   void sweepHdCache().catch(() => undefined);
   hourly.unref();
   void purgeExpiredKeys().catch(() => undefined);
-  // 启动时清理上次进程遗留的临时文件:进程刚启动时不可能有正在进行的上传,
-  // tmp/ 里的文件必然是异常中断(崩溃、kill -9)留下的残骸
-  void cleanTmp(0).catch(() => undefined);
   // 疑似损坏文件的自动清理(停止上传满 CORRUPT_AUTO_PURGE_HOURS 小时后)
   startCorruptSweeper();
 

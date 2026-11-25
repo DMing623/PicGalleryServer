@@ -22,7 +22,7 @@ import { limiter } from "../queue";
  */
 
 sharp.cache(false);
-sharp.concurrency(2); // 每个 sharp 任务内部线程数;总并行度由队列控制
+sharp.concurrency(config.media.sharpConcurrency); // 每个 sharp 任务内部线程数(SHARP_CONCURRENCY);总并行度与内存由 queue/admission 控制
 
 export type Variant = "thumb" | "preview";
 
@@ -40,6 +40,10 @@ const localHints = new Map<string, string>();
 export function hintLocalCopy(id: string, file: string) {
   localHints.set(id, file);
 }
+/** 探测阶段读取本地副本路径(不触发任何下载) */
+export function localHintFor(id: string): string | null {
+  return localHints.get(id) ?? null;
+}
 /** 丢弃本地副本提示(记录已被删除时调用,避免 Map 与临时文件泄漏,见 issue §2.7) */
 export async function dropLocalHint(id: string) {
   const p = localHints.get(id);
@@ -55,7 +59,7 @@ async function writeAtomic(dst: string, buf: Buffer) {
 }
 
 /** 解压炸弹防护 + 顺序读(降低内存峰值);不要从原图 clone 两次,见 issue §10.3 */
-const INPUT_OPTS = { failOn: "none" as const, limitInputPixels: 268_000_000, sequentialRead: true };
+const INPUT_OPTS = { failOn: "none" as const, limitInputPixels: config.media.maxInputMp * 1_000_000, sequentialRead: true };
 
 async function makeDerived(id: string, input: string | Buffer) {
   const previewBuf = await sharp(input, INPUT_OPTS)
@@ -73,19 +77,24 @@ async function makeDerived(id: string, input: string | Buffer) {
   return color;
 }
 
-/** HEIC 解码是最吃内存/CPU 的路径,单独限流(issue §6.1) */
+/**
+ * HEIC 解码是最吃内存/CPU 的路径,单独限流(issue §6.1)。
+ * 后台队列的 HEIC 并发已由 queue 的类别池约束(HEIC_CONCURRENCY),不再嵌套占槽等闸门;
+ * 这两个闸门只做兜底,并让交互式 HD 的 HEIC 转换有自己的容量,不必排在后台批量任务之后。
+ */
 const heicGate = limiter(config.heicConcurrency, "heic");
+const heicHdGate = limiter(1, "heic-hd");
 /** 视频探测/抽帧(ffmpeg 子进程)单独限流 */
 const videoGate = limiter(config.videoConcurrency, "video");
 
 /** BMP:libvips 预编译版没有加载器,先用内置解码器转成 PNG 再交给 sharp */
-async function bmpToPng(file: string): Promise<Buffer> {
+export async function bmpToPng(file: string): Promise<Buffer> {
   const d = decodeBmp(await fs.readFile(file));
   return sharp(d.data, { raw: { width: d.width, height: d.height, channels: 4 } }).png().toBuffer();
 }
 
-export async function heicToJpeg(file: string): Promise<Buffer> {
-  return heicGate(async () => {
+export async function heicToJpeg(file: string, interactive = false): Promise<Buffer> {
+  return (interactive ? heicHdGate : heicGate)(async () => {
     const convert = (await import("heic-convert")).default;
     const input = await fs.readFile(file);
     const out = await convert({ buffer: input as unknown as ArrayBufferLike, format: "JPEG", quality: 0.92 } as never);
@@ -113,14 +122,28 @@ async function isBlankFrame(file: string): Promise<boolean> {
   }
 }
 
+/** 超限拒绝(探测阶段发现):不解码、不重试,以 [LIMIT] 前缀标记失败;corrupt.ts 绝不自动清理这类记录 */
+export async function rejectMedia(id: string, reason: string): Promise<void> {
+  await db.update(media).set({ status: "failed", processingStartedMs: null, error: reason.slice(0, 500) }).where(eq(media.id, id));
+  await dropLocalHint(id);
+}
+
+/** 只取处理所需的列(避免每次都拉取 meta jsonb / search_text 等大字段) */
+const PROCESS_COLS = {
+  id: media.id, albumId: media.albumId, kind: media.kind, filename: media.filename, mime: media.mime, size: media.size,
+  storage: media.storage, storageKey: media.storageKey,
+};
+
 export async function processMedia(id: string): Promise<void> {
-  const [row] = await db.select().from(media).where(eq(media.id, id)).limit(1);
+  const [row] = await db.select(PROCESS_COLS).from(media).where(eq(media.id, id)).limit(1);
   if (!row) {
     // 记录已被删除:清掉本地副本与 Map 条目,避免泄漏(issue §2.7)
     await dropLocalHint(id);
     return;
   }
   await invalidateHd(id); // 重新处理 = 原文件可能已变化,旧高清缓存作废
+  // 开始处理的标记:若进程在处理中崩溃(OOM / SIGBUS),下次启动据此识别并限制重试次数
+  await db.update(media).set({ processingStartedMs: Date.now() }).where(eq(media.id, id));
   const hint = localHints.get(id);
   let mat: { path: string; cleanup: () => Promise<void> } | null = null;
   // 挂载目录(ext)里的文件可能被外部程序(同步工具、用户)原地覆盖/截断。libvips 对 webp/heif 等格式
@@ -199,12 +222,22 @@ export async function processMedia(id: string): Promise<void> {
     }
     await db
       .update(media)
-      .set({ ...patch, meta, status: "ready", error: null, searchText: buildSearchText(row.filename, meta) })
+      .set({ ...patch, meta, status: "ready", error: null, attempts: 0, processingStartedMs: null, searchText: buildSearchText(row.filename, meta) })
       .where(eq(media.id, id));
   } catch (e) {
+    const msg = String((e as Error)?.message ?? e);
+    // 触发输入像素上限(例如探测阶段读不到尺寸的格式):属于「超限」而非「损坏」,
+    // 以 [LIMIT] 标记、不重试,并保证 corrupt.ts 不会自动物理删除原文件
+    if (/pixel limit/i.test(msg)) {
+      await db
+        .update(media)
+        .set({ status: "failed", processingStartedMs: null, error: `[LIMIT] 图片超过输入像素上限 ${config.media.maxInputMp}MP(可调大 MEDIA_MAX_INPUT_MP 后点击「重新处理」)` })
+        .where(eq(media.id, id));
+      return;
+    }
     await db
       .update(media)
-      .set({ status: "failed", error: String((e as Error)?.message ?? e).slice(0, 500) })
+      .set({ status: "failed", processingStartedMs: null, error: msg.slice(0, 500) })
       .where(eq(media.id, id));
     throw e;
   } finally {

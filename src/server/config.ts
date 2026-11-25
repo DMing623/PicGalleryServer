@@ -2,6 +2,7 @@
 import os from "node:os";
 import path from "node:path";
 import pkg from "../../package.json";
+import { readCgroup } from "./cgroup";
 import { resolveSessionSecret } from "./secret";
 
 /** 环境变量统一解析入口。其它模块只允许从这里读取配置。 */
@@ -78,6 +79,21 @@ const dbDriver: "postgres" | "sqlite" =
       ? "postgres"
       : "sqlite";
 
+/**
+ * 媒体内存预算(软预算):可用 = 上限 × (1 − 安全余量) − 基础 RSS;预算 = clamp(可用 × f, 256, 2048)。
+ * 上限取 cgroup 内存上限,无限制时取宿主机内存。推导过程会在 /status 展示。
+ * 系数(余量 0.15 / 基础 RSS 250MB / f 0.7)是起点,以 scripts/bench 的基线与 /status 观测为准。
+ */
+const cg = readCgroup();
+const memLimitMb = Math.round((cg?.max ?? os.totalmem()) / 1048576);
+const BUDGET_MARGIN = 0.15;
+const BASE_RSS_MB = 250;
+const BUDGET_FACTOR = 0.7;
+const autoBudgetMb = Math.min(2048, Math.max(256, Math.round((memLimitMb * (1 - BUDGET_MARGIN) - BASE_RSS_MB) * BUDGET_FACTOR)));
+const budgetMb = int("MEDIA_BUDGET_MB", autoBudgetMb, 0, 65_536);
+/** 硬限制默认 = 预算 × 1.5,且不超过上限的 80%(预算关闭时默认不设硬限制) */
+const autoHardMb = budgetMb > 0 ? Math.max(budgetMb, Math.min(Math.round(budgetMb * 1.5), Math.round(memLimitMb * 0.8))) : 0;
+
 /** 站点默认时区(可被设置页覆盖;通知发布时间、日期分组都按它换算) */
 const defaultTimezone = process.env.TZ?.trim() || process.env.PGS_TIMEZONE?.trim() || "Asia/Shanghai";
 
@@ -98,6 +114,23 @@ export const config = {
   /** 分池并发:视频(ffmpeg)与 HEIC 解码单独限流 */
   videoConcurrency: int("VIDEO_CONCURRENCY", 2, 1, 32),
   heicConcurrency: int("HEIC_CONCURRENCY", 1, 1, 16),
+  /** 媒体处理(缩略图/预览图/HD/水印)的内存治理 */
+  media: {
+    /** libvips 每个任务内部的线程数(低内存机器设 1);总并行度由队列控制 */
+    sharpConcurrency: int("SHARP_CONCURRENCY", 2, 1, 16),
+    /** 派生图输入像素上限(MP);超过的文件以 [LIMIT] 拒绝(不进入解码,也不会被自动清理删除原图) */
+    maxInputMp: int("MEDIA_MAX_INPUT_MP", 268, 10, 2000),
+    /** 软预算(MB):并发任务估算内存之和的上限;0 = 关闭预算,只按并发数 */
+    budgetMB: budgetMb,
+    /** 硬限制(MB):单任务估算超过它直接拒绝(0 = 不设) */
+    hardMaxMB: int("MEDIA_MAX_EST_MB", autoHardMb, 0, 131_072),
+    /** 「重型任务」门槛(MB):内存压力 high 时被暂停 */
+    heavyMB: Math.max(64, Math.round((budgetMb || 512) * 0.25)),
+    /** 动态内存压力保护(水位 = cgroup 工作集 / 上限) */
+    pressureGuard: flag("MEDIA_PRESSURE_GUARD", true),
+    /** 预算推导过程(给 /status 展示) */
+    derivation: { limitMb: memLimitMb, cgroup: cg ? cg.version : null, margin: BUDGET_MARGIN, baseRssMb: BASE_RSS_MB, factor: BUDGET_FACTOR, autoBudgetMb },
+  },
   thumbWidth: int("THUMB_WIDTH", 720, 120, 1600),
   previewWidth: int("PREVIEW_WIDTH", 1600, 640, 4096),
   /** EXIF 只读文件头的字节数(超出后按需放大,见 metadata.ts) */

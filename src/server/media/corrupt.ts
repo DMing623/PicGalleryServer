@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, inArray, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { media } from "@/db/schema";
 import { deleteMediaByIds } from "../albums";
 import { config } from "../config";
+import { NON_CORRUPT_ERROR_PREFIXES } from "./estimate";
 
 /**
  * 疑似损坏文件(处理失败)的集中管理。
@@ -17,6 +18,25 @@ import { config } from "../config";
  *  - 系统状态页集中显示数量与前 20 个文件名,可一键清理;
  *  - 若用户一直不处理,在「停止上传满 CORRUPT_AUTO_PURGE_HOURS 小时」后自动清理。
  */
+
+/**
+ * 「疑似损坏」的判定:status='failed' 且 error 不是非损坏类前缀。
+ * 因超出内存/像素上限([LIMIT])或多次处理中断([INTERRUPTED])而失败的文件是正常文件,
+ * 绝不能进入清理列表,更不能被自动清理物理删除原文件(用户调大配置后点「重新处理」即可恢复)。
+ */
+function corruptWhere(): SQL {
+  const notPrefix = NON_CORRUPT_ERROR_PREFIXES.map((p) => sql`${media.error} NOT LIKE ${p + "%"}`);
+  return sql`${media.status} = 'failed' AND (${media.error} IS NULL OR (${sql.join(notPrefix, sql` AND `)}))`;
+}
+
+/** 因超限/中断而失败、但不属于「损坏」的文件数(系统页单独提示) */
+async function limitedCount(): Promise<number> {
+  const [r] = await db
+    .select({ n: sql<number>`CAST(count(*) AS INTEGER)` })
+    .from(media)
+    .where(sql`${media.status} = 'failed' AND NOT (${corruptWhere()})`);
+  return Number(r?.n ?? 0);
+}
 
 /** 最近一次上传活动时间:自动清理的计时基准 */
 let lastUploadAt = Date.now();
@@ -39,6 +59,8 @@ export interface CorruptSummary {
   count: number;
   /** 仅返回最近的若干条,前端只展示前 20 个名字 */
   items: CorruptItem[];
+  /** 因超出内存/像素上限等原因被拒绝(未损坏、不会被自动清理)的文件数 */
+  limited: number;
   /** 自动清理的小时数,0 = 已关闭 */
   autoPurgeHours: number;
   /** 距自动清理还剩多少秒(未开启时为 null) */
@@ -49,11 +71,11 @@ export async function corruptSummary(limit = 20): Promise<CorruptSummary> {
   const [total] = await db
     .select({ n: sql<number>`CAST(count(*) AS INTEGER)` })
     .from(media)
-    .where(eq(media.status, "failed"));
+    .where(corruptWhere());
   const rows = await db
     .select({ id: media.id, filename: media.filename, kind: media.kind, size: media.size, error: media.error, createdAt: media.createdAt })
     .from(media)
-    .where(eq(media.status, "failed"))
+    .where(corruptWhere())
     .orderBy(desc(media.createdAt))
     .limit(Math.max(1, Math.min(200, limit)));
   const hours = config.corruptAutoPurgeHours;
@@ -68,6 +90,7 @@ export async function corruptSummary(limit = 20): Promise<CorruptSummary> {
       error: r.error ?? null,
       createdAt: r.createdAt.toISOString(),
     })),
+    limited: await limitedCount(),
     autoPurgeHours: hours,
     purgeInSec: hours > 0 ? Math.max(0, Math.round((hours * 3600_000 - idleMs) / 1000)) : null,
   };
@@ -78,9 +101,7 @@ export async function corruptSummary(limit = 20): Promise<CorruptSummary> {
  * 受管存储(local/s3)连源文件一并删除;挂载目录(ext)只删登记,不动服务器上的文件。
  */
 export async function purgeCorrupt(ids?: string[]): Promise<{ removed: number; failed: number }> {
-  const where = ids?.length
-    ? and(eq(media.status, "failed"), inArray(media.id, ids))
-    : eq(media.status, "failed");
+  const where = ids?.length ? and(corruptWhere(), inArray(media.id, ids)) : corruptWhere();
   const rows = await db.select({ id: media.id, storage: media.storage }).from(media).where(where);
   if (!rows.length) return { removed: 0, failed: 0 };
 
@@ -121,7 +142,7 @@ async function sweep() {
   const hours = config.corruptAutoPurgeHours;
   if (hours <= 0) return;
   if (Date.now() - lastUploadAt < hours * 3600_000) return;
-  const rows = await db.select({ id: media.id }).from(media).where(eq(media.status, "failed"));
+  const rows = await db.select({ id: media.id }).from(media).where(corruptWhere());
   if (!rows.length) return;
   const r = await purgeCorrupt(rows.map((x) => x.id));
   if (r.removed) {

@@ -62,7 +62,7 @@ route("POST", "/media/batch", "user", async (ctx) => {
 
 route("POST", "/media/:id/reprocess", "media.edit", async (ctx) => {
   await getVisible(ctx.params.id, ctx.user);
-  await db.update(media).set({ status: "pending", error: null }).where(eq(media.id, ctx.params.id));
+  await db.update(media).set({ status: "pending", error: null, attempts: 0, processingStartedMs: null }).where(eq(media.id, ctx.params.id));
   enqueue(ctx.params.id, true);
   return { queued: true };
 });

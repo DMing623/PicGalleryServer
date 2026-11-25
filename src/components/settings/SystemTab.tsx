@@ -41,6 +41,8 @@ interface CorruptItem {
 interface CorruptSummary {
   count: number;
   items: CorruptItem[];
+  /** 因超出内存/像素上限被拒绝(未损坏,不会被自动清理)的文件数 */
+  limited?: number;
   autoPurgeHours: number;
   purgeInSec: number | null;
 }
@@ -103,6 +105,11 @@ function CorruptCard({ data, onPurged }: { data: CorruptSummary; onPurged: () =>
             ? `${Math.floor(data.purgeInSec / 3600)} 小时后自动清理`
             : "需手动清理"}
       </div>
+      {!!data.limited && (
+        <div className="mt-1 text-[11px] leading-tight" style={{ color: "var(--accent)" }} title="这些文件没有损坏:超出了 MEDIA_MAX_INPUT_MP / MEDIA_MAX_EST_MB 的上限,原文件完好保留。调大上限后在「重新处理」里恢复。">
+          另有 {data.limited} 个因超限被拒绝(原文件保留)
+        </div>
+      )}
       {data.count > 0 && (
         <button
           className="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-lg text-sm hover:bg-black/10 disabled:opacity-40"

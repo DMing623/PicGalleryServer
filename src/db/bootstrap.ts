@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS "pgs_media" (
   "mime" text NOT NULL,
   "size" bigint DEFAULT 0 NOT NULL,
   "mtime_ms" bigint,
+  "attempts" integer DEFAULT 0 NOT NULL,
+  "processing_started_ms" bigint,
   "width" integer,
   "height" integer,
   "duration" real,
@@ -126,6 +128,8 @@ CREATE TABLE IF NOT EXISTS "pgs_notice_reads" (
 ALTER TABLE "pgs_users" ADD COLUMN IF NOT EXISTS "token_version" integer DEFAULT 0 NOT NULL;
 ALTER TABLE "pgs_albums" ADD COLUMN IF NOT EXISTS "readonly" boolean DEFAULT false NOT NULL;
 ALTER TABLE "pgs_media" ADD COLUMN IF NOT EXISTS "mtime_ms" bigint;
+ALTER TABLE "pgs_media" ADD COLUMN IF NOT EXISTS "attempts" integer DEFAULT 0 NOT NULL;
+ALTER TABLE "pgs_media" ADD COLUMN IF NOT EXISTS "processing_started_ms" bigint;
 ALTER TABLE "pgs_media" ADD COLUMN IF NOT EXISTS "missing_at" timestamp with time zone;
 CREATE INDEX IF NOT EXISTS "pgs_albums_parent_idx" ON "pgs_albums" USING btree ("parent_id");
 CREATE UNIQUE INDEX IF NOT EXISTS "pgs_albums_root_uq" ON "pgs_albums" USING btree ("root_path");
@@ -191,6 +195,8 @@ CREATE TABLE IF NOT EXISTS "pgs_media" (
   "mime" text NOT NULL,
   "size" integer DEFAULT 0 NOT NULL,
   "mtime_ms" integer,
+  "attempts" integer DEFAULT 0 NOT NULL,
+  "processing_started_ms" integer,
   "width" integer,
   "height" integer,
   "duration" real,
@@ -279,6 +285,8 @@ const LITE_UPGRADE: Array<{ table: string; column: string; ddl: string }> = [
   { table: "pgs_users", column: "token_version", ddl: 'ALTER TABLE "pgs_users" ADD COLUMN "token_version" integer DEFAULT 0 NOT NULL' },
   { table: "pgs_albums", column: "readonly", ddl: 'ALTER TABLE "pgs_albums" ADD COLUMN "readonly" integer DEFAULT 0 NOT NULL' },
   { table: "pgs_media", column: "mtime_ms", ddl: 'ALTER TABLE "pgs_media" ADD COLUMN "mtime_ms" integer' },
+  { table: "pgs_media", column: "attempts", ddl: 'ALTER TABLE "pgs_media" ADD COLUMN "attempts" integer DEFAULT 0 NOT NULL' },
+  { table: "pgs_media", column: "processing_started_ms", ddl: 'ALTER TABLE "pgs_media" ADD COLUMN "processing_started_ms" integer' },
   { table: "pgs_media", column: "missing_at", ddl: 'ALTER TABLE "pgs_media" ADD COLUMN "missing_at" text' },
 ];
 
