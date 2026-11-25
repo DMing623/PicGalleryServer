@@ -94,15 +94,21 @@ async function buildLayer(W: number, H: number, siteText: string, userText: stri
       const left = Math.round(cx - set[0].w / 2);
       const top = Math.round(cy - set[0].h / 2);
       if (left < 1 || top < 1 || left + set[0].w + 1 > CW || top + set[0].h + 1 > CH) continue;
-      parts.push({ input: set[0].buf, left: left + 1, top: top + 1 }); // 投影(下层)
-      parts.push({ input: set[1].buf, left, top });
+      // 坐标换算到「可见区域 W×H」的坐标系(减去 pad);完全落在可见区之外的瓦片不参与合成
+      const vx = left - pad;
+      const vy = top - pad;
+      if (vx + set[0].w + 1 <= 0 || vy + set[0].h + 1 <= 0 || vx >= W || vy >= H) continue;
+      parts.push({ input: set[0].buf, left: vx + 1, top: vy + 1 }); // 投影(下层)
+      parts.push({ input: set[1].buf, left: vx, top: vy });
     }
   }
-  const canvas = await sharp({ create: { width: CW, height: CH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+  // 直接在 W×H 画布上合成(瓦片允许负偏移,超出部分被裁剪),只编码一次 PNG:
+  // 旧实现先建 (W+2pad)×(H+2pad) 画布(2560×1707 时约 9MP,面积是目标的 2 倍以上)编码成 PNG,
+  // 再 extract 二次解码并再编码 PNG;两者像素结果完全一致(已用测试对比)。
+  return sharp({ create: { width: W, height: H, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
     .composite(parts)
-    .png()
+    .png({ compressionLevel: 6 })
     .toBuffer();
-  return sharp(canvas).extract({ left: pad, top: pad, width: W, height: H }).png({ compressionLevel: 6 }).toBuffer();
 }
 
 function layerFor(W: number, H: number, siteText: string, userText: string | null): Promise<Buffer> {

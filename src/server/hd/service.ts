@@ -1,16 +1,23 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import sharp from "sharp";
 import { db } from "@/db";
 import { media } from "@/db/schema";
 import { can, signToken, verifyToken, type AuthUser } from "../auth";
-import { config } from "../config";
-import { E } from "../http";
-import { heicToJpeg } from "../media/derive";
+import { config, dirs } from "../config";
+import { ApiError, E } from "../http";
+import { AdmissionAbortError, AdmissionTimeoutError } from "../admission";
+import { bmpToPng, heicToJpeg } from "../media/derive";
+import { isBmp } from "../media/bmp";
+import { estimateMemory, limitMessage } from "../media/estimate";
+import { metaForRow } from "../media/probe";
 import { baseUrl, canSee } from "../media/service";
 import { isHeic } from "../media/types";
-import { limiter } from "../queue";
+import { getScheduler, limiter } from "../queue";
 import { driverFor, materialize } from "../storage";
 import { ID_RE, genOf, getCached, hdStats, invalidateHd, putCached } from "./cache";
 import { guardHd, hdStrike } from "./guard";
@@ -21,7 +28,12 @@ import { applyWatermark } from "./watermark";
  * 与原图下载(/f/:id、?key=)完全分离:不接受下载密钥,不返回原文件,不暴露存储路径。
  */
 
-type Row = typeof media.$inferSelect;
+/** HD 只需要这些列(不拉 meta jsonb / search_text 等大字段) */
+const HD_COLS = {
+  id: media.id, albumId: media.albumId, kind: media.kind, filename: media.filename, mime: media.mime, size: media.size,
+  hash: media.hash, storage: media.storage, storageKey: media.storageKey, width: media.width, height: media.height, missingAt: media.missingAt,
+};
+type Row = Pick<typeof media.$inferSelect, "id" | "albumId" | "kind" | "filename" | "mime" | "size" | "hash" | "storage" | "storageKey" | "width" | "height" | "missingAt">;
 
 /** 允许的输出宽度档位(客户端按屏幕分辨率选择,服务端吸附到档位以提高缓存命中) */
 export function hdWidths(): number[] {
@@ -68,8 +80,10 @@ export function checkHdToken(token: string | null, mediaId: string, user: AuthUs
 
 async function loadVisibleImage(id: string, user: AuthUser | null): Promise<Row | null> {
   if (!ID_RE.test(id)) return null;
-  const [row] = await db.select().from(media).where(eq(media.id, id)).limit(1);
+  const [row] = await db.select(HD_COLS).from(media).where(eq(media.id, id)).limit(1);
   if (!row) return null;
+  // 挂载目录里已消失(宽限期内)的文件不再提供高清预览
+  if (row.missingAt) return null;
   // 游客:仅公开相册;登录用户:需具备浏览权限
   if (!(await canSee(row.albumId, user))) return null;
   if (user && !can(user, "browse.private") && !(await canSee(row.albumId, null))) return null;
@@ -84,16 +98,43 @@ const inflight = new Map<string, Promise<Buffer>>();
 async function convert(row: Row, width: number): Promise<Buffer> {
   hdStats.conversions++;
   const mat = await materialize(row.storage, row.storageKey); // 远程存储会下载到临时文件,finally 中必定清理
+  // 挂载目录(ext)里的文件可能被外部程序原地截断;libvips 对 webp/heif 等格式会 mmap 源文件,
+  // 读取途中被截断会让整个进程收到 SIGBUS。与派生图一致:先复制私有副本(支持 reflink 的文件系统上几乎零成本)
+  let privateCopy: string | null = null;
   try {
-    const input: string | Buffer = isHeic(row.filename) ? await heicToJpeg(mat.path) : mat.path;
+    const heic = isHeic(row.filename);
+    const bmp = isBmp(row.filename);
+    let src = mat.path;
+    if (row.storage === "ext" && !heic && !bmp) {
+      await fs.mkdir(dirs.tmp, { recursive: true });
+      privateCopy = path.join(dirs.tmp, `hd-${randomBytes(6).toString("hex")}`);
+      await fs.copyFile(mat.path, privateCopy, fsConstants.COPYFILE_FICLONE);
+      src = privateCopy;
+    }
+    const input: string | Buffer = heic ? await heicToJpeg(mat.path, true) : bmp ? await bmpToPng(mat.path) : src;
     return await sharp(input, { failOn: "none", limitInputPixels: config.hd.maxInputMp * 1_000_000 })
       .rotate()
       .resize({ width, height: config.hd.maxHeight, fit: "inside", withoutEnlargement: true })
       .webp({ quality: config.hd.quality }) // 不保留任何元数据(EXIF/XMP/ICC/GPS 全部剥离)
       .toBuffer();
   } finally {
+    if (privateCopy) await fs.unlink(privateCopy).catch(() => undefined);
     await mat.cleanup();
   }
+}
+
+/** HD 水印阶段的内存估算:按「输出尺寸」而不是原图尺寸 */
+function wmEstimate(row: Row, width: number) {
+  const ow = row.width && row.height ? Math.min(width, row.width) : width;
+  const oh = row.width && row.height ? Math.min(config.hd.maxHeight, Math.round((ow * row.height) / row.width)) : Math.round(width * 0.75);
+  return estimateMemory({ width: ow, height: oh }, "hd-wm");
+}
+
+/** 把准入控制的失败翻译成对客户端友好的响应 */
+function admissionError(e: unknown): never {
+  if (e instanceof AdmissionTimeoutError) throw new ApiError(503, "hd_busy", "服务器正忙(内存预算紧张),请稍后重试", { "retry-after": "5" });
+  if (e instanceof AdmissionAbortError) throw new ApiError(499, "client_closed", "请求已取消");
+  throw e;
 }
 
 async function versionOf(row: Row): Promise<string | null> {
@@ -101,32 +142,6 @@ async function versionOf(row: Row): Promise<string | null> {
   const info = await driver.stat(row.storageKey);
   if (!info) return null;
   return createHash("sha1").update(`${row.hash ?? ""}|${row.size}|${info.size}|${Math.round(info.mtimeMs)}`).digest("hex").slice(0, 12);
-}
-
-async function getBase(row: Row, ver: string, width: number): Promise<{ buf: Buffer; state: "hit" | "miss" | "coalesced" }> {
-  const hit = await getCached(row.id, ver, width);
-  if (hit) {
-    hdStats.hits++;
-    return { buf: hit, state: "hit" };
-  }
-  const key = `${row.id}.${ver}.${width}`;
-  const running = inflight.get(key);
-  if (running) {
-    hdStats.coalesced++;
-    return { buf: await running, state: "coalesced" };
-  }
-  hdStats.misses++;
-  const gen = genOf(row.id);
-  const p = gate(() => convert(row, width)).then(async (buf) => {
-    await putCached(row.id, ver, width, buf, gen).catch((e) => console.error("[hd] cache write failed", e));
-    return buf;
-  });
-  inflight.set(key, p);
-  try {
-    return { buf: await p, state: "miss" };
-  } finally {
-    inflight.delete(key);
-  }
 }
 
 /* ---------- 对外入口 ---------- */
@@ -171,20 +186,78 @@ export async function serveHd(req: Request, id: string, user: AuthUser | null, i
     throw E.notFound("原文件不存在或已被移除");
   }
 
-  const { buf, state } = await getBase(row, ver, width);
+  const sched = getScheduler();
+  const wmOn = config.hd.wm.enabled;
+  const host = (() => {
+    try {
+      return new URL(baseUrl(req)).host;
+    } catch {
+      return "unknown";
+    }
+  })();
+  const signal = req.signal;
+  const waitOpts = { signal, timeoutMs: 15_000 };
+  const wmEst = wmOn ? wmEstimate(row, width).estMB : 1;
+  const watermark = (buf: Buffer) => (wmOn ? gate(() => applyWatermark(buf, { host, userId: uid })) : Promise.resolve(buf));
 
-  let out = buf;
-  let wmOn = false;
-  if (config.hd.wm.enabled) {
-    const host = (() => {
-      try {
-        return new URL(baseUrl(req)).host;
-      } catch {
-        return "unknown";
+  // 预算按三路分流(绝不在查缓存/inflight 之前无条件申请「未命中」的全量预算):
+  //  hit        缓存命中 → 只需申请水印阶段的轻量预算
+  //  coalesced  同一张图已有请求在转换 → 先等它产出基图(期间不重复占预算),再申请水印阶段预算
+  //  miss       覆盖「转换 + 水印 + 响应」整条流水线的一次预算;转换完成后收缩为水印阶段预算
+  let state: "hit" | "miss" | "coalesced";
+  let out: Buffer;
+  try {
+    const key = `${row.id}.${ver}.${width}`;
+    const cached = await getCached(row.id, ver, width);
+    let base: Buffer | null = cached;
+    state = "hit";
+    if (cached) hdStats.hits++;
+    else {
+      const running = inflight.get(key);
+      if (running) {
+        hdStats.coalesced++;
+        state = "coalesced";
+        base = await running;
       }
-    })();
-    out = await gate(() => applyWatermark(buf, { host, userId: uid }));
-    wmOn = true;
+    }
+    if (base) {
+      const b = base;
+      out = await sched.withHd(wmEst, () => watermark(b), waitOpts);
+    } else {
+      state = "miss";
+      hdStats.misses++;
+      const gen = genOf(row.id);
+      // 必须在任何 await 之前同步登记 inflight,否则并发请求会各自转换(合并失效)
+      let settle!: { resolve: (b: Buffer) => void; reject: (e: unknown) => void };
+      const shared = new Promise<Buffer>((resolve, reject) => (settle = { resolve, reject }));
+      shared.catch(() => undefined); // 没有合并请求时不产生未处理的 rejection
+      inflight.set(key, shared);
+      try {
+        // 估算:优先用数据库里已有的宽高;S3 原图绝不为估算而提前下载
+        const { meta, heic, bmp } = await metaForRow(row);
+        const est = estimateMemory(meta, heic ? "heic" : bmp ? "bmp" : "hd-miss", { filename: row.filename });
+        const hard = config.media.hardMaxMB;
+        if (hard > 0 && est.estMB > hard) throw new ApiError(413, "hd_too_large", limitMessage(est, hard));
+        out = await sched.withHd(
+          Math.max(est.estMB, wmEst),
+          async (res) => {
+            const buf = await gate(() => convert(row, width));
+            await putCached(row.id, ver, width, buf, gen).catch((e) => console.error("[hd] cache write failed", e));
+            settle.resolve(buf);
+            res.adjust(wmEst); // 解码工作集已释放,只需保留水印阶段所需
+            return watermark(buf);
+          },
+          waitOpts,
+        );
+      } catch (e) {
+        settle.reject(e);
+        throw e;
+      } finally {
+        inflight.delete(key);
+      }
+    }
+  } catch (e) {
+    admissionError(e);
   }
 
   return new Response(out as unknown as BodyInit, {
