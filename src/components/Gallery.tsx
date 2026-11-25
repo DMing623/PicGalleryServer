@@ -33,6 +33,19 @@ interface Page {
 /** 1mm ≈ 3.78 CSS px:瀑布流图片间距与两侧边距 */
 const MM = 96 / 25.4;
 
+/** 窗口化:视口上下各多渲染 N 个视口高度;滚动位置按 STEP 像素量化,避免每个像素都重渲染 */
+const OVERSCAN_VIEWPORTS = 1.5;
+const WINDOW_STEP = 240;
+
+interface Tile {
+  it: MediaItem;
+  idx: number;
+  ar: number;
+  /** 相对于列顶部的位置与高度(列宽 / 宽高比,与 CSS aspect-ratio 的结果一致) */
+  top: number;
+  h: number;
+}
+
 /**
  * 固定列数:
  *  - 手机(竖屏或横屏,按短边判断)恒为 2 列;
@@ -62,6 +75,8 @@ export default function Gallery({ album }: { album?: string }) {
   const [width, setWidth] = useState(1000);
   const [cols, setCols] = useState(2);
   const [version, setVersion] = useState(0);
+  /** 当前应渲染的纵向范围(相对于瀑布流容器顶部的像素) */
+  const [win, setWin] = useState({ top: -1e9, bottom: 1e9 });
   const box = useRef<HTMLDivElement>(null);
   const sentinel = useRef<HTMLDivElement>(null);
   const reqId = useRef(0);
@@ -138,6 +153,33 @@ export default function Gallery({ album }: { album?: string }) {
     };
   }, []);
 
+  // 窗口化:只渲染视口附近的瓦片,其余用等高占位(DOM 节点数与内存近似常数,几万张也不卡)
+  useEffect(() => {
+    let raf = 0;
+    const calc = () => {
+      raf = 0;
+      const el = box.current;
+      if (!el) return;
+      const vh = window.innerHeight;
+      const rel = -el.getBoundingClientRect().top; // 视口顶部相对容器顶部
+      const margin = vh * OVERSCAN_VIEWPORTS;
+      const top = Math.floor((rel - margin) / WINDOW_STEP) * WINDOW_STEP;
+      const bottom = Math.ceil((rel + vh + margin) / WINDOW_STEP) * WINDOW_STEP;
+      setWin((p) => (p.top === top && p.bottom === bottom ? p : { top, bottom }));
+    };
+    const on = () => {
+      if (!raf) raf = requestAnimationFrame(calc);
+    };
+    window.addEventListener("scroll", on, { passive: true });
+    window.addEventListener("resize", on);
+    calc();
+    return () => {
+      window.removeEventListener("scroll", on);
+      window.removeEventListener("resize", on);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
+
   // 有处理中的文件时轮询前几十项的状态
   const pending = items.some((i) => i.status === "pending");
   useEffect(() => {
@@ -156,21 +198,44 @@ export default function Gallery({ album }: { album?: string }) {
     return () => clearInterval(t);
   }, [pending, params]);
 
-  /** 瀑布流分列:每张图放进当前最矮的列,所有列等宽;图片按真实宽高比显示 */
+  /** 瀑布流分列:每张图放进当前最矮的列,所有列等宽;图片按真实宽高比显示;同时算出每张图在列内的位置(供窗口化) */
   const columns = useMemo(() => {
     const colW = Math.max(40, (width - MM * 2 - MM * (cols - 1)) / cols);
     const heights = new Array<number>(cols).fill(0);
-    const out: Array<Array<{ it: MediaItem; idx: number; ar: number }>> = Array.from({ length: cols }, () => []);
+    const out: Tile[][] = Array.from({ length: cols }, () => []);
     items.forEach((it, idx) => {
       const raw = it.width && it.height ? it.width / it.height : 1;
       const ar = Math.min(3, Math.max(0.35, raw));
       let c = 0;
       for (let i = 1; i < cols; i++) if (heights[i] < heights[c] - 0.5) c = i;
-      out[c].push({ it, idx, ar });
-      heights[c] += colW / ar + MM;
+      const h = colW / ar;
+      out[c].push({ it, idx, ar, top: heights[c], h });
+      heights[c] += h + MM;
     });
     return out;
   }, [items, cols, width]);
+
+  /** 把一列切成「可见瓦片」与「合并后的占位块」:占位块高度 = 被替换瓦片的高度之和 + 它们之间的间距,布局保持不变 */
+  const segmentsOf = (col: Tile[]) => {
+    const segs: Array<{ kind: "tile"; t: Tile } | { kind: "gap"; key: string; h: number }> = [];
+    let gapFrom = -1;
+    const flush = (end: number) => {
+      if (gapFrom < 0) return;
+      const first = col[gapFrom];
+      const last = col[end];
+      segs.push({ kind: "gap", key: `g${first.it.id}`, h: last.top + last.h - first.top });
+      gapFrom = -1;
+    };
+    col.forEach((t, i) => {
+      const visible = t.top + t.h >= win.top && t.top <= win.bottom;
+      if (visible) {
+        flush(i - 1);
+        segs.push({ kind: "tile", t });
+      } else if (gapFrom < 0) gapFrom = i;
+    });
+    flush(col.length - 1);
+    return segs;
+  };
 
   return (
     <div>
@@ -183,24 +248,28 @@ export default function Gallery({ album }: { album?: string }) {
       <div ref={box} className="masonry w-full">
         {columns.map((col, ci) => (
           <div key={ci} className="masonry-col">
-            {col.map(({ it, idx, ar }) => (
-              <button
-                key={it.id}
-                onClick={() => setOpen(idx)}
-                className="mtile"
-                style={{ aspectRatio: String(ar), background: it.color ?? "var(--border)" }}
-                title={it.filename}
-                aria-label={it.filename}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img key={it.status} src={`${it.thumbUrl}?s=${it.status}`} alt={it.filename} loading="lazy" decoding="async" draggable={false} />
-                {it.kind === "video" && (
-                  <span className="absolute bottom-1 left-1 rounded bg-black/55 px-1 py-px text-[10px] text-white backdrop-blur">▶ {duration(it.duration)}</span>
-                )}
-                {it.status === "pending" && <span className="absolute inset-x-0 bottom-0 bg-black/50 py-0.5 text-center text-[10px] text-white">处理中…</span>}
-                {it.status === "failed" && <span className="absolute inset-x-0 bottom-0 bg-red-700/70 py-0.5 text-center text-[10px] text-white">处理失败</span>}
-              </button>
-            ))}
+            {segmentsOf(col).map((seg) => {
+              if (seg.kind === "gap") return <div key={seg.key} aria-hidden style={{ height: seg.h, flex: "none" }} />;
+              const { it, idx, ar } = seg.t;
+              return (
+                <button
+                  key={it.id}
+                  onClick={() => setOpen(idx)}
+                  className="mtile"
+                  style={{ aspectRatio: String(ar), background: it.color ?? "var(--border)" }}
+                  title={it.filename}
+                  aria-label={it.filename}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img key={it.status} src={`${it.thumbUrl}?s=${it.status}`} alt={it.filename} loading="lazy" decoding="async" draggable={false} />
+                  {it.kind === "video" && (
+                    <span className="absolute bottom-1 left-1 rounded bg-black/55 px-1 py-px text-[10px] text-white backdrop-blur">▶ {duration(it.duration)}</span>
+                  )}
+                  {it.status === "pending" && <span className="absolute inset-x-0 bottom-0 bg-black/50 py-0.5 text-center text-[10px] text-white">处理中…</span>}
+                  {it.status === "failed" && <span className="absolute inset-x-0 bottom-0 bg-red-700/70 py-0.5 text-center text-[10px] text-white">处理失败</span>}
+                </button>
+              );
+            })}
           </div>
         ))}
       </div>
