@@ -1,7 +1,7 @@
 "use client";
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { AI_FIELDS, SUMMARY_GROUPS, VIDEO_FIELDS } from "@/lib/meta-labels";
 
 type Scalar = string | number | null;
@@ -58,36 +58,56 @@ function Copy({ text }: { text: string }) {
 }
 
 /**
- * 元数据自动渲染:只展示文件里「实际存在」的字段并自动分组,不预设固定表单、不显示一片 N/A。
+ * 元数据自动渲染(Memo 化):只展示文件里「实际存在」的字段并自动分组,不预设固定表单、不显示一片 N/A。
  * 必备条目(名称/备注/分辨率/相册/ID/上传时间/格式)由 Viewer 的「基本信息」固定提供。
  */
-export default function MetaPanel({ meta, kind }: { meta: Meta | null; kind: string }) {
-  if (!meta) return <p className="muted text-sm">元数据尚未生成(文件处理中或处理失败)。</p>;
+export default memo(function MetaPanel({ meta, kind }: { meta: Meta | null; kind: string }) {
+  const parsed = useMemo(() => {
+    if (!meta) return null;
+    // 摘要:已知分组按预设顺序,未知分组/字段自动追加
+    const groupKeys = [...SUMMARY_GROUPS.map((g) => g.key), ...Object.keys(meta.summary).filter((k) => !GROUP_TITLE[k])];
+    const groups = groupKeys
+      .map((gk) => {
+        const src = meta.summary[gk] ?? {};
+        const order = FIELD_ORDER[gk] ?? [];
+        const keys = [...order.filter((k) => k in src), ...Object.keys(src).filter((k) => !order.includes(k))];
+        const rows = keys
+          .filter((k) => has(src[k]) && !SHOWN_IN_BASICS.has(`${gk}.${k}`))
+          .map((k) => ({ k, label: FIELD_LABEL[gk]?.[k] ?? k, value: src[k] }));
+        return { gk, title: GROUP_TITLE[gk] ?? gk, rows };
+      })
+      .filter((g) => g.rows.length > 0);
 
-  // 摘要:已知分组按预设顺序,未知分组/字段自动追加
-  const groupKeys = [...SUMMARY_GROUPS.map((g) => g.key), ...Object.keys(meta.summary).filter((k) => !GROUP_TITLE[k])];
-  const groups = groupKeys
-    .map((gk) => {
-      const src = meta.summary[gk] ?? {};
-      const order = FIELD_ORDER[gk] ?? [];
-      const keys = [...order.filter((k) => k in src), ...Object.keys(src).filter((k) => !order.includes(k))];
-      const rows = keys.filter((k) => has(src[k]) && !SHOWN_IN_BASICS.has(`${gk}.${k}`)).map((k) => ({ k, label: FIELD_LABEL[gk]?.[k] ?? k, value: src[k] }));
-      return { gk, title: GROUP_TITLE[gk] ?? gk, rows };
-    })
-    .filter((g) => g.rows.length > 0);
+    const lat = meta.summary.gps?.latitude;
+    const lon = meta.summary.gps?.longitude;
+    const mapsLink =
+      typeof lat === "number" && typeof lon === "number"
+        ? `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=15/${lat}/${lon}`
+        : null;
 
-  const lat = meta.summary.gps?.latitude;
-  const lon = meta.summary.gps?.longitude;
-  const mapsLink = typeof lat === "number" && typeof lon === "number" ? `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=15/${lat}/${lon}` : null;
+    const videoRows =
+      kind === "video" && meta.video
+        ? VIDEO_FIELDS.filter(([k]) => has(meta.video?.[k])).map(([k, l]) => ({ k, l, v: meta.video?.[k] }))
+        : [];
+    const ai = meta.ai;
+    const aiRows = ai
+      ? [
+          ...AI_FIELDS.filter(([k]) => has(ai[k])).map(([k, l]) => [l, ai[k] as Scalar] as const),
+          ...Object.entries(ai.params ?? {})
+            .filter(([, v]) => has(v))
+            .map(([k, v]) => [k, v] as const),
+        ]
+      : [];
+    const textEntries = Object.entries(meta.text ?? {}).filter(([, v]) => has(v));
+    const rawEntries = Object.entries(meta.raw ?? {}).filter(([, f]) => Object.keys(f).length > 0);
+    const nothing = !groups.length && !videoRows.length && !ai && !textEntries.length && !rawEntries.length;
 
-  const videoRows = kind === "video" && meta.video ? VIDEO_FIELDS.filter(([k]) => has(meta.video?.[k])).map(([k, l]) => ({ k, l, v: meta.video?.[k] })) : [];
-  const ai = meta.ai;
-  const aiRows = ai
-    ? [...AI_FIELDS.filter(([k]) => has(ai[k])).map(([k, l]) => [l, ai[k] as Scalar] as const), ...Object.entries(ai.params ?? {}).filter(([, v]) => has(v)).map(([k, v]) => [k, v] as const)]
-    : [];
-  const textEntries = Object.entries(meta.text ?? {}).filter(([, v]) => has(v));
-  const rawEntries = Object.entries(meta.raw ?? {}).filter(([, f]) => Object.keys(f).length > 0);
-  const nothing = !groups.length && !videoRows.length && !ai && !textEntries.length && !rawEntries.length;
+    return { groups, mapsLink, videoRows, ai, aiRows, textEntries, rawEntries, nothing };
+  }, [meta, kind]);
+
+  if (!parsed) return <p className="muted text-sm">元数据尚未生成(文件处理中或处理失败)。</p>;
+
+  const { groups, mapsLink, videoRows, ai, aiRows, textEntries, rawEntries, nothing } = parsed;
 
   return (
     <div className="space-y-4">
@@ -177,4 +197,4 @@ export default function MetaPanel({ meta, kind }: { meta: Meta | null; kind: str
       {nothing && <p className="muted text-[13px]">这个文件没有携带额外的元数据(相机 / AI 生成信息 / 工作流等),因此只显示上面的基本信息。</p>}
     </div>
   );
-}
+});

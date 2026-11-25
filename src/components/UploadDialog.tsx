@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { bytes } from "@/lib/format";
 import { useApp } from "./AppProvider";
@@ -32,11 +32,38 @@ interface UrlJob {
   id?: string;
 }
 
+const ROW_CLS = "flex items-center gap-2 rounded-lg border border-line/60 px-3 py-1.5";
+const ROW_STYLE = { background: "color-mix(in srgb, var(--surface) 62%, transparent)" };
+
+const FileJobRow = memo(function FileJobRow({ j }: { j: Job }) {
+  return (
+    <li className={ROW_CLS} style={ROW_STYLE}>
+      <span className="min-w-0 flex-1 truncate">{j.file.name}</span>
+      <span className="muted text-xs">{bytes(j.file.size)}</span>
+      <span className="w-24 text-right text-xs">
+        {j.state === "wait" && "等待"}
+        {j.state === "up" && `${j.pct}%`}
+        {j.state === "done" && <span style={{ color: "var(--accent)" }}>✓ 完成</span>}
+        {j.state === "dup" && <span className="muted">已存在</span>}
+        {j.state === "err" && <span className="text-red-600" title={j.msg}>✗ 失败</span>}
+      </span>
+    </li>
+  );
+});
+
 function sendOne(file: File, query: string, onPct: (p: number) => void): Promise<{ status: string; id?: string; error?: string }> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `/api/v1/media/upload?${query}`);
-    xhr.upload.onprogress = (e) => e.lengthComputable && onPct(Math.round((e.loaded / e.total) * 100));
+    let lastPct = -1;
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const pct = Math.round((e.loaded / e.total) * 100);
+      if (pct === 100 || pct - lastPct >= 2) {
+        lastPct = pct;
+        onPct(pct);
+      }
+    };
     xhr.onload = () => {
       try {
         const r = JSON.parse(xhr.responseText);
@@ -85,24 +112,24 @@ export default function UploadDialog({ defaultAlbum, onClose }: { defaultAlbum: 
   }, []);
 
   const options = useMemo(() => {
-    const byCode = new Map(albums.map((a) => [a.code, a]));
-    const depth = (a: AlbumLite) => {
-      let n = 0;
-      let c: AlbumLite | undefined = a;
-      while (c?.parent && n < 10) {
-        c = byCode.get(c.parent);
-        n++;
-      }
-      return n;
-    };
-    // 按树顺序展开
+    const byParent = new Map<string | null, AlbumLite[]>();
+    for (const a of albums) {
+      const p = a.parent ?? null;
+      const list = byParent.get(p);
+      if (list) list.push(a);
+      else byParent.set(p, [a]);
+    }
     const out: Array<{ a: AlbumLite; d: number }> = [];
-    const walk = (parent: string | null) =>
-      albums.filter((a) => a.parent === parent).forEach((a) => {
-        out.push({ a, d: depth(a) });
-        walk(a.code);
-      });
-    walk(null);
+    const walk = (parent: string | null, d: number) => {
+      if (d > 10) return;
+      const children = byParent.get(parent);
+      if (!children) return;
+      for (const a of children) {
+        out.push({ a, d });
+        walk(a.code, d + 1);
+      }
+    };
+    walk(null, 0);
     return out;
   }, [albums]);
 
@@ -138,7 +165,14 @@ export default function UploadDialog({ defaultAlbum, onClose }: { defaultAlbum: 
     const q = query();
     const queue = jobs.map((_, i) => i).filter((i) => jobs[i].state === "wait" || jobs[i].state === "err");
     let cursor = 0;
-    const set = (i: number, patch: Partial<Job>) => setJobs((js) => js.map((j, k) => (k === i ? { ...j, ...patch } : j)));
+    const set = (i: number, patch: Partial<Job>) =>
+      setJobs((js) => {
+        const cur = js[i];
+        if (!cur) return js;
+        const next = js.slice();
+        next[i] = { ...cur, ...patch };
+        return next;
+      });
     const worker = async () => {
       while (cursor < queue.length) {
         const i = queue[cursor++];
@@ -306,17 +340,7 @@ export default function UploadDialog({ defaultAlbum, onClose }: { defaultAlbum: 
               {jobs.length > 0 && (
                 <ul className="mt-3 space-y-1 text-sm">
                   {jobs.map((j, i) => (
-                    <li key={i} className="glass flex items-center gap-2 rounded-lg px-3 py-1.5">
-                      <span className="min-w-0 flex-1 truncate">{j.file.name}</span>
-                      <span className="muted text-xs">{bytes(j.file.size)}</span>
-                      <span className="w-24 text-right text-xs">
-                        {j.state === "wait" && "等待"}
-                        {j.state === "up" && `${j.pct}%`}
-                        {j.state === "done" && <span style={{ color: "var(--accent)" }}>✓ 完成</span>}
-                        {j.state === "dup" && <span className="muted">已存在</span>}
-                        {j.state === "err" && <span className="text-red-600" title={j.msg}>✗ 失败</span>}
-                      </span>
-                    </li>
+                    <FileJobRow key={i} j={j} />
                   ))}
                 </ul>
               )}
@@ -336,7 +360,7 @@ export default function UploadDialog({ defaultAlbum, onClose }: { defaultAlbum: 
               {urlJobs.length > 0 && (
                 <ul className="mt-2 space-y-1 text-sm">
                   {urlJobs.map((j, i) => (
-                    <li key={i} className="glass flex items-center gap-2 rounded-lg px-3 py-1.5">
+                    <li key={i} className={ROW_CLS} style={ROW_STYLE}>
                       <span className="min-w-0 flex-1 truncate" title={j.url}>{j.url}</span>
                       <span className="w-20 shrink-0 text-right text-xs">
                         {j.state === "wait" && "等待"}

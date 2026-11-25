@@ -89,7 +89,27 @@
   1. 将全部粒子圆点合并为单次 `beginPath() + fill()` 绘制，粒子连线先通过包络盒快速剪枝（`|dx| > 110 || |dy| > 110`），再按距离归入 3 个透明度桶批量 `stroke()`，每帧 Canvas 绘制调用从 ~500 次降至 4 次；
   2. 在 `leaving` 触发或标签页后台隐藏时立即终止 `requestAnimationFrame` 循环（保留画布最后一帧静态画面平滑淡出）；
   3. 离场过渡改为纯 GPU 合成器属性 `opacity + transform: scale(1.04) translateZ(0)`，并在 `leaving` 开始瞬间设置 `pointerEvents: "none"` 立即释放底层画廊交互。
+- **本项提交 Hash**：`2f129dc2f5d5519550593bd63845daa892ca6c78` (`2f129dc`)
 - **单独回滚到优化项 3（撤销优化项 4）**：
   ```bash
   git reset --hard 820cd18c34cdcfa1efbbcb469dabb573d3c4d4fe
+  ```
+
+---
+
+## 优化项 5：批量上传进度节流、元数据面板 `Memo` 化、相册树 $O(N)$ 索引与设置页可见性感知轮询 (`UploadDialog.tsx`, `MetaPanel.tsx`, `AdminTabs.tsx`, `SystemTab.tsx`)
+
+- **回滚锚点（上一提交）**：`2f129dc2f5d5519550593bd63845daa892ca6c78`
+- **涉及文件**：`src/components/UploadDialog.tsx`、`src/components/MetaPanel.tsx`、`src/components/settings/AdminTabs.tsx`、`src/components/settings/SystemTab.tsx`
+- **问题根因**：
+  1. `UploadDialog.tsx` 在多文件并发上传时，每个文件的 `xhr.upload.onprogress` 每秒触发数十次并调用 `setJobs(js.map(...))`，导致整个文件列表（可能包含上百个带有 `.glass` `backdrop-filter` 的 `<li>` 节点）每秒全量重渲染上百次；同时相册下拉树构建递归执行 `albums.filter` 为 $O(N^2)$ 复杂度；
+  2. `MetaPanel.tsx` 未做 `memo` 缓存，在查看器中输入下载密钥或编辑备注时，每次按键都会触发 EXIF/XMP/AI 提示词/原始元数据分组的重新遍历与子组件重渲染；
+  3. `AdminTabs.tsx` 的 `AlbumManager` 在渲染每一行相册时都调用 `albums.filter((a) => a.parent === code).length`（$O(N^2)$），且与 `SystemTab.tsx` 的 3s/5s/10s 轮询在浏览器标签页处于后台时仍持续请求并触发状态更新。
+- **优化措施（维持原有页面布局不变）**：
+  1. 对 `UploadDialog.tsx` 的 `xhr.upload.onprogress` 增加 ≥2% 步长节流，抽离 `React.memo(FileJobRow)` 使单文件进度变化仅重渲染自身行，移除模态框内部列表项重复叠加的 `backdrop-filter`，并将相册树展开算法由 $O(N^2)$ 优化为 $O(N)$ 邻接表遍历；
+  2. 为 `MetaPanel.tsx` 增加 `React.memo` 与 `useMemo` 解析结果缓存，使查看器交互（输入密钥、编辑备注、切换全屏）期间元数据侧栏零重算；
+  3. 在 `AdminTabs.tsx` 中用 `childCountMap` 预计算子相册数量（$O(1)$ 查询），并在 `AdminTabs.tsx` 与 `SystemTab.tsx` 中增加 `document.visibilityState` 感知与时区 `Intl.DateTimeFormat` 缓存。
+- **单独回滚到优化项 4（撤销优化项 5）**：
+  ```bash
+  git reset --hard 2f129dc2f5d5519550593bd63845daa892ca6c78
   ```

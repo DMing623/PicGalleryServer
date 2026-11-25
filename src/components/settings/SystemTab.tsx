@@ -151,21 +151,34 @@ export default function SystemTab() {
 
   useEffect(() => {
     let alive = true;
-    const load = () => api<Status>("/status").then((r) => alive && setS(r)).catch((e) => alive && setMsg(e.message));
+    const load = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      api<Status>("/status").then((r) => alive && setS(r)).catch((e) => alive && setMsg(e.message));
+    };
+    const loadCorruptVisible = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      void loadCorrupt();
+    };
     void load();
     void loadCorrupt();
+    const onVis = () => {
+      if (document.visibilityState !== "hidden") {
+        void load();
+        void loadCorrupt();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
     const t = setInterval(load, 3000);
-    const t2 = setInterval(() => void loadCorrupt(), 10000);
+    const t2 = setInterval(loadCorruptVisible, 10000);
     return () => {
       alive = false;
+      document.removeEventListener("visibilitychange", onVis);
       clearInterval(t);
       clearInterval(t2);
     };
   }, [loadCorrupt]);
 
-  if (!s) return <p className="muted text-sm">{msg || "加载中…"}</p>;
-  const c = s.counts;
-  const nowInTz = (() => {
+  const tzFmt = useMemo(() => {
     try {
       return new Intl.DateTimeFormat("zh-CN", {
         timeZone: tz,
@@ -176,11 +189,15 @@ export default function SystemTab() {
         minute: "2-digit",
         second: "2-digit",
         hour12: false,
-      }).format(new Date());
+      });
     } catch {
-      return "—";
+      return null;
     }
-  })();
+  }, [tz]);
+
+  if (!s) return <p className="muted text-sm">{msg || "加载中…"}</p>;
+  const c = s.counts;
+  const nowInTz = tzFmt ? tzFmt.format(new Date()) : "—";
 
   async function saveTz(next: string) {
     setTz(next);

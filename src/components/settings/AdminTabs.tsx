@@ -191,16 +191,29 @@ export function AlbumManager() {
 
   useEffect(() => {
     void load();
-    const h = () => void load();
+    const h = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") void load();
+    };
     window.addEventListener("pgs:albums", h);
-    const t = setInterval(load, 5000);
+    document.addEventListener("visibilitychange", h);
+    const t = setInterval(h, 5000);
     return () => {
       window.removeEventListener("pgs:albums", h);
+      document.removeEventListener("visibilitychange", h);
       clearInterval(t);
     };
   }, [load]);
 
   const byCode = useMemo(() => new Map(albums.map((a) => [a.code, a])), [albums]);
+
+  /** 预计算每个父相册下的直接子相册数量,避免列表渲染时 O(N^2) 过滤 */
+  const childCountMap = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const a of albums) {
+      if (a.parent) m.set(a.parent, (m.get(a.parent) ?? 0) + 1);
+    }
+    return m;
+  }, [albums]);
 
   /** 只显示当前层级的相册(子相册默认隐藏,点文件夹图标进入) */
   const current = useMemo(() => {
@@ -210,7 +223,7 @@ export function AlbumManager() {
 
   const crumbs = useMemo(() => path.map((c) => byCode.get(c)).filter((a): a is AlbumDto => !!a), [path, byCode]);
 
-  const childCount = useCallback((code: string) => albums.filter((a) => a.parent === code).length, [albums]);
+  const childCount = useCallback((code: string) => childCountMap.get(code) ?? 0, [childCountMap]);
 
   async function create() {
     const name = await dlg.prompt({ title: "新建相册", label: "相册名称", placeholder: "例如:旅行", confirmText: "创建", validate: (v) => (v ? (v.length > 80 ? "名称过长(最多 80 字)" : null) : "请输入相册名称") });
