@@ -91,7 +91,7 @@ export const config = {
   sessionSecret: secret.secret,
   sessionSecretSource: secret.source,
   sessionDays: int("SESSION_DAYS", 30, 1, 365),
-  cookieSecure: process.env.COOKIE_SECURE === "true",
+  cookieSecure: flag("COOKIE_SECURE", false),
   dataDir,
   /** 缩略图/预览图(图片)生成并发数 */
   thumbConcurrency: int("THUMB_CONCURRENCY", Math.min(4, cpu), 1, 128),
@@ -211,7 +211,7 @@ export const config = {
         endpoint: process.env.S3_ENDPOINT?.trim() || undefined,
         accessKeyId: process.env.S3_ACCESS_KEY?.trim() || "",
         secretAccessKey: process.env.S3_SECRET_KEY?.trim() || "",
-        forcePathStyle: process.env.S3_FORCE_PATH_STYLE !== "false",
+        forcePathStyle: flag("S3_FORCE_PATH_STYLE", true),
         prefix: (process.env.S3_PREFIX?.trim() || "").replace(/^\/+|\/+$/g, ""),
       }
     : null,

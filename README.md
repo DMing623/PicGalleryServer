@@ -11,7 +11,7 @@
 
 - **相册分类 + 嵌套相册**:可在数据目录里新建相册;也可以把 VPS 上任意位置的绝对路径目录"挂载"为相册,子目录自动变成嵌套子相册,原文件不搬家。
 - **本地 / 对象存储**:原文件可放在服务器本地,也可放在 S3 兼容的对象存储。
-- **自动缩略图与预览图**:生成速度可控(并发数可在 `.env` 配置,默认 15),不会把 CPU 和内存打满。
+- **自动缩略图与预览图**:生成速度可控(并发数可在 `.env` 配置,默认 `min(4, CPU 核数)`),不会把 CPU 和内存打满。
 - **详尽元数据**:相机型号/镜头/光圈快门 ISO/GPS/时间等 EXIF 信息;PNG 文本信息;Stable Diffusion、NovelAI、ComfyUI 等 AI 生成图的提示词与参数;视频编码、分辨率、码率等。详情页只显示文件里实际存在的字段(名称/备注/分辨率/相册/ID/上传时间/格式为必备条目)。
 - **文件链接**:每张图片/视频下方都有可复制的文件链接(直链、HTML、Markdown),可嵌入博客。
 - **管理员备注**:管理员可为任意图片/视频添加备注(只保存在数据库,不改动原文件),游客只读。
@@ -182,9 +182,12 @@ location ~ ^/api/v1/media/[^/]+/hd {
 | 2C4G | `THUMB_CONCURRENCY=3`、`VIDEO_CONCURRENCY=2`、`HD_CONCURRENCY=2`、`HD_CACHE_MAX_MB=1024` |
 | 8C16G | `THUMB_CONCURRENCY=6`、`VIDEO_CONCURRENCY=3`、`HD_CONCURRENCY=4`、`HD_CACHE_MAX_MB=4096` |
 
-> 容器部署时请同时设 `NODE_OPTIONS=--max-old-space-size=...`,让 V8 堆上限与容器内存限制匹配,否则可能被 OOM Killer 直接杀掉。
+> **docker compose 部署**:`.env` 里的性能/安全/存储类变量(`THUMB_CONCURRENCY`、`HD_*`、`COOKIE_SECURE`、`MAX_UPLOAD_MB`、`S3_*` …)由 `docker-compose.yml` 逐项映射进容器,**无前缀名直接生效**(旧的 `PGS_THUMB_CONCURRENCY` 等仍兼容);不设置时使用程序默认值(图片并发按 CPU 核数自适应)。新增配置项必须同步写进 compose 映射,`node scripts/check-config.mjs` 会校验。
+> 验证是否生效:`docker compose exec app printenv | grep -E 'HD_|THUMB_|COOKIE_SECURE'`,以及管理员登录后 `GET /api/v1/status` 的 `config` 字段。
+>
+> 容器部署时请同时设 `PGS_NODE_HEAP_MB`(compose 会转成 `--max-old-space-size`),让 V8 堆上限与容器内存限制匹配(约为 `mem_limit` 的 25%~35%,默认 1024 不适合 1GB 机器),否则可能被 OOM Killer 直接杀掉。
 
-### 实测数据(v1.3.5,4 vCPU / 8GB 容器 / PostgreSQL 16)
+### 实测数据(v1.3.5,4 vCPU / 8GB 容器 / PostgreSQL 16,NASA 素材;为历史数据,v1.5 起的基线见 `scripts/bench/README.md`)
 
 以下数据来自真实 NASA Image Library 素材(99 个文件,含 30MB 与 42MB 的 TIFF、100MP PNG、MP4 视频)在容器内实测,可作为容量规划参考:
 
