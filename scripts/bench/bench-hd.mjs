@@ -13,6 +13,7 @@
  *   hit-guest  ×24        游客 + 同一张图:游客水印成品缓存命中(几乎不占 CPU/内存)
  *   hit-user   ×24        登录用户 + 同一张图:基图命中但每次都要合成带 U-XXXXXX 的水印(最重的命中路径)
  *   mixed      2 大 + 22 小,游客/登录用户交替,大图未命中
+ * CI:--assert 打开宽松断言(全部 200、游客成品缓存命中、峰值/耗时不越过很宽的上限),失败退出码 1。
  * 选项:--big-mp N(默认 12)  --big N(默认 14 张,须 ≥ 14:12 张给 miss 场景,2 张给 mixed 场景)  --keep(保留工作目录)  --port N(默认 3300)  --work DIR
  */
 import { Client, sleep, waitProcessed } from "../lib/harness.mjs";
@@ -111,7 +112,24 @@ try {
   console.log(`服务端准入统计:${JSON.stringify(status?.queue?.admission ?? null)}`);
   const bad = rows.filter((r) => r.ok !== r.conc);
   if (bad.length) console.log(`\n⚠ 有场景存在非 200 响应(503 = 内存预算排队超时属预期的保护行为;其它状态请排查):${bad.map((r) => r.scen + "×" + r.conc).join(", ")}`);
+  if (a.assert) {
+    // 宽松断言(CI 用):只防「明显坏了」,不卡机器差异。阈值可用 --assert-peak-mb / --assert-hit-ms 调整
+    const peakMax = Number(a["assert-peak-mb"] || 3000);
+    const hitMs = Number(a["assert-hit-ms"] || 8000);
+    const errs = [];
+    for (const r of rows) {
+      if (r.ok !== r.conc) errs.push(`${r.scen}×${r.conc}: 只有 ${r.ok}/${r.conc} 个 200`);
+      if (r.peak != null && r.peak > peakMax) errs.push(`${r.scen}×${r.conc}: 峰值 ${Math.round(r.peak)}MB > ${peakMax}MB`);
+    }
+    const hg = rows.find((r) => r.scen === "hit-guest");
+    if (hg && !/wm:hit×/.test(hg.states)) errs.push(`hit-guest 没有命中游客水印成品缓存(${hg.states})`);
+    if (hg && hg.totalMs > hitMs) errs.push(`hit-guest 总耗时 ${hg.totalMs}ms > ${hitMs}ms`);
+    if (errs.length) {
+      console.error(`\n✗ 断言失败:\n  ${errs.join("\n  ")}`);
+      process.exitCode = 1;
+    } else console.log("\n✓ 宽松断言通过");
+  }
 } finally {
   await ctx.stop();
 }
-process.exit(0);
+process.exit(process.exitCode ?? 0);

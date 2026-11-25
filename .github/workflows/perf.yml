@@ -1,0 +1,45 @@
+# 性能/内存回归(T-1):手动或每周触发,PR 默认不跑(机器差异会造成抖动)。
+# 用合成素材(含隔行 PNG / 渐进 JPEG / CMYK TIFF)跑 bench-memory / bench-hd / bench-queue 的 --quick 版本,
+# 断言都很宽松:只防「明显坏了」(请求失败、游客水印成品缓存失效、小图被大图堵死、峰值远超预期),不做精确对比。
+# 精确对比请在固定环境用 scripts/bench/* 的 --compare(见 scripts/bench/README.md)。
+name: Perf
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: 构建
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          DATABASE_URL: postgresql://build:build@127.0.0.1:5432/build
+      - name: 合成素材 + 解码内存基准(derive/hd × 并发)
+        run: |
+          node scripts/bench/generate-images.mjs --out /tmp/pgs-bench --quick
+          node scripts/bench/bench-memory.mjs --dir /tmp/pgs-bench --only progressive --conc 1,4 --save /tmp/bench-memory.json
+      - name: HD 黑盒基准(游客水印成品缓存 / 登录用户合成)
+        run: node scripts/bench/bench-hd.mjs --quick --assert --save /tmp/bench-hd.json
+      - name: 队列黑盒基准(小图吞吐 / 大图 + 小图)
+        run: node scripts/bench/bench-queue.mjs --quick --assert --save /tmp/bench-queue.json
+      - name: 上传基准结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: /tmp/bench-*.json

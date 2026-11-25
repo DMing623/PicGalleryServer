@@ -176,16 +176,22 @@ location ~ ^/api/v1/media/[^/]+/hd {
 
 ### 资源建议
 
-| 规格 | 建议配置 |
-|---|---|
-| 1C1G | `THUMB_CONCURRENCY=2`、`VIDEO_CONCURRENCY=1`、`HEIC_CONCURRENCY=1`、`HD_CONCURRENCY=1`、`HD_CACHE_MAX_MB=256` |
-| 2C4G | `THUMB_CONCURRENCY=3`、`VIDEO_CONCURRENCY=2`、`HD_CONCURRENCY=2`、`HD_CACHE_MAX_MB=1024` |
-| 8C16G | `THUMB_CONCURRENCY=6`、`VIDEO_CONCURRENCY=3`、`HD_CONCURRENCY=4`、`HD_CACHE_MAX_MB=4096` |
+| 规格 | 容器限制(`mem_limit` / `cpus`) | 建议配置(写进 `.env`) | 程序自动推导的媒体内存预算 |
+|---|---|---|---|
+| 1C1G | `1g` / `1.0` | `PGS_NODE_HEAP_MB=320`、`THUMB_CONCURRENCY=2`、`VIDEO_CONCURRENCY=1`、`HEIC_CONCURRENCY=1`、`HD_CONCURRENCY=1`、`SHARP_CONCURRENCY=1`、`UV_THREADPOOL_SIZE=4`、`HD_CACHE_MAX_MB=256` | ≈ 430 MB |
+| 2C4G | `4g` / `2.0` | `PGS_NODE_HEAP_MB=1200`、`THUMB_CONCURRENCY=3`、`VIDEO_CONCURRENCY=2`、`HD_CONCURRENCY=2`、`UV_THREADPOOL_SIZE=8`、`HD_CACHE_MAX_MB=1024` | ≈ 2048 MB(上限) |
+| 8C16G | `16g` / `8.0` | `PGS_NODE_HEAP_MB=2048`、`THUMB_CONCURRENCY=6`、`VIDEO_CONCURRENCY=3`、`HD_CONCURRENCY=4`、`HD_CACHE_MAX_MB=4096` | ≈ 2048 MB(上限) |
+
+- **`mem_limit` 要真的设**:`docker-compose.yml` 里 `mem_limit` / `cpus` 默认注释着,取消注释即可。程序读取 cgroup 内存上限来推导预算与压力水位;不设上限时按宿主机内存推导,**在小内存机器上等于没有保护**。
+- **堆上限 ≈ 容器内存的 25%~35%**(`PGS_NODE_HEAP_MB`,compose 转成 `--max-old-space-size`):内存大头是 libvips 的原生缓冲区,不受堆上限约束,堆设得太大只会挤占它的空间。
+- **媒体内存预算**(`MEDIA_BUDGET_MB`,默认自动):`(容器内存 × 0.85 − 250MB) × 0.7`,夹在 256~2048MB 之间。后台缩略图、HEIC、视频、高清预览共用这一份预算——**按像素与格式估算每个任务的内存**(渐进 JPEG / 隔行 PNG / CMYK 比普通图重得多),放不下就排队;单个任务估算超过 `MEDIA_MAX_EST_MB`(默认预算 × 1.5)直接以 `[LIMIT]` 拒绝并保留原文件。`/api/v1/status` 的 `config.mediaBudget.derivation` 会展示推导过程;`MEDIA_BUDGET_MB=0` 关闭预算(回到只按并发数限制)。
+- **内存压力保护**(`MEDIA_PRESSURE_GUARD`,默认开):运行时按 cgroup 的 `anon` 水位(不含可回收页缓存)分 normal / elevated / high / critical 四档,逐级收紧准入;预估有误差时它是兜底。
+- 上表的并发数是**起点**;改完用 `/api/v1/status`(`memory` / `queue.admission` / `eventLoop`)观察一轮批量导入再调整。想在自己的机器上量一遍,见 `scripts/bench/README.md` 与 `scripts/bench-docker.sh`。
 
 > **docker compose 部署**:`.env` 里的性能/安全/存储类变量(`THUMB_CONCURRENCY`、`HD_*`、`COOKIE_SECURE`、`MAX_UPLOAD_MB`、`S3_*` …)由 `docker-compose.yml` 逐项映射进容器,**无前缀名直接生效**(旧的 `PGS_THUMB_CONCURRENCY` 等仍兼容);不设置时使用程序默认值(图片并发按 CPU 核数自适应)。新增配置项必须同步写进 compose 映射,`node scripts/check-config.mjs` 会校验。
 > 验证是否生效:`docker compose exec app printenv | grep -E 'HD_|THUMB_|COOKIE_SECURE'`,以及管理员登录后 `GET /api/v1/status` 的 `config` 字段。
 >
-> 容器部署时请同时设 `PGS_NODE_HEAP_MB`(compose 会转成 `--max-old-space-size`),让 V8 堆上限与容器内存限制匹配(约为 `mem_limit` 的 25%~35%,默认 1024 不适合 1GB 机器),否则可能被 OOM Killer 直接杀掉。
+> 容器部署时请同时设 `PGS_NODE_HEAP_MB`,让 V8 堆上限与容器内存限制匹配(默认 1024 不适合 1GB 机器),否则可能被 OOM Killer 直接杀掉;`UV_THREADPOOL_SIZE` 镜像默认 12,1C1G 建议 4(compose 已映射,`.env` 直接写)。
 
 ### 实测数据(v1.3.5,4 vCPU / 8GB 容器 / PostgreSQL 16,NASA 素材;为历史数据,v1.5 起的基线见 `scripts/bench/README.md`)
 
@@ -232,12 +238,16 @@ location ~ ^/api/v1/media/[^/]+/hd {
 | `DATA_DIR` | 数据目录 |
 | `THUMB_CONCURRENCY` | 图片处理并发,默认 `min(4, CPU)` |
 | `VIDEO_CONCURRENCY` / `HEIC_CONCURRENCY` | 视频与 HEIC 解码的独立并发上限(默认 2 / 1) |
+| `MEDIA_BUDGET_MB` / `MEDIA_MAX_EST_MB` | 媒体处理内存预算(软,按容器内存自动推导,0 = 关闭)/ 单任务估算硬上限(超过以 `[LIMIT]` 拒绝) |
+| `MEDIA_MAX_INPUT_MP` / `SHARP_CONCURRENCY` | 派生图输入像素上限(默认 268MP,超过以 `[LIMIT]` 拒绝,不会删除原文件)/ 单个 libvips 任务的内部线程数(默认 2,低内存机器设 1) |
+| `MEDIA_PRESSURE_GUARD` | 动态内存压力保护,默认开启 |
+| `SCAN_MAX_DEPTH` | 挂载目录递归扫描的最大深度,默认 32 |
 | `MAX_UPLOAD_MB` | 单文件上传上限,默认 2048,0 = 不限 |
 | `MIN_FREE_DISK_MB` | 剩余磁盘低于该值拒绝上传,默认 1024 |
 | `CORRUPT_AUTO_PURGE_HOURS` | 疑似损坏文件(处理失败)在停止上传满该小时数后自动清理,默认 5,0 = 关闭 |
 | `ALLOWED_MOUNT_ROOTS` | 限制可挂载的目录范围(留空时只允许数据目录与 `/photos /mnt /media /srv /home /volume1`) |
 | `TRUST_PROXY` | 信任几层反向代理,默认 0(只信反代覆盖的 `X-Real-IP`) |
-| `ALLOWED_HOSTS` | 生成链接/水印时可用的 Host 白名单 |
+| `ALLOWED_HOSTS` | 生成链接/水印时可用的 Host 白名单;**同时决定 HD 游客水印成品能否缓存**(见 `.env.example`,建议直接设 `PUBLIC_BASE_URL`) |
 | `GUEST_META` / `GUEST_NOTE` | 游客可见的元数据级别(`full|basic|none`)与是否可见管理员备注 |
 | `S3_*` | 对象存储(可选) |
 | `HD_WM_OPACITY` | 高清预览水印透明度(默认 8,数值越大越明显) |

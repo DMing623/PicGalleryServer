@@ -13,6 +13,7 @@
  *   jpeg-100          100 张 0.3MP JPEG:纯小图吞吐,作对照
  *   big-plus-small    1 张大图(默认 24MP)+ 20 张小图同时入队:小图不应被大图堵到最后(预算 + 老化)
  *   heic-plus-jpeg    N 张真实 HEIC + 100 张 JPEG(需要 --real):JPEG 不应被 HEIC 拖到最后,HEIC 也不应被饿死
+ * CI:--assert 打开宽松断言(不堵、无失败、峰值不越过很宽的上限),失败退出码 1。
  * 指标:全部完成总耗时、单文件「上传完成 → 状态不再是 pending」的 p50/p95、JPEG/小图的最后完成时刻、峰值 RSS、队列峰值 waiting。
  */
 import fs from "node:fs";
@@ -124,7 +125,23 @@ try {
   console.log(`\n服务端队列统计:${JSON.stringify(status?.queue?.admission ?? null)}`);
   const failed = (await ctx.admin.get("/status/corrupt?limit=5")).data;
   if (failed?.total) console.log(`⚠ 有 ${failed.total} 个文件处理失败,请排查(基准素材不应失败)`);
+  if (a.assert) {
+    const peakMax = Number(a["assert-peak-mb"] || 3000);
+    const errs = [];
+    for (const r of rows) {
+      if (r.peak != null && r.peak > peakMax) errs.push(`${r.scen}: 峰值 ${Math.round(r.peak)}MB > ${peakMax}MB`);
+      if (r.totalMs > 10 * 60_000) errs.push(`${r.scen}: 全部完成耗时 ${r.totalMs}ms 过长`);
+    }
+    const bs = rows.find((r) => r.scen === "big-plus-small");
+    // 小图不应被 1 张大图堵到最后:小图最后完成时刻不应远晚于大图本身
+    if (bs && bs.bigDoneMs != null && bs.smallLastMs != null && bs.smallLastMs > bs.bigDoneMs * 10 + 20_000) errs.push(`big-plus-small: 小图最后完成 ${bs.smallLastMs}ms,大图 ${bs.bigDoneMs}ms(疑似小图被堵)`);
+    if (failed?.total) errs.push(`有 ${failed.total} 个基准文件处理失败`);
+    if (errs.length) {
+      console.error(`\n✗ 断言失败:\n  ${errs.join("\n  ")}`);
+      process.exitCode = 1;
+    } else console.log("\n✓ 宽松断言通过");
+  }
 } finally {
   await ctx.stop();
 }
-process.exit(0);
+process.exit(process.exitCode ?? 0);

@@ -11,13 +11,17 @@
 | `lib/harness.mjs` | 公共库:断言计数、HTTP 客户端(每请求随机来源 IP 避免互相限流)、服务进程启停(含残留检测、SIGBUS/意外退出提示)、PostgreSQL 重建库、轮询工具 | 被其它脚本 import |
 | `test-e2e.mjs` | **REST API 端到端**(约 400 条断言,分 11 个章节,可用 `ONLY=` 单跑) | 对已运行的服务 |
 | `test-cli.mjs` | **命令行 `cli/pgs.mjs`** 全部子命令 + 错误路径(约 85 条断言) | 对已运行的服务 |
-| `test-hd.mjs` | 高清预览(HD):令牌/水印/缓存/限流/异常批量访问封禁(约 49 条断言) | 对已运行的服务,需要 `DATA_DIR` 与 `SESSION_SECRET` |
+| `test-hd.mjs` | 高清预览(HD):令牌/水印/缓存/限流/异常批量访问封禁、**游客水印成品缓存**(命中/权限重校验/Key 隔离/伪造 Host/登录用户不串用/替换与删除失效)、BMP 高清预览(约 75 条断言) | 对已运行的服务,需要 `DATA_DIR` 与 `SESSION_SECRET`;水印成品缓存要求服务配置 `ALLOWED_HOSTS` 或 `PUBLIC_BASE_URL`(matrix/docker 脚本已配置,未配置时相关断言降级为校验「不缓存」) |
+| `test-media.mjs` | 媒体内存治理:`/status` 观测字段、超像素上限 → `[LIMIT]`、自动清理绝不删 `[LIMIT]` 原文件、重处理幂等、预算归零 | 服务须以 `MEDIA_MAX_INPUT_MP=10` 启动(matrix/docker 脚本自动处理) |
 | `test-matrix.mjs` | **一键编排**:对 PostgreSQL 与 SQLite 各起一个全新服务,依次跑 e2e → cli → hd → 重启持久化检查,并扫描服务日志里的未处理异常 | 本机全链路入口 |
-| `test-docker.sh` | **容器镜像测试**:用 docker 起真实镜像(Postgres/SQLite 各一轮),宿主机跑 e2e/cli/hd,再检查非 root、ffmpeg、jemalloc、HEALTHCHECK、重启持久化 | 需要 Docker(例如 InstaBox 测试机) |
-| `instabox-test.sh` | 在 **InstaBox** 测试机上更新容器到新镜像并跑 `test-docker.sh` | 需要 `INSTABOX_API_KEY` |
+| `test-docker.sh` | **容器镜像测试**:用 docker 起真实镜像(Postgres/SQLite 各一轮),宿主机跑 e2e/cli/hd,再检查应用进程 uid、ffmpeg、jemalloc、数据目录可写、**无前缀环境变量真正进容器并生效**、cgroup 观测与预算推导、重启持久化、HEALTHCHECK;最后单起一个容器跑 `test-media`。`RUN_AS=1000`/任意 uid 可模拟「平台以非 root 直接启动镜像」,`MEM_LIMIT`/`CPUS` 带 cgroup 限制运行 | 需要 Docker;**宿主机用户也不必是 root**(`DOCKER="sudo docker"` 即可;容器写出的文件用一次性 root 容器清理) |
+| `test-compose.sh` | **compose 变量传递校验**:`docker compose config` 展开不同 `.env`,验证无前缀名直接生效、`PGS_*` 旧名兼容且无前缀优先、不设置时传空串(默认值交还 `config.ts`)、必填项缺失即报错、镜像默认 tag = `package.json` 版本;并跑 `check-config` | 只需 `docker compose` CLI,**不启动容器、不需要守护进程、不需要 root** |
+| `bench-docker.sh` | 在**真实镜像**里按 1G/2G/4G 档位(`--memory`/`--cpus`、jemalloc、非 root)跑 `bench/*` 基准并把结果落到宿主机目录 | 需要 Docker;结果用于校准估算系数、写进 `bench/README.md` |
+| `instabox-test.sh` | 在 **InstaBox** 测试机上更新容器到新镜像并跑 `test-docker.sh`(`EXTRA_ENV="RUN_AS=1000 MEM_LIMIT=1g"` 可传入) | 需要 `INSTABOX_API_KEY` |
+| `check-docs.mjs` | **文档 ↔ 代码一致性**(零依赖,秒级):`route()` 清单 ↔ `project.md` §8、`config.ts` 环境变量 ↔ 文档、文件清单 ↔ §3 目录树(双向)、版本号(`package.json` ↔ lock ↔ §0 版本表)、文档里的仓库路径引用是否存在 | 无需构建/数据库/Docker/root;CI 与提交前必跑 |
 | `check-config.mjs` | **静态一致性校验**(零依赖,秒级):代码读取的环境变量 ↔ compose 映射 ↔ `.env.example`、版本号 ↔ `PGS_TAG`、`schema.ts` ↔ `bootstrap.ts` 的 PG/SQLite DDL | 无需构建/数据库/Docker/root;CI 与提交前必跑 |
 | `test-unit.mjs` + `unit/*.test.mjs` | **纯逻辑单元测试**(`node:test`):cgroup 解析、准入控制、内存估算、压力状态机等不依赖 sharp/DB 的模块 | Node ≥ 22.6;不需要构建 |
-| `bench/` | **内存/耗时基准**(合成素材 + 真实素材),详见 `bench/README.md` | 不需要 root/联网/DB |
+| `bench/` | **内存/耗时基准**:`bench-memory`(sharp 解码本身)、`bench-hd`(HD 水印/成品缓存)、`bench-queue`(队列分池/大小图混合/HEIC 混合)、`bench-scan`(挂载目录扫描),详见 `bench/README.md` | 不需要 root/联网/DB;`bench-hd`/`bench-queue` 需先 `npm run build` |
 | `cleanup-image-versions.py` | 清理 GHCR 旧镜像(CI 用) | 与测试无关 |
 
 ### e2e 章节(`ONLY=` 取值)
@@ -69,28 +73,59 @@ BASE=...             ADMIN_PASSWORD=xxx SAMPLES_DIR=/tmp/pgs-samples node script
 ### 2.3 Docker / InstaBox
 
 ```bash
-scripts/test-docker.sh ghcr.io/dming623/picgalleryserver:latest   # 有 docker 的任意机器
+scripts/test-docker.sh ghcr.io/dming623/picgalleryserver:latest   # 有 docker 的任意机器,默认按镜像默认方式启动
 DRIVERS=sqlite scripts/test-docker.sh                              # 只测 SQLite
+RUN_AS=1000 scripts/test-docker.sh                                 # docker run --user 1000:1000:容器从第一条指令起就是非 root(InstaBox 的方式)
+RUN_AS=12345 MEM_LIMIT=1g CPUS=1 scripts/test-docker.sh            # 任意非 root uid + 1C1G 的 cgroup 限制
+scripts/test-compose.sh                                            # compose 变量传递(不启动容器)
 ```
 
 InstaBox(把 `INSTABOX_API_URL`/`INSTABOX_API_KEY` 放进环境变量,**不要写入仓库**):
 
 ```bash
 export INSTABOX_API_URL=https://api.instabox.sh INSTABOX_API_KEY=ibk_...
-scripts/instabox-test.sh <机器名> [镜像标签]    # 更新容器到新镜像 + 跑 test-docker.sh,并保留原容器的恢复命令
+scripts/instabox-test.sh <机器名> [镜像标签]                       # 更新容器到新镜像 + 跑 test-docker.sh,并保留原容器的恢复命令
+EXTRA_ENV="RUN_AS=1000 MEM_LIMIT=1g" scripts/instabox-test.sh <机器名>
 ```
+
+**非 root 运行要点(脚本已处理,排错时对照)**:
+
+- 镜像默认以 root 启动 `pgs-entrypoint`,仅为修正旧数据目录属主,随后 `setpriv` 降权到 uid 1000,**应用进程始终非 root**。平台若直接用 `--user <uid>` 启动,入口脚本的 root 分支不会执行,此时数据卷必须**已经对该 uid 可写**(`test-docker.sh` 用 `chmod 777` 的宿主目录模拟)。
+- 判断应用 uid 不能用 `docker exec id -u`(`RUN_AS=entry` 时恒为 0),脚本遍历 `/proc` 取 `next-server` 进程的 `Uid:`;检查 jemalloc 同样以应用 uid 读 `/proc/*/maps`。
+- 容器写出的文件属主是 1000 或任意 uid,**宿主机普通用户删不掉**:脚本退出时用一次性 root 容器(`--entrypoint sh --user 0:0`)清理临时目录,不要手工 `sudo rm`。
+- 宿主机用户不在 `docker` 组:`DOCKER="sudo docker" scripts/test-docker.sh`(脚本里所有 docker 调用都走 `$DOCKER`)。
+- 日志里出现 `EACCES`:某个目录对运行 uid 不可写,`test-docker.sh` 会在末尾高亮打印相关日志行。
+
+#### Docker 验证清单(维护者在有 Docker 的机器上执行;开发环境无 Docker,以下均**未在容器内实跑过**)
+
+| # | 命令 | 期望 |
+|---|---|---|
+| 1 | `scripts/test-compose.sh` | 全部 ✓(compose 变量传递;无需守护进程) |
+| 2 | `scripts/test-docker.sh <新镜像>` | 全部 ✓;关注「配置传递与观测」「HD(水印成品缓存)」「媒体内存治理」三段 |
+| 3 | `RUN_AS=1000 scripts/test-docker.sh <新镜像>`(再试 `RUN_AS=12345`) | 同上;应用 uid = 指定值,无 `EACCES` |
+| 4 | `MEM_LIMIT=1g CPUS=1 scripts/test-docker.sh <新镜像>` | `cgroup.max` 非空,预算推导 `limitMb≈1024`,媒体预算 ≈ 430MB |
+| 5 | `TIERS="1g 2g 4g" scripts/bench-docker.sh <新镜像>` | 三档均完成;把表格里的 `peak` / `p95` 与 `README.md`「资源建议」对照,**用真实 HEIC 放进 `REAL_DIR` 再跑一轮 `queue`**,据此补测 `estimate.ts` 里 `low` 置信度的 HEIC/BMP/视频系数 |
+| 6 | 手工:`docker compose exec app printenv \| grep -E 'HD_\|THUMB_\|MEDIA_\|COOKIE_SECURE'` 与 `GET /api/v1/status` 的 `config` | 与 `.env` 一致;不设置时回落到默认(2 核容器 `thumbConcurrency` 自适应为 2) |
+| 7 | 手工:`docker stats` 下批量上传 + 打开大图,观察 `/status` 的 `queue.admission`、`memory.cgroup.anon`、`pressureState` | RSS 不越过 `mem_limit`;`pressureState` 偶尔 `elevated` 属正常 |
 
 ### 2.4 PR 前最小检查
 
 `npm run typecheck && npm run lint && npm run build && node scripts/test-matrix.mjs --drivers sqlite`
 (仓库的 `.github/workflows/test.yml` 在 CI 里用 PostgreSQL 服务容器 + SQLite 跑同一套矩阵。)
 
-### 2.5 不需要构建/数据库的快速检查(推荐每次提交前)
+### 2.5 不需要构建/数据库的快速检查(推荐每次提交前;CI 的 `ci.yml` 也会跑)
 
 ```bash
-node scripts/check-config.mjs     # 配置/文档/数据库自举一致性
+node scripts/check-config.mjs     # 环境变量 ↔ compose 映射 ↔ .env.example ↔ 数据库自举 ↔ 版本号
+node scripts/check-docs.mjs       # project.md 与代码是否漂移(路由 / 环境变量 / 文件清单 / 版本 / 路径引用)
 node scripts/test-unit.mjs        # 纯逻辑单测
 ```
+
+### 2.6 性能/内存回归
+
+- **本机/CI 冒烟**:`.github/workflows/perf.yml`(手动或每周)跑 `bench-memory` / `bench-hd --assert` / `bench-queue --assert` 的 `--quick` 版本,断言很宽松,只防「明显坏了」。
+- **精确对比**:固定环境(同机/同容器档位/同素材/同 `--quick`)用 `--save` + `--compare`,**内存与耗时一起看**,见 `bench/README.md`。
+- 改了队列 / 闸门 / 准入 / 估算 / HD 流程后,必须重跑 `bench-hd` 与 `bench-queue` 并把结果同步到 `project.md` §17。
 
 ## 3. 环境变量速查
 
@@ -102,6 +137,11 @@ node scripts/test-unit.mjs        # 纯逻辑单测
 | `PORT_BASE` | 矩阵起始端口(pg=+0, sqlite=+1) | 3100 |
 | `TEST_TMP` | 临时目录根 | `/tmp` |
 | `BASE` `ADMIN_USER` `ADMIN_PASSWORD` `DATA_DIR` `MOUNT_HOST_DIR` `MOUNT_SERVER_DIR` `HAS_VIDEO` `OFFLINE` `ONLY` | 单脚本参数,见各脚本头注释 | |
+| `DOCKER` | docker 命令(`test-docker.sh` / `test-compose.sh` / `bench-docker.sh`) | `docker` |
+| `RUN_AS` | `test-docker.sh`:`entry`(镜像默认)或数字 uid[:gid](`--user`);`bench-docker.sh`:数字 uid[:gid] | `entry` / `1000` |
+| `MEM_LIMIT` `CPUS` | `test-docker.sh`:容器 `--memory` / `--cpus` | 无 |
+| `SKIP_MEDIA` | `test-docker.sh`:设 1 跳过 `test-media` 阶段 | 0 |
+| `TIERS` `SUITES` `QUICK` `OUT` `REAL_DIR` | `bench-docker.sh`:内存档位、套件(memory hd queue scan)、是否缩小素材、结果目录、真实 HEIC 目录 | `1g 2g 4g` / `memory hd queue` / 1 / `./bench-out` / 无 |
 
 ## 4. 退出码与排错
 
@@ -131,4 +171,5 @@ node scripts/test-unit.mjs        # 纯逻辑单测
 
 - s3 存储未覆盖正向链路(需要 MinIO/S3);挂载目录的软删除有宽限期(`MISSING_GRACE_MS`),因此「磁盘删除」后首次扫描只会 `missing=1`,不会立刻 `removed`。
 - 限流类测试(登录/搜索/密钥)用固定来源 IP,依赖默认 `TRUST_PROXY=0` 且信任 `X-Real-IP`;若服务放在会覆盖该头的反代后,这一章节会失败,属环境差异。
-- HEIC 未提供素材(需要真实 HEIC 文件),如需覆盖请自行放入 `SAMPLES_DIR/synth/` 并在 `test-e2e.mjs` 里追加。
+- HEIC 未提供素材(需要真实 HEIC 文件),如需覆盖请自行放入 `SAMPLES_DIR/synth/` 并在 `test-e2e.mjs` 里追加;基准侧把真实 `.heic` 放进 `bench` 的 `--real` / `REAL_DIR` 目录即可纳入。
+- 容器相关脚本(`test-docker.sh` / `bench-docker.sh` / `test-compose.sh`)开发环境无 Docker,**只做过 `bash -n` 语法检查与逻辑推演,未在容器内实跑**;首次实跑如有问题请把输出发回修正。
