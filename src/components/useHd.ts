@@ -7,7 +7,7 @@ import type { MediaItem } from "./Gallery";
 /**
  * 高清预览加载:
  *  1) GET /media/:id/hd-token  申请 90 秒短期令牌(只对该图片有效)
- *  2) GET /media/:id/hd?t=…    取得带水印的高清 WebP → Blob URL
+ *  2) GET /media/:id/hd?t=…    取得带水印的高清 WebP → Blob URL → 后台异步预解码(img.decode)
  *  - 仅使用已加载的高清预览图进行缩放,绝不请求原始文件
  *  - 只保留「当前 + 前一张 + 后一张」的 Blob URL,切换时立即 revoke,避免内存持续增长
  *  - 预加载最多 2 张(相邻图片),且在当前图加载完成后才开始
@@ -54,7 +54,22 @@ async function fetchHd(id: string, signal: AbortSignal): Promise<string> {
   });
   if (!res.ok) throw new Error(await errorOf(res));
   const blob = await res.blob();
-  return URL.createObjectURL(blob);
+  const url = URL.createObjectURL(blob);
+  try {
+    const pre = new Image();
+    pre.decoding = "async";
+    pre.src = url;
+    if (typeof pre.decode === "function") {
+      await pre.decode();
+    }
+  } catch {
+    /* 浏览器不支持或预解码被忽略时仍正常返回 Blob URL */
+  }
+  if (signal.aborted) {
+    URL.revokeObjectURL(url);
+    throw new DOMException("Aborted", "AbortError");
+  }
+  return url;
 }
 
 export function useHd(items: MediaItem[], index: number) {
@@ -124,7 +139,7 @@ export function useHd(items: MediaItem[], index: number) {
         const it = items[i];
         if (it && it.kind === "image") start(it.id);
       }
-    }, 250);
+    }, 180);
     return () => clearTimeout(t);
   }, [curStatus, index, items, start]);
 

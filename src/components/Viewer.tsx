@@ -88,6 +88,12 @@ interface View {
 
 const MAX_SCALE = 8;
 
+function applyTransform(el: HTMLDivElement | null, v: View, animate: boolean) {
+  if (!el) return;
+  el.style.transition = animate ? "transform .2s cubic-bezier(0.22, 1, 0.36, 1)" : "none";
+  el.style.transform = `translate3d(-50%, -50%, 0) translate3d(${v.x}px, ${v.y}px, 0) scale(${v.s})`;
+}
+
 function ZoomStage({
   src, natW, natH, zoomable, alt, onSwipe, children,
 }: {
@@ -100,29 +106,50 @@ function ZoomStage({
   children?: ReactNode;
 }) {
   const stage = useRef<HTMLDivElement>(null);
-  const [view, setView] = useState<View>({ s: 1, x: 0, y: 0 });
-  const viewRef = useRef(view);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const rectRef = useRef<{ left: number; top: number; width: number; height: number }>({ left: 0, top: 0, width: 0, height: 0 });
+  const viewRef = useRef<View>({ s: 1, x: 0, y: 0 });
+  const [zoomed, setZoomed] = useState(false);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [nat, setNat] = useState({ w: natW ?? 0, h: natH ?? 0 });
-  const [anim, setAnim] = useState(false);
   const ptrs = useRef(new Map<number, { x: number; y: number }>());
   const gest = useRef<{ kind: "none" | "pan" | "pinch"; sx: number; sy: number; v: View; dist: number; cx: number; cy: number; moved: number; t: number; type: string }>({
     kind: "none", sx: 0, sy: 0, v: { s: 1, x: 0, y: 0 }, dist: 0, cx: 0, cy: 0, moved: 0, t: 0, type: "mouse",
   });
   const lastTap = useRef({ t: 0, x: 0, y: 0 });
   const [grabbing, setGrabbing] = useState(false);
+  const grabbingRef = useRef(false);
 
-  const commit = useCallback((v: View) => {
+  const setGrabState = useCallback((next: boolean) => {
+    if (grabbingRef.current === next) return;
+    grabbingRef.current = next;
+    setGrabbing(next);
+  }, []);
+
+  const setContentNode = useCallback((node: HTMLDivElement | null) => {
+    contentRef.current = node;
+    if (node) applyTransform(node, viewRef.current, false);
+  }, []);
+
+  const commit = useCallback((v: View, animate = false) => {
+    const prevZoomed = viewRef.current.s > 1.001;
+    const nextZoomed = v.s > 1.001;
     viewRef.current = v;
-    setView(v);
+    applyTransform(contentRef.current, v, animate);
+    if (prevZoomed !== nextZoomed) setZoomed(nextZoomed);
   }, []);
 
   useEffect(() => {
     const el = stage.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
+    const syncRect = () => {
+      const r = el.getBoundingClientRect();
+      rectRef.current = { left: r.left, top: r.top, width: r.width, height: r.height };
+      setSize((prev) => (prev.w === el.clientWidth && prev.h === el.clientHeight ? prev : { w: el.clientWidth, h: el.clientHeight }));
+    };
+    const ro = new ResizeObserver(syncRect);
     ro.observe(el);
-    setSize({ w: el.clientWidth, h: el.clientHeight });
+    syncRect();
     return () => ro.disconnect();
   }, []);
 
@@ -148,8 +175,7 @@ function ZoomStage({
       const v = viewRef.current;
       const s = Math.min(MAX_SCALE, Math.max(1, newS));
       const r = s / v.s;
-      setAnim(animate);
-      commit(clamp({ s, x: px - r * (px - v.x), y: py - r * (py - v.y) }));
+      commit(clamp({ s, x: px - r * (px - v.x), y: py - r * (py - v.y) }), animate);
     },
     [clamp, commit],
   );
@@ -158,7 +184,11 @@ function ZoomStage({
   const zoomBy = (factor: number) => zoomAt(factor === 0 ? 1 : viewRef.current.s * factor, 0, 0, true);
 
   const rel = (e: { clientX: number; clientY: number }) => {
-    const r = stage.current!.getBoundingClientRect();
+    let r = rectRef.current;
+    if (!r.width && stage.current) {
+      const b = stage.current.getBoundingClientRect();
+      r = rectRef.current = { left: b.left, top: b.top, width: b.width, height: b.height };
+    }
     return { x: e.clientX - r.left - r.width / 2, y: e.clientY - r.top - r.height / 2 };
   };
 
@@ -170,7 +200,7 @@ function ZoomStage({
       e.preventDefault();
       const p = rel(e);
       const k = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0018));
-      zoomAt(viewRef.current.s * k, p.x, p.y);
+      zoomAt(viewRef.current.s * k, p.x, p.y, false);
     };
     el.addEventListener("wheel", h, { passive: false });
     return () => el.removeEventListener("wheel", h);
@@ -192,9 +222,13 @@ function ZoomStage({
 
   function down(e: React.PointerEvent) {
     if ((e.target as HTMLElement).closest("[data-nodrag]")) return;
-    stage.current?.setPointerCapture(e.pointerId);
+    if (stage.current) {
+      const b = stage.current.getBoundingClientRect();
+      rectRef.current = { left: b.left, top: b.top, width: b.width, height: b.height };
+      stage.current.setPointerCapture(e.pointerId);
+    }
     ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    setAnim(false);
+    if (contentRef.current) contentRef.current.style.transition = "none";
     const g = gest.current;
     g.type = e.pointerType;
     if (ptrs.current.size === 1) {
@@ -217,15 +251,15 @@ function ZoomStage({
       const s = Math.min(MAX_SCALE, Math.max(1, g.v.s * (dist / g.dist)));
       const r = s / g.v.s;
       // 以起始双指中心为不动点缩放,再叠加双指中心的平移
-      commit(clamp({ s, x: g.cx - r * (g.cx - g.v.x) + (c.x - g.cx), y: g.cy - r * (g.cy - g.v.y) + (c.y - g.cy) }));
-      setGrabbing(true);
+      commit(clamp({ s, x: g.cx - r * (g.cx - g.v.x) + (c.x - g.cx), y: g.cy - r * (g.cy - g.v.y) + (c.y - g.cy) }), false);
+      setGrabState(true);
     } else if (g.kind === "pan") {
       const dx = e.clientX - g.sx;
       const dy = e.clientY - g.sy;
       g.moved = Math.max(g.moved, Math.hypot(dx, dy));
       if (zoomable && g.v.s > 1.001) {
-        setGrabbing(true);
-        commit(clamp({ s: g.v.s, x: g.v.x + dx, y: g.v.y + dy }));
+        setGrabState(true);
+        commit(clamp({ s: g.v.s, x: g.v.x + dx, y: g.v.y + dy }), false);
       }
     }
   }
@@ -243,7 +277,7 @@ function ZoomStage({
     if (ptrs.current.size > 0) return;
     const wasPan = g.kind === "pan";
     g.kind = "none";
-    setGrabbing(false);
+    setGrabState(false);
     if (!wasPan) return;
     const dx = e.clientX - g.sx;
     const dy = e.clientY - g.sy;
@@ -263,7 +297,6 @@ function ZoomStage({
     if (g.type === "touch" && viewRef.current.s <= 1.001 && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.6) onSwipe(dx < 0 ? 1 : -1);
   }
 
-  const zoomed = view.s > 1.001;
   return (
     <div
       ref={stage}
@@ -277,23 +310,30 @@ function ZoomStage({
     >
       {fit > 0 && (
         <div
+          ref={setContentNode}
           style={{
-            position: "absolute", left: "50%", top: "50%", width: baseW, height: baseH,
-            transform: `translate(-50%,-50%) translate(${view.x}px,${view.y}px) scale(${view.s})`,
-            transformOrigin: "center", willChange: "transform", transition: anim ? "transform .2s ease" : "none",
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            width: baseW,
+            height: baseH,
+            transformOrigin: "center",
+            willChange: "transform",
           }}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={src}
             alt={alt}
+            decoding="async"
             draggable={false}
             onLoad={(e) => {
               const im = e.currentTarget;
-              if (im.naturalWidth && (!nat.w || zoomable)) setNat({ w: im.naturalWidth, h: im.naturalHeight });
+              if (im.naturalWidth && (!nat.w || zoomable)) {
+                setNat((prev) => (prev.w === im.naturalWidth && prev.h === im.naturalHeight ? prev : { w: im.naturalWidth, h: im.naturalHeight }));
+              }
             }}
             className="fade-in h-full w-full select-none object-fill shadow-2xl"
-            style={{ imageRendering: view.s > 3 ? "auto" : undefined }}
           />
         </div>
       )}
@@ -339,6 +379,8 @@ export default function Viewer({
   const { can } = useApp();
   const cur = items[index];
   const root = useRef<HTMLDivElement>(null);
+  const detailCache = useRef(new Map<string, Detail>());
+  const loadReqId = useRef(0);
   const [d, setD] = useState<Detail | null>(null);
   const [err, setErr] = useState("");
   const [panel, setPanel] = useState(false);
@@ -349,27 +391,46 @@ export default function Viewer({
   const [full, setFull] = useState(false);
   const hd = useHd(items, index);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (bypassCache = false) => {
+    const targetId = cur.id;
+    const req = ++loadReqId.current;
+    if (!bypassCache) {
+      const cached = detailCache.current.get(targetId);
+      if (cached && cached.status !== "pending") {
+        setD(cached);
+        setNote(cached.note);
+        setErr("");
+        return;
+      }
+    }
     try {
-      const x = await api<Detail>(`/media/${cur.id}`);
+      const x = await api<Detail>(`/media/${targetId}`);
+      if (req !== loadReqId.current) return;
+      if (detailCache.current.size >= 30) {
+        const oldest = detailCache.current.keys().next().value;
+        if (oldest) detailCache.current.delete(oldest);
+      }
+      detailCache.current.set(targetId, x);
       setD(x);
       setNote(x.note);
       setErr("");
     } catch (e) {
-      setErr((e as Error).message);
+      if (req === loadReqId.current) setErr((e as Error).message);
     }
   }, [cur.id]);
 
   useEffect(() => {
-    setD(null);
+    const cached = detailCache.current.get(cur.id);
+    setD(cached ?? null);
+    if (cached) setNote(cached.note);
     setEditing(false);
     void load();
-  }, [load]);
+  }, [cur.id, load]);
 
   // 处理中则轮询详情,以便尽快显示元数据
   useEffect(() => {
     if (!d || d.status !== "pending") return;
-    const t = setTimeout(load, 2500);
+    const t = setTimeout(() => void load(true), 2500);
     return () => clearTimeout(t);
   }, [d, load]);
 
@@ -411,7 +472,7 @@ export default function Viewer({
     try {
       await api(`/media/${cur.id}`, { method: "PATCH", json: { note } });
       setEditing(false);
-      await load();
+      await load(true);
       window.dispatchEvent(new Event("pgs:changed"));
     } catch (e) {
       setErr((e as Error).message);
@@ -440,6 +501,7 @@ export default function Viewer({
     const purge = pick.checked && canPurge;
     try {
       await api(`/media/${cur.id}?purge=${purge ? 1 : 0}`, { method: "DELETE" });
+      detailCache.current.delete(cur.id);
       onRemoved(cur.id);
     } catch (e) {
       setErr((e as Error).message);
@@ -607,7 +669,7 @@ export default function Viewer({
 
               {d?.canEdit && (
                 <div className="flex flex-wrap gap-2">
-                  <button className="btn !py-1 text-xs" onClick={async () => { await api(`/media/${d.id}/reprocess`, { method: "POST" }); await load(); }}>重新生成缩略图/元数据</button>
+                  <button className="btn !py-1 text-xs" onClick={async () => { await api(`/media/${d.id}/reprocess`, { method: "POST" }); await load(true); }}>重新生成缩略图/元数据</button>
                   <button className="btn btn-danger !py-1 text-xs" onClick={remove}>🗑 删除</button>
                 </div>
               )}

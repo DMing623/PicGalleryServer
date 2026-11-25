@@ -27,7 +27,29 @@
   3. 在 `ResizeObserver` 中缓存容器文档顶部偏移 `boxDocTop` 并过滤 `<0.5px` 的宽度抖动与纯高度变化，滚动监听直接通过 `window.scrollY - boxDocTop.current` 计算相对位置，实现滚动帧零同步布局读取；
   4. `pending` 轮询增加 `sameMediaRow` 字段级比对与 `document.visibilityState === "hidden"` 暂停，无实质变化时直接返回原数组引用；
   5. 移除滚动瓦片内视频角标的 `backdrop-blur`（改用高对比半透明底色 `bg-black/70`），消除滚动过程中的多图层实时背景采样开销。
+- **本项提交 Hash**：`39b0a8f3dc55340733bcc16de4d39bf88e7abb2d` (`39b0a8f`)
 - **单独回滚本项优化**：
   ```bash
   git reset --hard 4e0adb1fa4a975c75686a02ce94d6920c9b9c500
+  ```
+
+---
+
+## 优化项 2：全屏查看器 (`Viewer.tsx` + `useHd.ts`) 120Hz 手势直写 DOM、HD 异步预解码与详情防竞态缓存
+
+- **回滚锚点（上一提交）**：`39b0a8f3dc55340733bcc16de4d39bf88e7abb2d`
+- **涉及文件**：`src/components/Viewer.tsx`、`src/components/useHd.ts`、`project.md`
+- **问题根因**：
+  1. `ZoomStage` 在滚轮缩放、鼠标拖拽与双指捏合（`pointermove` / `wheel`，高刷屏下 120~240Hz）的每一次事件中都调用 `setView(v)` 和 `setGrabbing(true)`，导致手势期间每秒触发上百次 React 组件树重渲染；
+  2. `rel(e)` 在每次滚轮与双指缩放移动事件中同步读取 `stage.current.getBoundingClientRect()`，容易造成高频手势下的布局回流抖动；
+  3. `useHd.ts` 下载完成 2560px 高清 WebP 后直接将 Blob URL 塞给 `<img>`，浏览器在首帧上屏与切换下一张时在主线程/光栅线程同步解码 4MP+ 大图，产生 30~80ms 首帧掉帧；
+  4. 查看器连续快速切换上/下一张图片时，`/api/v1/media/:id` 请求缺少序号防竞态保护与会话缓存，反复回看已浏览图片会闪烁「加载中…」。
+- **优化措施（维持原有页面布局不变）**：
+  1. 将 `ZoomStage` 的位移与缩放变换改为直接操作 `contentRef.current.style.transform`（`translate3d + scale`），仅在跨越 `1.001` 缩放阈值或拖拽指针状态真正改变时才触发 React 状态更新，实现手势全程 0 React 重渲染；
+  2. 在 `ResizeObserver` 和 `pointerdown` 阶段缓存舞台边界 `rectRef`，手势移动与滚轮缩放过程中零同步布局读取；
+  3. 在 `useHd.ts` 的 `fetchHd` 中通过离屏 `Image` + `pre.decode()` 完成异步预解码后再置为 `ready`，相邻预加载图片同样提前解码进位图缓存，左右翻页与滑动切换瞬间上屏；
+  4. 在 `Viewer.tsx` 中引入请求序号防竞态（`loadReqId`）与容量为 30 的会话级详情 LRU 缓存（修改备注或重处理时自动穿透刷新）。
+- **单独回滚到优化项 1（撤销优化项 2）**：
+  ```bash
+  git reset --hard 39b0a8f3dc55340733bcc16de4d39bf88e7abb2d
   ```

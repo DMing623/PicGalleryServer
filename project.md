@@ -213,9 +213,9 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
        ├─ AppProvider.tsx             上下文:me(user/perms/site/features)、can(perm)、reload()
        ├─ Splash.tsx                  启动页:粒子 canvas + 3D 光环 + 3D 挤出文字;url 模式支持图片/视频/iframe
        ├─ Shell.tsx                   毛玻璃顶栏、导航、搜索框(相册页自动限定范围)、上传入口、账户菜单、底部工具栏
-       ├─ Gallery.tsx                 固定列等宽瀑布流 + 视口窗口化(仅渲染视口±1.5 屏瓦片)、游标无限滚动(每页 80)、处理中轮询;导出 MediaItem
-       ├─ Viewer.tsx                  全屏查看器:HD 图(加载中转圈→带水印大图)、文件链接、备注编辑、元数据侧栏、删除/重处理
-       ├─ useHd.ts                    HD 加载 hook:申请令牌→取图→Blob URL;只保留当前±1 张,预加载相邻 2 张
+       ├─ Gallery.tsx                 固定列等宽瀑布流 + 二分视口窗口化(仅渲染视口±1.5 屏瓦片,Memo 瓦片)+ 游标无限滚动(每页 80)+ 处理中按需轮询;导出 MediaItem
+       ├─ Viewer.tsx                  全屏查看器:HD 图(加载中转圈→带水印大图,手势缩放直接写 DOM transform)、会话详情 LRU 缓存、文件链接、备注编辑、元数据侧栏、删除/重处理
+       ├─ useHd.ts                    HD 加载 hook:申请令牌→取图→Blob URL→异步预解码(img.decode);只保留当前±1 张,预加载相邻 2 张
        ├─ DialogProvider.tsx          内置对话框:choose/confirm/prompt/alert/confirmCheck
        ├─ MetaPanel.tsx               元数据渲染(固定字段缺失显示 N/A、AI 区块、原始段折叠)
        ├─ UploadDialog.tsx            上传对话框:相册下拉、存储选择、并发、进度、结果去向提示、只读挂载禁用
@@ -864,9 +864,9 @@ node cli/pgs.mjs reprocess | regenerate-derived
 
 - 根布局注入 `<style id="pgs-theme">`(`themeCss()`),设置页修改主题时直接替换其 `textContent` 实现实时预览;保存后全站生效。CSS 变量:`--bg --bg2 --surface --fg --muted --accent --accent-fg --border`;毛玻璃类 `.glass / .glass-strong`;按钮 `.btn / .btn-primary / .btn-danger`;输入 `.field`。
 - 全局事件(`window.dispatchEvent`):`pgs:changed`(媒体变更,图库刷新)、`pgs:albums`(相册变更,相册视图刷新)。
-- 高清图查看:`Viewer.tsx` 在 HD 就绪前只显示转圈加载态,不先渲染无水印预览图;HD 响应本身已在服务端合成水印(`x-pgs-wm: 1`)。
+- 高清图查看:`Viewer.tsx` 在 HD 就绪前只显示转圈加载态,不先渲染无水印预览图;HD 响应本身已在服务端合成水印(`x-pgs-wm: 1`),客户端在生成 Blob URL 后先完成 `img.decode()` 异步预解码再挂载舞台,缩放/平移手势期间直接更新 DOM `transform`(`translate3d + scale`)避免逐帧触发 React 重渲染。
 - 登录态与权限来自 `AppProvider`(`/auth/me`)。页面是否展示管理控件只做体验层判断,**真正的授权永远在服务端 `route()` 的 access 参数**。
-- 图库(`Gallery.tsx`):**固定列数等宽瀑布流 + 视口窗口化**(每张图放入当前最矮的列,高度由 `aspect-ratio` 精确计算,宽高比钳制在 0.35~3;按列累计高度只渲染视口 ±1.5 屏内的瓦片,其余合并为等高透明占位块,使万级图库滚动时 DOM 节点数与图片解码内存近似常数);游标分页每页 80 条,`IntersectionObserver`(`rootMargin` 1200px)触底加载;存在 `pending` 项时每 3 秒请求一次前 80 项刷新状态,最多 40 次(约 2 分钟)后停止。
+- 图库(`Gallery.tsx`):**固定列数等宽瀑布流 + 二分视口窗口化**(每张图放入当前最矮的列,高度由 `aspect-ratio` 精确计算,宽高比钳制在 0.35~3;按列内单调递增高度通过二分查找只渲染视口 ±1.5 屏内的 Memo 瓦片,上下不可见区域合并为等高透明占位块,使万级图库滚动时 DOM 节点数与图片解码内存近似常数);游标分页每页 80 条,`IntersectionObserver`(`rootMargin` 1200px)触底加载;存在 `pending` 项时每 3 秒请求一次前 80 项并仅在字段变化时刷新状态,最多 40 次(约 2 分钟)后停止。
 - 启动页每个标签页会话只显示一次(`sessionStorage["pgs-splash"]`);`url` 模式按扩展名选择 `<img>`/`<video>`/`<iframe sandbox="allow-scripts">`。
 
 ## 14. 性能与安全设计要点
