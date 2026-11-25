@@ -61,6 +61,7 @@ export default function Disclaimer() {
   const [progress, setProgress] = useState(0);
   const [left, setLeft] = useState(MIN_READ_SEC);
   const box = useRef<HTMLDivElement>(null);
+  const rafRef = useRef(0);
 
   // 已同意(未过期)则不再显示
   useEffect(() => {
@@ -84,19 +85,28 @@ export default function Disclaimer() {
   }, []);
 
   const measure = useCallback(() => {
+    rafRef.current = 0;
     const el = box.current;
     if (!el) return;
     const max = el.scrollHeight - el.clientHeight;
-    setProgress(max <= 0 ? 100 : Math.min(100, Math.round((el.scrollTop / max) * 100)));
+    const nextPct = max <= 0 ? 100 : Math.min(100, Math.round((el.scrollTop / max) * 100));
+    setProgress((prev) => (prev === nextPct ? prev : nextPct));
     if (max <= 8 || el.scrollTop >= max - 8) setAtBottom(true);
   }, []);
+
+  const onScroll = useCallback(() => {
+    if (!rafRef.current) rafRef.current = requestAnimationFrame(measure);
+  }, [measure]);
 
   useEffect(() => {
     if (!ready || gone) return;
     measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, [ready, gone, measure]);
+    window.addEventListener("resize", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("resize", onScroll);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [ready, gone, measure, onScroll]);
 
   useEffect(() => {
     if (!ready || gone) return;
@@ -157,7 +167,7 @@ export default function Disclaimer() {
           </h2>
           <p className="muted mt-0.5 text-xs">请完整阅读以下内容(滚动至底部)后,方可进入图库。</p>
         </div>
-        <div ref={box} onScroll={measure} className="mx-5 my-3 min-h-0 flex-1 overflow-y-auto rounded-xl border border-line/60 bg-black/5 p-3 text-[13px] leading-relaxed" style={{ maxHeight: "56dvh" }}>
+        <div ref={box} onScroll={onScroll} className="mx-5 my-3 min-h-0 flex-1 overflow-y-auto rounded-xl border border-line/60 bg-black/5 p-3 text-[13px] leading-relaxed" style={{ maxHeight: "56dvh" }}>
           {SECTIONS.map((s) => (
             <section key={s.title} className="mb-3 last:mb-0">
               <h3 className="mb-1 font-semibold" style={{ color: "var(--accent)" }}>{s.title}</h3>

@@ -3,7 +3,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { memo, Suspense, useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { bytes } from "@/lib/format";
 import AlbumActions, { type AlbumDto } from "./AlbumActions";
@@ -16,18 +16,24 @@ interface Detail extends AlbumDto {
   children: AlbumDto[];
 }
 
-function Card({ a }: { a: AlbumDto }) {
-  const { can } = useApp();
+const Card = memo(function Card({ a, showManage }: { a: AlbumDto; showManage: boolean }) {
   return (
     <Link href={`/albums/${a.code}`} className="tile glass group block overflow-hidden rounded-2xl">
       <div className="relative aspect-[4/3] w-full overflow-hidden" style={{ background: "linear-gradient(135deg, var(--bg2), color-mix(in srgb, var(--accent) 25%, var(--bg)))" }}>
         {a.coverId ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={`/api/v1/media/${a.coverId}/thumb`} alt="" loading="lazy" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
+          <img
+            src={`/api/v1/media/${a.coverId}/thumb`}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            draggable={false}
+            className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
+          />
         ) : (
           <div className="flex h-full items-center justify-center text-4xl opacity-60">📁</div>
         )}
-        {can("album.manage") && (
+        {showManage && (
           <span className="absolute left-2 top-2 flex gap-1">
             <span className="chip" style={{ background: "rgba(0,0,0,.5)", color: "#fff" }}>{a.visibility === "public" ? "公开" : "私有"}</span>
             {a.kind === "mounted" && <span className="chip" style={{ background: "rgba(0,0,0,.5)", color: "#fff" }}>目录</span>}
@@ -43,7 +49,7 @@ function Card({ a }: { a: AlbumDto }) {
       </div>
     </Link>
   );
-}
+});
 
 export default function AlbumsView({ code }: { code?: string }) {
   const { loading, can, me } = useApp();
@@ -53,6 +59,7 @@ export default function AlbumsView({ code }: { code?: string }) {
   const [list, setList] = useState<AlbumDto[] | null>(null);
   const [unsorted, setUnsorted] = useState<number | null>(null);
   const [err, setErr] = useState("");
+  const showManage = can("album.manage");
 
   const load = useCallback(async () => {
     try {
@@ -100,7 +107,7 @@ export default function AlbumsView({ code }: { code?: string }) {
       <div className="px-2">
         <div className="mb-3 flex items-center gap-3">
           <h1 className="text-lg font-semibold">相册</h1>
-          {can("album.manage") && (
+          {showManage && (
             <button
               className="btn btn-primary !py-1 text-xs"
               onClick={async () => {
@@ -130,7 +137,7 @@ export default function AlbumsView({ code }: { code?: string }) {
               </div>
             </Link>
           )}
-          {list?.map((a) => <Card key={a.code} a={a} />)}
+          {list?.map((a) => <Card key={a.code} a={a} showManage={showManage} />)}
         </div>
         {list && list.length === 0 && (
           <div className="glass mx-auto mt-10 max-w-md rounded-3xl p-10 text-center">
@@ -158,7 +165,7 @@ export default function AlbumsView({ code }: { code?: string }) {
         </nav>
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-xl font-semibold">{detail.name}</h1>
-          {can("album.manage") && (
+          {showManage && (
             <>
               <span className="chip">{detail.visibility === "public" ? "公开" : "私有"}</span>
               <span className="chip">{detail.kind === "mounted" ? "挂载目录" : detail.storage === "s3" ? "受管 · S3" : "受管 · 本地"}</span>
@@ -175,7 +182,7 @@ export default function AlbumsView({ code }: { code?: string }) {
 
       {detail.children.length > 0 && (
         <div className="mx-2 mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-7">
-          {detail.children.map((a) => <Card key={a.code} a={a} />)}
+          {detail.children.map((a) => <Card key={a.code} a={a} showManage={showManage} />)}
         </div>
       )}
       <Suspense fallback={null}>

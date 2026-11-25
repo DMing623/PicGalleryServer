@@ -109,7 +109,43 @@
   1. 对 `UploadDialog.tsx` 的 `xhr.upload.onprogress` 增加 ≥2% 步长节流，抽离 `React.memo(FileJobRow)` 使单文件进度变化仅重渲染自身行，移除模态框内部列表项重复叠加的 `backdrop-filter`，并将相册树展开算法由 $O(N^2)$ 优化为 $O(N)$ 邻接表遍历；
   2. 为 `MetaPanel.tsx` 增加 `React.memo` 与 `useMemo` 解析结果缓存，使查看器交互（输入密钥、编辑备注、切换全屏）期间元数据侧栏零重算；
   3. 在 `AdminTabs.tsx` 中用 `childCountMap` 预计算子相册数量（$O(1)$ 查询），并在 `AdminTabs.tsx` 与 `SystemTab.tsx` 中增加 `document.visibilityState` 感知与时区 `Intl.DateTimeFormat` 缓存。
+- **本项提交 Hash**：`61f03afa12a56f13c8f6346bc2cfd8ee787e7c1e` (`61f03af`)
 - **单独回滚到优化项 4（撤销优化项 5）**：
   ```bash
   git reset --hard 2f129dc2f5d5519550593bd63845daa892ca6c78
   ```
+
+---
+
+## 优化项 6：相册卡片 `Memo` 与封面异步解码、免责声明滚动 `rAF` 节流 (`AlbumsView.tsx`, `Disclaimer.tsx`)
+
+- **回滚锚点（上一提交）**：`61f03afa12a56f13c8f6346bc2cfd8ee787e7c1e`
+- **涉及文件**：`src/components/AlbumsView.tsx`、`src/components/Disclaimer.tsx`
+- **问题根因**：
+  1. `AlbumsView.tsx` 中的相册卡片 `Card` 未做 `memo` 包装且内部重复调用 `useApp()`，封面图 `<img>` 缺少 `decoding="async"`，当相册数较多时主线程同步解码封面缩略图并重复渲染卡片；
+  2. `Disclaimer.tsx` 的阅读区域 `onScroll={measure}` 在每个滚动事件中同步读取 `scrollHeight / clientHeight / scrollTop` 并直接 `setProgress`，导致访客滚动阅读须知时逐像素重渲染带有全屏 `backdrop-filter: blur(26px)` 的弹窗容器。
+- **优化措施（维持原有页面布局不变）**：
+  1. 将 `AlbumsView.tsx` 的 `Card` 包装为 `React.memo(Card)`，由父级统一传入 `showManage` 并为封面 `<img>` 增加 `decoding="async"` 与 `draggable={false}`；
+  2. 将 `Disclaimer.tsx` 的 `onScroll` 测量放入 `requestAnimationFrame` 节流，且仅在整数百分比实际变化时才触发 `setProgress`。
+- **单独回滚到优化项 5（撤销优化项 6）**：
+  ```bash
+  git reset --hard 61f03afa12a56f13c8f6346bc2cfd8ee787e7c1e
+  ```
+
+---
+
+## 附：分步回滚速查表
+
+| 想要回滚到的状态 | 目标 Commit | 执行命令 |
+|---|---|---|
+| **完全回滚到优化前原始状态** | `4e0adb1` | `git reset --hard 4e0adb1fa4a975c75686a02ce94d6920c9b9c500` |
+| 保留优化 1（瀑布流二分窗口化 + Memo 瓦片） | `39b0a8f` | `git reset --hard 39b0a8f3dc55340733bcc16de4d39bf88e7abb2d` |
+| 保留优化 1~2（+ 查看器手势直写 DOM + HD 预解码） | `7d09c23` | `git reset --hard 7d09c238e8d143a9699414902ca4ad59b0cb1ccb` |
+| 保留优化 1~3（+ 毛玻璃合成层隔离 + 搜索解耦 + Intl 缓存） | `820cd18` | `git reset --hard 820cd18c34cdcfa1efbbcb469dabb573d3c4d4fe` |
+| 保留优化 1~4（+ 启动页粒子批量绘制 + 离场优化） | `2f129dc` | `git reset --hard 2f129dc2f5d5519550593bd63845daa892ca6c78` |
+| 保留优化 1~5（+ 上传进度节流 + 元数据 Memo + 相册树 O(N)） | `61f03af` | `git reset --hard 61f03afa12a56f13c8f6346bc2cfd8ee787e7c1e` |
+
+> **确认无误后清理本一次性文档**：
+> ```bash
+> git rm FRONTEND_OPTIMIZATION.md && git commit -m "chore: 移除一次性前端优化说明文档" && git push origin main
+> ```
