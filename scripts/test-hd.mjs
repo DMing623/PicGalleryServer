@@ -361,7 +361,21 @@ async function main() {
     const first = Buffer.from(await w1.res.arrayBuffer());
     await new Promise((r) => setTimeout(r, 600)); // 成品异步落盘
     const wmFiles = async () => (await fs.readdir(shard8(wmId)).catch(() => [])).filter((f) => new RegExp(`^${wmId}\\.[0-9a-f]{12}\\.\\d+\\.[0-9a-f]{8}\\.webp$`).test(f));
-    ok((await wmFiles()).length === 1, "磁盘上有 1 个水印成品文件(<id>.<ver>.<w>.<指纹>.webp)");
+    // 水印成品是【异步落盘】的:连续两次统计一致才认为已收敛。
+    // 若直接取瞬时值当基线,慢机器/高负载下(例如容器以任意 uid 运行时)会漏等刚落盘的成品,
+    // 后续「数量不变」断言就会误报失败(与产品行为无关的测试脚本竞态)。
+    const stableCount = async (tries = 25) => {
+      let last = -1;
+      for (let i = 0; i < tries; i++) {
+        const n = (await wmFiles()).length;
+        if (n === last) return n;
+        last = n;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      return last;
+    };
+    const nFirst = await stableCount();
+    ok(nFirst === 1, "磁盘上有 1 个水印成品文件(<id>.<ver>.<w>.<指纹>.webp)", `实际 ${nFirst}`);
     w1 = await fetchHd(wmId);
     ok(w1.res.headers.get("x-pgs-wm-cache") === "hit" && w1.res.headers.get("x-pgs-cache") === "hit", "游客第二次请求直接命中水印成品");
     const second = Buffer.from(await w1.res.arrayBuffer());
@@ -390,12 +404,14 @@ async function main() {
     ok(m1280.width === 1280, `1280 档输出宽度正确 (${m1280.width})`);
 
     // ④ 伪造 Host / X-Forwarded-Host 不产生新的缓存变体
-    const nBefore = (await wmFiles()).length;
+    // 基线取【收敛后】的计数:③ 的 1280 档成品也是异步落盘,必须先等它落盘,否则基线偏小
+    const nBefore = await stableCount();
     const tF = (await hdToken(wmId)).body.token;
     x = await hdGet(wmId, tF, { headers: { "x-forwarded-host": "evil.example.com" } });
     ok(x.status === 200, "带伪造 X-Forwarded-Host 仍正常出图", String(x.status));
     await new Promise((r) => setTimeout(r, 400));
-    ok((await wmFiles()).length === nBefore, "伪造 Host 不会产生新的成品文件(只会回落到可信域名)");
+    const nAfterForge = await stableCount();
+    ok(nAfterForge === nBefore, "伪造 Host 不会产生新的成品文件(只会回落到可信域名)", `${nBefore} → ${nAfterForge}`);
     const forgedState = x.headers.get("x-pgs-wm-cache");
     ok(forgedState === "hit" || forgedState === "untrusted-host", "伪造 Host:要么回落到可信域名并命中同一成品,要么视为不可信而不缓存", String(forgedState));
     console.log(`  (伪造 X-Forwarded-Host 的结果: ${forgedState})`);
@@ -405,7 +421,8 @@ async function main() {
     ok(u8.res.headers.get("x-pgs-wm-cache") === "skip-user", "登录用户不使用游客成品缓存 (skip-user)", String(u8.res.headers.get("x-pgs-wm-cache")));
     const ub = Buffer.from(await u8.res.arrayBuffer());
     ok(!ub.equals(second), "登录用户输出含动态标识,与游客成品不同");
-    ok((await wmFiles()).length === nBefore, "登录用户请求没有写入新成品");
+    const nAfterUser = await stableCount();
+    ok(nAfterUser === nBefore, "登录用户请求没有写入新成品", `${nBefore} → ${nAfterUser}`);
 
     // ⑥ 替换原图后旧成品不再命中(版本变化),且旧版本成品被清理
     const detail8 = await data(await call("GET", `/media/${wmId}`, { token: admin }));
@@ -422,7 +439,8 @@ async function main() {
     x = await fetchHd(wmId);
     ok(x.status === 404, "媒体删除后 404", String(x.status));
     await new Promise((r) => setTimeout(r, 300));
-    ok((await wmFiles()).length === 0, "删除后该图的基图与水印成品全部被清理");
+    const nAfterDelete = await stableCount();
+    ok(nAfterDelete === 0, "删除后该图的基图与水印成品全部被清理", `实际 ${nAfterDelete}`);
   }
 
   // BMP:HD 预览支持(此前会 500)
