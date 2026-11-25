@@ -21,18 +21,19 @@ REPO="${REPO_URL:-https://github.com/DMing623/PicGalleryServer.git}"
 BRANCH="${BRANCH:-main}"
 : "${INSTABOX_API_KEY:?请先 export INSTABOX_API_KEY}"
 IB="${INSTABOX:-npx --yes instabox@latest}"
-EXTRA_ENV="${EXTRA_ENV:-}"          # 例如 EXTRA_ENV="DRIVERS=sqlite"
+RUN_AS="${RUN_AS:-1000}"            # InstaBox 默认以非 root 用户直接启动镜像(--user 1000:1000)
+EXTRA_ENV="${EXTRA_ENV:-}"          # 例如 EXTRA_ENV="DRIVERS=sqlite MEM_LIMIT=1g"
 
 rexec() { $IB exec "$MACHINE" -- bash -lc "$1"; }
 
-echo "== 1. 机器环境与当前容器 =="
-rexec 'docker version --format "docker {{.Server.Version}}" && node -v || true; docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"'
+echo "== 1. 机器环境与当前容器(自动兼容非 root 宿主机用户) =="
+rexec 'DOCKER=docker; $DOCKER info >/dev/null 2>&1 || DOCKER="sudo -n docker"; echo "user=$(id -un)($(id -u)) docker_cmd=$DOCKER"; $DOCKER version --format "docker {{.Server.Version}}" && node -v || true; $DOCKER ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"'
 
 echo "== 2. 拉取新镜像 $IMAGE =="
-rexec "docker pull $IMAGE && docker image inspect $IMAGE --format '{{.Id}} {{index .RepoDigests 0}}'"
+rexec "DOCKER=docker; \$DOCKER info >/dev/null 2>&1 || DOCKER='sudo -n docker'; \$DOCKER pull $IMAGE && \$DOCKER image inspect $IMAGE --format '{{.Id}} {{index .RepoDigests 0}}'"
 
-echo "== 3. 同步测试脚本并执行 test-docker.sh =="
-rexec "set -e; D=\$HOME/pgs-src; if [ -d \$D/.git ]; then cd \$D && git fetch -q origin $BRANCH && git checkout -q -B $BRANCH origin/$BRANCH; else git clone -q --depth 50 -b $BRANCH $REPO \$D && cd \$D; fi; (command -v node >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt-get install -y nodejs; }); npm ci --no-audit --no-fund >/dev/null; $EXTRA_ENV scripts/test-docker.sh $IMAGE"
+echo "== 3. 同步测试脚本并执行静态检查 + 单测 + compose 校验 + test-docker.sh (RUN_AS=$RUN_AS) =="
+rexec "set -e; DOCKER=docker; \$DOCKER info >/dev/null 2>&1 || DOCKER='sudo -n docker'; export DOCKER; D=\${HOME:-/tmp}/pgs-src; if [ -d \$D/.git ]; then cd \$D && git fetch -q origin $BRANCH && git checkout -q -B $BRANCH origin/$BRANCH; else git clone -q --depth 50 -b $BRANCH $REPO \$D && cd \$D; fi; (command -v node >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt-get install -y nodejs; }); npm ci --no-audit --no-fund >/dev/null; node scripts/check-config.mjs; [ ! -f scripts/check-docs.mjs ] || node scripts/check-docs.mjs; node scripts/test-unit.mjs; scripts/test-compose.sh; RUN_AS=$RUN_AS $EXTRA_ENV scripts/test-docker.sh $IMAGE"
 
 if [ -n "${UPDATE_RUNNING:-}" ]; then
   echo "== 4. 更新运行中的容器 $UPDATE_RUNNING → $IMAGE(保留旧容器为 ${UPDATE_RUNNING}-old)=="

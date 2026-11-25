@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -51,30 +52,34 @@ export async function dropLocalHint(id: string) {
   if (p) await fs.unlink(p).catch(() => undefined);
 }
 
-async function writeAtomic(dst: string, buf: Buffer) {
-  await fs.mkdir(path.dirname(dst), { recursive: true });
-  const tmp = `${dst}.${randomBytes(4).toString("hex")}.tmp`;
-  await fs.writeFile(tmp, buf);
-  await fs.rename(tmp, dst);
-}
-
 /** 解压炸弹防护 + 顺序读(降低内存峰值);不要从原图 clone 两次,见 issue §10.3 */
 const INPUT_OPTS = { failOn: "none" as const, limitInputPixels: config.media.maxInputMp * 1_000_000, sequentialRead: true };
 
 async function makeDerived(id: string, input: string | Buffer) {
-  const previewBuf = await sharp(input, INPUT_OPTS)
-    .rotate()
-    .resize({ width: config.previewWidth, height: config.previewWidth, fit: "inside", withoutEnlargement: true })
-    .webp({ quality: 84 }) // 不调用 keepMetadata/withMetadata:输出不含 EXIF/XMP/ICC 等元数据
-    .toBuffer();
-  const thumbBuf = await sharp(previewBuf, INPUT_OPTS)
-    .resize({ width: config.thumbWidth, height: config.thumbWidth * 2, fit: "inside", withoutEnlargement: true })
-    .webp({ quality: 84 })
-    .toBuffer();
-  const px = await sharp(thumbBuf).resize(1, 1, { fit: "cover" }).removeAlpha().raw().toBuffer();
-  const color = `#${[px[0], px[1], px[2]].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
-  await Promise.all([writeAtomic(derivedPath(id, "preview"), previewBuf), writeAtomic(derivedPath(id, "thumb"), thumbBuf)]);
-  return color;
+  const previewDst = derivedPath(id, "preview");
+  const thumbDst = derivedPath(id, "thumb");
+  await fs.mkdir(path.dirname(previewDst), { recursive: true });
+  const suffix = randomBytes(4).toString("hex");
+  const previewTmp = `${previewDst}.${suffix}.tmp`;
+  const thumbTmp = `${thumbDst}.${suffix}.tmp`;
+  try {
+    await sharp(input, INPUT_OPTS)
+      .rotate()
+      .resize({ width: config.previewWidth, height: config.previewWidth, fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 84 }) // 不调用 keepMetadata/withMetadata:输出不含 EXIF/XMP/ICC 等元数据
+      .toFile(previewTmp);
+    await sharp(previewTmp, INPUT_OPTS)
+      .resize({ width: config.thumbWidth, height: config.thumbWidth * 2, fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 84 })
+      .toFile(thumbTmp);
+    const px = await sharp(thumbTmp).resize(1, 1, { fit: "cover" }).removeAlpha().raw().toBuffer();
+    const color = `#${[px[0], px[1], px[2]].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
+    await Promise.all([fs.rename(previewTmp, previewDst), fs.rename(thumbTmp, thumbDst)]);
+    return color;
+  } catch (e) {
+    await Promise.all([fs.unlink(previewTmp).catch(() => undefined), fs.unlink(thumbTmp).catch(() => undefined)]);
+    throw e;
+  }
 }
 
 /**
@@ -87,10 +92,34 @@ const heicHdGate = limiter(1, "heic-hd");
 /** 视频探测/抽帧(ffmpeg 子进程)单独限流 */
 const videoGate = limiter(config.videoConcurrency, "video");
 
-/** BMP:libvips 预编译版没有加载器,先用内置解码器转成 PNG 再交给 sharp */
+/** BMP:libvips 预编译版没有加载器,内置解码器转成 PNG Buffer(作为无 ffmpeg 时的回退) */
 export async function bmpToPng(file: string): Promise<Buffer> {
   const d = decodeBmp(await fs.readFile(file));
   return sharp(d.data, { raw: { width: d.width, height: d.height, channels: 4 } }).png().toBuffer();
+}
+
+/** BMP 文件进文件出:优先调 ffmpeg 转成临时 PNG 文件(避免大图产生整文件+RGBA+PNG 三份 Node Buffer),失败回退 decodeBmp */
+export async function bmpInput(file: string): Promise<{ input: string | Buffer; cleanup: () => Promise<void> }> {
+  await fs.mkdir(dirs.tmp, { recursive: true });
+  const tmpPng = path.join(dirs.tmp, `bmp-${randomBytes(6).toString("hex")}.png`);
+  const ok = await new Promise<boolean>((resolve) => {
+    execFile(
+      config.ffmpeg,
+      ["-nostdin", "-hide_banner", "-loglevel", "error", "-i", file, "-frames:v", "1", "-threads", "1", "-y", tmpPng],
+      { timeout: 30_000 },
+      (err) => resolve(!err),
+    );
+  });
+  if (ok) {
+    try {
+      const st = await fs.stat(tmpPng);
+      if (st.size > 0) return { input: tmpPng, cleanup: () => fs.unlink(tmpPng).catch(() => undefined) };
+    } catch {
+      /* 回退到内置解码器 */
+    }
+  }
+  await fs.unlink(tmpPng).catch(() => undefined);
+  return { input: await bmpToPng(file), cleanup: async () => undefined };
 }
 
 export async function heicToJpeg(file: string, interactive = false): Promise<Buffer> {
@@ -150,6 +179,7 @@ export async function processMedia(id: string): Promise<void> {
   // 会 mmap 源文件,文件在读取途中被截断会让整个 Node 进程收到 SIGBUS 直接崩溃,
   // 所以 ext 图片先复制一份私有副本再交给 sharp(支持 reflink 的文件系统上几乎零成本)。
   let privateCopy: string | null = null;
+  let bmpCleanup: (() => Promise<void>) | null = null;
   try {
     mat = hint
       ? { path: hint, cleanup: () => fs.unlink(hint).then(() => void localHints.delete(id), () => void localHints.delete(id)) }
@@ -167,7 +197,13 @@ export async function processMedia(id: string): Promise<void> {
         await fs.copyFile(file, privateCopy, fsConstants.COPYFILE_FICLONE);
         src = privateCopy;
       }
-      const input: string | Buffer = isHeic(row.filename) ? await heicToJpeg(file) : isBmp(row.filename) ? await bmpToPng(file) : src;
+      let input: string | Buffer = src;
+      if (isHeic(row.filename)) input = await heicToJpeg(file);
+      else if (isBmp(row.filename)) {
+        const b = await bmpInput(file);
+        input = b.input;
+        bmpCleanup = b.cleanup;
+      }
       const m = await sharp(input, INPUT_OPTS).metadata();
       const swap = (m.orientation ?? 1) >= 5 && (m.orientation ?? 1) <= 8;
       const width = (swap ? m.height : m.width) ?? 0;
@@ -241,6 +277,7 @@ export async function processMedia(id: string): Promise<void> {
       .where(eq(media.id, id));
     throw e;
   } finally {
+    if (bmpCleanup) await bmpCleanup();
     if (privateCopy) await fs.unlink(privateCopy).catch(() => undefined);
     if (mat) await mat.cleanup();
   }

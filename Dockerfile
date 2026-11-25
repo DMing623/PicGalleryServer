@@ -54,6 +54,13 @@ RUN printf '%s\n' \
   '  fi' \
   '  exec setpriv --reuid=1000 --regid=1000 --clear-groups "$@"' \
   'fi' \
+  '# 平台(如 InstaBox)直接以 --user 非 root 启动容器时,HOME 可能为 / 或不可写,确保 Pango/Fontconfig 水印缓存可写' \
+  'if [ -z "${HOME:-}" ] || [ ! -w "${HOME:-/}" ]; then export HOME=/tmp; fi' \
+  'export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/tmp/.cache}"' \
+  'D="${DATA_DIR:-/app/data}"' \
+  'if [ -d "$D" ] && [ ! -w "$D" ]; then' \
+  '  echo "[pgs-entrypoint] 警告: $D 对当前非 root 用户(uid=$(id -u) gid=$(id -g))不可写,请检查挂载目录权限" >&2' \
+  'fi' \
   'exec "$@"' > /usr/local/bin/pgs-entrypoint \
  && chmod +x /usr/local/bin/pgs-entrypoint
 

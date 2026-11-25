@@ -11,7 +11,7 @@ import { can, signToken, verifyToken, type AuthUser } from "../auth";
 import { config, dirs } from "../config";
 import { ApiError, E } from "../http";
 import { AdmissionAbortError, AdmissionTimeoutError } from "../admission";
-import { bmpToPng, heicToJpeg } from "../media/derive";
+import { bmpInput, heicToJpeg } from "../media/derive";
 import { isBmp } from "../media/bmp";
 import { estimateMemory, limitMessage } from "../media/estimate";
 import { metaForRow } from "../media/probe";
@@ -101,6 +101,7 @@ async function convert(row: Row, width: number): Promise<Buffer> {
   // 挂载目录(ext)里的文件可能被外部程序原地截断;libvips 对 webp/heif 等格式会 mmap 源文件,
   // 读取途中被截断会让整个进程收到 SIGBUS。与派生图一致:先复制私有副本(支持 reflink 的文件系统上几乎零成本)
   let privateCopy: string | null = null;
+  let bmpCleanup: (() => Promise<void>) | null = null;
   try {
     const heic = isHeic(row.filename);
     const bmp = isBmp(row.filename);
@@ -111,13 +112,20 @@ async function convert(row: Row, width: number): Promise<Buffer> {
       await fs.copyFile(mat.path, privateCopy, fsConstants.COPYFILE_FICLONE);
       src = privateCopy;
     }
-    const input: string | Buffer = heic ? await heicToJpeg(mat.path, true) : bmp ? await bmpToPng(mat.path) : src;
+    let input: string | Buffer = src;
+    if (heic) input = await heicToJpeg(mat.path, true);
+    else if (bmp) {
+      const b = await bmpInput(mat.path);
+      input = b.input;
+      bmpCleanup = b.cleanup;
+    }
     return await sharp(input, { failOn: "none", limitInputPixels: config.hd.maxInputMp * 1_000_000 })
       .rotate()
       .resize({ width, height: config.hd.maxHeight, fit: "inside", withoutEnlargement: true })
       .webp({ quality: config.hd.quality }) // 不保留任何元数据(EXIF/XMP/ICC/GPS 全部剥离)
       .toBuffer();
   } finally {
+    if (bmpCleanup) await bmpCleanup();
     if (privateCopy) await fs.unlink(privateCopy).catch(() => undefined);
     await mat.cleanup();
   }
