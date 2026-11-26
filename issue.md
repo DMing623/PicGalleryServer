@@ -310,3 +310,28 @@
   3. **直链上传全部失败时前端丢失后端返回的逐条失败原因**：
      当直链上传 `/api/v1/media/upload-url` 全部链接均失败时，后端（`src/server/api/media.ts` 第 153–155 行）返回 HTTP 422 并在 `error.details.results` 中附带了每个 URL 的具体错误（如 `"不允许访问内网地址"`、`"远端返回 HTTP 404"`）。但前端 `src/lib/api.ts` 在抛 `ApiErr` 时丢弃了 `payload.error.details`，导致 `UploadDialog.tsx` 第 218 行 `catch` 块将所有 URL 行的错误信息统一覆盖成 `"所有链接都下载失败"`，用户无法得知每条链接的具体失败原因。
      （另：`UploadDialog.tsx` 第 150 行本地文件过滤当浏览器未识别出 `f.type` 时，回退扩展名正则 `/\.(heic|heif|hif|avif|mkv|avi|wmv|flv|3gp|ts)$/i` 漏掉了服务端支持的 `tif|tiff|bmp|m4v|mpg|mpeg`。）
+
+---
+
+## Issue #13：后台队列退避重试期间提前移出 `queued` 导致 `upload?wait=1` 提前返回，以及 EXIF 时区/PNG `iTXt` 边界处理缺陷
+
+- **性质判定**：✅ **确实是缺陷（Actual Bug）**
+- **代码定位**：
+  - `src/server/queue.ts` 第 178–195 行、第 236–264 行
+  - `src/server/media/metadata.ts` 第 341–348 行、第 390–395 行
+  - `src/server/media/png.ts` 第 57–63 行
+- **实际代码实现与问题分析**：
+  1. **队列失败退避重试期间 `state.queued` 提前清空，导致 `idle()` / `idleIds()` 提前判定完成**：
+     在 `src/server/queue.ts` 的 `runTask()`（第 178–195 行）中，当 `runner(id)` 失败进入 `.catch()` 时，代码用 `setTimeout(() => enqueue(id, true), 1000 * 4 ** (n - 1))` 安排 1s / 4s / 16s 后重试，但紧接着 `.finally()` 立即调用 `finishTask(id)` 将 `id` 从 `state.queued` 中移除。
+     在退避定时器触发前的等待窗口内，`state.queued.has(id)` 为 `false` 且 `sched.run.running === 0`，导致 `idleIds()`（`POST /api/v1/media/upload?wait=1` 所依赖的同步等待机制）误判该文件已处理完毕而立即返回；同时因未记录定时器句柄，若退避期间该媒体被删除，定时器到期后仍会再次入队。
+  2. **图片 EXIF 拍摄时间在含 `OffsetTimeOriginal` 或切换站点时区时 `takenAt` 与 `meta.summary.time.taken` 不一致**：
+     - `src/server/media/metadata.ts` 第 341–343 行：当图片含有 `OffsetTimeOriginal` 标签时，代码认为 `exifr` 返回的 `taken`（`DateTimeOriginal`）已是带偏移的绝对时刻而直接 `toDate(taken)`；但实际上 `exifr` 在 `reviveValues: true` 下解析 `DateTimeOriginal` 时并**不会**自动结合 `OffsetTimeOriginal`，而是直接按**进程本地 `TZ`** 构造 `Date`。
+     - 同时第 391 行 `meta.summary.time.taken: dateStr(g("DateTimeOriginal", "DateCreated"))` 直接格式化了 `exifr` 按进程 `TZ` 生成的 `Date`，而未像第 345 行 `takenAt` 那样用 `naiveToUtc(formatWallClock(taken), tz)` 按站点时区换算，当容器 `TZ` 与设置页修改后的站点时区不同时，数据库 `taken_at` 列与详情面板 `summary.time.taken` 会相差数小时。
+  3. **PNG `iTXt` 文本块缺少 `\0` 分隔符时下标回绕**：
+     `src/server/media/png.ts` 第 58–61 行：
+     ```ts
+     let p = nul + 3;
+     p = data.indexOf(0, p) + 1;
+     p = data.indexOf(0, p) + 1;
+     ```
+     若畸形 PNG 的 `iTXt` 块缺少语言或翻译关键字后的 NUL 字节，`data.indexOf(0, p)` 返回 `-1`，`-1 + 1 = 0` 会使 `p` 回绕到缓冲区起始位置而非返回 `null`。
