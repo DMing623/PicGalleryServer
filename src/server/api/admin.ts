@@ -92,6 +92,8 @@ route("PATCH", "/users/:id", "users", async (ctx) => {
   if (b.role !== undefined) {
     if (!isRole(b.role)) throw E.badRequest("role 无效");
     if (row.source === "env") throw E.badRequest("环境变量管理员的角色不可修改");
+    // 不能改自己的角色:接口创建的 admin 误降权会立即失去管理权限且无法自救(与禁用/删除自身的限制一致)
+    if (row.id === ctx.user!.id && b.role !== row.role) throw E.badRequest("不能修改自己的角色");
     set.role = b.role;
   }
   if (b.disabled !== undefined) {
@@ -179,7 +181,7 @@ route("GET", "/status", "status", async () => {
       (SELECT CAST(count(*) AS INTEGER) FROM pgs_albums) AS albums,
       (SELECT CAST(count(*) AS INTEGER) FROM pgs_users) AS users,
       (SELECT CAST(count(*) AS INTEGER) FROM pgs_download_keys) AS keys
-    FROM pgs_media`);
+    FROM pgs_media WHERE missing_at IS NULL`);
   const disk = await fs.statfs(config.dataDir).catch(() => null);
   const rt = runtimeSnapshot();
   const value = {

@@ -421,6 +421,7 @@ const ROLE_DESC: Record<string, string> = {
 
 export function UsersTab() {
   const dlg = useDialog();
+  const { me } = useApp();
   const [users, setUsers] = useState<UserRow[]>([]);
   const [roles, setRoles] = useState<string[]>([]);
   const [f, setF] = useState({ username: "", password: "", role: "viewer" });
@@ -461,7 +462,7 @@ export function UsersTab() {
                 <tr key={u.id} className="border-t border-line/40">
                   <td className="py-1.5">{u.username} {u.disabled && <span className="chip">已禁用</span>}</td>
                   <td>
-                    {u.source === "env" ? <span className="chip">{u.role}</span> : (
+                    {u.source === "env" || u.id === me?.user?.id ? <span className="chip">{u.role}</span> : (
                       <select className="field !w-auto !py-0.5" value={u.role} onChange={(e) => act(() => api(`/users/${u.id}`, { method: "PATCH", json: { role: e.target.value } }))}>
                         {roles.map((r) => <option key={r} value={r}>{r}</option>)}
                       </select>
@@ -473,8 +474,12 @@ export function UsersTab() {
                     {u.source !== "env" && (
                       <>
                         <button className="btn !py-0.5 text-xs" onClick={async () => { const p = await dlg.prompt({ title: `重置 ${u.username} 的密码`, label: "新密码(至少 8 位)", password: true, confirmText: "重置", validate: (v) => (v.length < 8 ? "密码至少 8 位" : v.length > 200 ? "密码过长" : null) }); if (p) void act(() => api(`/users/${u.id}`, { method: "PATCH", json: { password: p } })); }}>重置密码</button>
-                        <button className="btn !py-0.5 text-xs" onClick={() => act(() => api(`/users/${u.id}`, { method: "PATCH", json: { disabled: !u.disabled } }))}>{u.disabled ? "启用" : "禁用"}</button>
-                        <button className="btn btn-danger !py-0.5 text-xs" onClick={async () => { if (await dlg.confirm({ title: "删除用户", message: `确定删除用户「${u.username}」吗?`, confirmText: "删除", danger: true })) void act(() => api(`/users/${u.id}`, { method: "DELETE" })); }}>删除</button>
+                        {u.id !== me?.user?.id && (
+                          <>
+                            <button className="btn !py-0.5 text-xs" onClick={() => act(() => api(`/users/${u.id}`, { method: "PATCH", json: { disabled: !u.disabled } }))}>{u.disabled ? "启用" : "禁用"}</button>
+                            <button className="btn btn-danger !py-0.5 text-xs" onClick={async () => { if (await dlg.confirm({ title: "删除用户", message: `确定删除用户「${u.username}」吗?`, confirmText: "删除", danger: true })) void act(() => api(`/users/${u.id}`, { method: "DELETE" })); }}>删除</button>
+                          </>
+                        )}
                       </>
                     )}
                   </td>

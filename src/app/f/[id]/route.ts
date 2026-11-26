@@ -3,6 +3,7 @@ import { authenticate } from "@/server/auth";
 import { serveMedia } from "@/server/files";
 import { fail } from "@/server/http";
 import { ensureReady } from "@/server/ready";
+import { clientIp } from "@/server/router";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -15,7 +16,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   try {
     await ensureReady();
     const { id } = await ctx.params;
-    const user = await authenticate(req);
+    const user = await authenticate(req, clientIp(req));
     return await serveMedia(req, id.replace(/\.[A-Za-z0-9]{1,5}$/, ""), "file", user);
   } catch (e) {
     return fail(e);

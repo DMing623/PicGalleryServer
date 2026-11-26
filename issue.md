@@ -298,6 +298,8 @@
 
 ## Issue #11：管理与认证三处缺陷：① `/status` 聚合统计漏过滤 `missing_at IS NULL`；② API 创建的管理员可自我降权锁死；③ 禁用/删用户后未清 `basicCache`
 
+> ✅ **已完成(已复现并修复)**:① `/status` 聚合加 `WHERE missing_at IS NULL`,与相册/图库口径一致;② `PATCH /users/:id` 禁止修改自己的角色,设置页本人行不再显示角色下拉与禁用/删除按钮;④ `/f/:id` 调用 `authenticate(req, clientIp(req))`,Basic 失败限流按真实 IP 计数。③ 当前代码 `invalidateUserCache()` 已同时清理 `basicCache`,无法复现,不需改动,仅在 `test-e2e.mjs` 增加「禁用后 Basic 立即失效」回归断言。
+
 - **性质判定**：✅ **确实是缺陷（Actual Bug）**
 - **代码定位**：
   - `src/server/api/admin.ts` 第 92–123 行、第 173–182 行

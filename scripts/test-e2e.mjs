@@ -198,6 +198,27 @@ async function sUsers() {
   ok(r.status === 200, "启用并改角色/重置密码");
   r = await admin.del(`/users/${tu.id}`);
   ok(r.status === 200, "删除用户");
+
+  // issue #11:接口创建的 admin 不能修改自己的角色(误降权会锁死);禁用用户后 Basic 缓存立即失效
+  {
+    const an = "adm_" + sfx;
+    const au = (await admin.post("/users", { username: an, password: "password-" + an, role: "admin" })).data;
+    const ac = await admin.login(an, "password-" + an);
+    r = await ac.patch(`/users/${au.id}`, { role: "viewer" });
+    eq(r.status, 400, "接口创建的 admin 不能降自己的角色 → 400");
+    r = await ac.get("/users");
+    eq(r.status, 200, "拒绝降权后仍是管理员");
+    const other = (await admin.post("/users", { username: "bsc_" + sfx, password: "password-bsc", role: "viewer" })).data;
+    const bc = await admin.login("bsc_" + sfx, "password-bsc");
+    bc.token = null; // 改走 Basic(会写入 60 秒 Basic 缓存)
+    r = await bc.get("/auth/me");
+    ok(r.data?.user?.username === "bsc_" + sfx, "Basic 认证可用(预热缓存)");
+    await admin.patch(`/users/${other.id}`, { disabled: true });
+    r = await bc.get("/auth/me");
+    ok(r.data?.user === null || r.status === 401, "禁用后 Basic 立即失效(不等 60 秒缓存)", r.buf.toString().slice(0, 120));
+    await admin.del(`/users/${other.id}`);
+    await admin.del(`/users/${au.id}`);
+  }
 }
 
 /* ===================================================================== */

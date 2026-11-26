@@ -630,7 +630,7 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(需 m
 |---|---|---|---|
 | GET `/users` | users | — | `{users[], roles[]}` |
 | POST `/users` | users | `{username(3-32 位 [A-Za-z0-9_.-]), password(≥8), role: admin\|manager\|uploader\|viewer}` | 创建,201 |
-| PATCH `/users/:id` | users | `{role?, disabled?, password?}` | env 管理员不可改角色/禁用/密码;不能禁用自己 |
+| PATCH `/users/:id` | users | `{role?, disabled?, password?}` | env 管理员不可改角色/禁用/密码;不能禁用/删除自己,也不能修改自己的角色 |
 | DELETE `/users/:id` | users | — | env 管理员与自己不可删 |
 
 ### 8.7 系统
