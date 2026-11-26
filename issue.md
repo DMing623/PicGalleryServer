@@ -119,3 +119,22 @@
   2. 当 URL（或图片的 `alt` 属性）中含有两个及以上下划线 `_`（例如 `[项目地址](https://example.com/pic_gallery_server/doc)` 或带 `utm_source=a&utm_medium=b` 的链接）时，后续执行的 `s.replace(/(^|[^_])_([^_\n]+)_/g, "$1<em>$2</em>")` 会在已生成的 HTML 字符串上直接把 `href` 属性里的 `_gallery_` 替换成 `<em>gallery</em>`，产出 `<a href="https://example.com/pic<em>gallery</em>server/doc">` 的损坏链接。
   3. 此外第 23 行 `safeUrl` 的正则 `/^(https?:\/\/|mailto:|\/)/i` 会放行以 `//` 开头的协议相对外部链接（如 `//evil.com`）。
 - **是否特意如此**：否。注释虽说明“表格等复杂语法不处理”是设计取舍，但链接/图片是明确声明支持的核心语法，URL 中的 `_` 被斜体正则破坏属于典型的替换顺序缺陷。
+
+---
+
+## Issue #5：站点通知的「置顶 (`pinned`)」功能在发布页可勾选保存，但在通知面板与服务端查询中完全未生效
+
+- **性质判定**：✅ **确实是缺陷（功能未闭环 / 与代码注释及 UI 设计不一致）**
+- **代码定位**：
+  - `src/db/schema.ts` 第 167–168 行
+  - `src/server/notices.ts` 第 32–36 行
+  - `src/components/NoticeBell.tsx` 第 161–172 行、第 368–388 行
+  - `src/components/settings/NoticeTab.tsx` 第 59 行、第 141 行、第 164 行
+  - `src/db/index.ts` 第 82 行
+- **预期功能**：
+  `src/db/schema.ts` 第 167 行明确注释：`/** 置顶(在通知面板里优先展示) */ pinned: boolean("pinned").notNull().default(false)`；且「设置 → 通知发布」（`NoticeTab.tsx` 第 141 行）提供了「置顶」复选框并在已发布列表显示 `<span className="chip">置顶</span>`。
+- **实际代码实现与问题分析**：
+  1. **服务端查询未按 `pinned` 排序**：`src/server/notices.ts` 第 32–36 行 `listNotices()` 仅执行 `.orderBy(desc(notices.createdAt)).limit(MAX_NOTICES)`，未将 `desc(notices.pinned)` 放在排序首位（若置顶通知是较早发布的且总通知数超过 300 条，甚至会被 `.limit(300)` 截断丢弃）。
+  2. **前端通知面板 (`NoticeBell.tsx`) 完全忽略了 `pinned` 字段**：`NoticeBell.tsx` 在第 161–172 行按日期分组并在组内仅按 `b.createdAt.localeCompare(a.createdAt)` 排序；在渲染面板顶部概况栏（第 180 行 `const latest = items[0]`）和展开通知列表（第 368–388 行）时，既没有优先展示置顶通知，也没有渲染任何「置顶」标记。
+  3. **SQLite 布尔列白名单遗漏 `pinned`**：`src/db/index.ts` 第 82 行 `const BOOL_COLUMNS = new Set(["disabled", "readonly"])` 未加入后来新增的 `"pinned"` 列（虽然 `notices.ts` 通过 `pinned: !!r.pinned` 手动强转规避了 API 返回 `0/1`，但 Drizzle 查询出的原始行对象在 SQLite 下 `r.pinned` 为数字 `0/1` 而非布尔值）。
+- **是否特意如此**：否。数据库字段、API 读写、管理端「置顶」复选框均已实现，仅展示端与排序逻辑漏掉了对 `pinned` 的处理。
