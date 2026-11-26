@@ -79,7 +79,7 @@ interface SqliteHandle {
  * 布尔列名白名单:pg 驱动返回 true/false,而 SQLite 只有 0/1。
  * 读回时把这些列还原成布尔值,避免 API 里出现 1/0。
  */
-const BOOL_COLUMNS = new Set(["disabled", "readonly"]);
+const BOOL_COLUMNS = new Set(["disabled", "readonly", "pinned"]);
 
 /** node:sqlite 只接受 null / number / bigint / string / Uint8Array / boolean */
 function coerceParams(params: unknown[]): unknown[] {

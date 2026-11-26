@@ -10,7 +10,8 @@ import { randomId } from "./media/types";
  * 站点通知:管理者及以上发布,所有登录用户可读。
  *
  * 已读状态按「用户 × 通知」记录在 pgs_notice_reads 里;游客没有账户,
- * 其已读状态保存在浏览器 localStorage(前端处理),服务端只返回空列表。
+ * 服务端对游客只返回空列表(游客看不到站点通知)。
+ * 置顶通知(pinned)排在最前,其后按发布时间倒序。
  */
 
 export interface NoticeDto {
@@ -32,7 +33,7 @@ export async function listNotices(user: AuthUser | null): Promise<{ items: Notic
   const rows = await db
     .select()
     .from(notices)
-    .orderBy(desc(notices.createdAt))
+    .orderBy(desc(notices.pinned), desc(notices.createdAt))
     .limit(MAX_NOTICES);
   const reads = rows.length
     ? await db

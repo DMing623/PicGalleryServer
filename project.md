@@ -655,7 +655,7 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(源�
 
 | 方法 路径 | 权限 | 说明 |
 |---|---|---|
-| GET `/notices` | public | `{items:[{id,title,body,pinned,createdAt,updatedAt,createdBy,createdByName,read}], unread, total, timezone}`;游客返回空列表 |
+| GET `/notices` | public | `{items:[{id,title,body,pinned,createdAt,updatedAt,createdBy,createdByName,read}], unread, total, timezone}`;置顶(`pinned`)排在最前,其后按发布时间倒序;游客返回空列表 |
 | GET `/notices/unread` | public | `{unread}`(铃铛红点,轮询用) |
 | POST `/notices` | notice.publish | `{title(≤120), body(Markdown,≤100000), pinned?}`;发布者自动标记已读 |
 | PATCH `/notices/:id` | notice.publish | `{title?, body?, pinned?}` |

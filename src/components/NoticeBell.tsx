@@ -33,6 +33,7 @@ export interface NoticeDto {
 }
 
 const PRIVACY_KEY = "privacy";
+const PINNED_KEY = "pinned";
 
 const dateKeyFormatters = new Map<string, Intl.DateTimeFormat>();
 const timeLabelFormatters = new Map<string, Intl.DateTimeFormat>();
@@ -166,8 +167,8 @@ export default function NoticeBell() {
       arr.push(n);
       m.set(k, arr);
     }
-    // 每天内按时间倒序;日期整体倒序
-    for (const arr of m.values()) arr.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    // 每天内置顶优先,再按时间倒序;日期整体倒序
+    for (const arr of m.values()) arr.sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt.localeCompare(a.createdAt));
     return [...m.entries()].sort((a, b) => b[0].localeCompare(a[0]));
   }, [items, tz]);
 
@@ -177,7 +178,10 @@ export default function NoticeBell() {
     return s;
   }, [items, tz]);
 
-  const latest = items[0];
+  // 置顶通知(服务端已排在最前)
+  const pinnedItems = useMemo(() => items.filter((n) => n.pinned), [items]);
+  // 概况栏展示:优先未读(其中置顶的排最前),全部已读时回退到第一条
+  const latest = items.find((n) => !n.read) ?? items[0];
 
   /* ---------- 操作 ---------- */
   async function markAll() {
@@ -216,7 +220,7 @@ export default function NoticeBell() {
     }
   }
 
-  const selItems = sel === PRIVACY_KEY ? [] : (groups.find(([k]) => k === sel)?.[1] ?? []);
+  const selItems = sel === PRIVACY_KEY ? [] : sel === PINNED_KEY ? pinnedItems : (groups.find(([k]) => k === sel)?.[1] ?? []);
 
   return (
     <>
@@ -289,7 +293,10 @@ export default function NoticeBell() {
                     {unread > 0 ? (
                       <>
                         <span style={{ color: "var(--accent)" }}>● {unread} 条未读</span>
-                        {latest && <span className="muted"> · 最新:{latest.title}</span>}
+                        {latest && <span className="muted">
+                            {" "}
+                            · {latest.pinned ? "📌 置顶" : "最新"}:{latest.title}
+                          </span>}
                       </>
                     ) : (
                       <span className="muted">{items.length ? "全部已读" : "暂无站点通知"}</span>
@@ -319,6 +326,21 @@ export default function NoticeBell() {
                       🛡 安全隐私协议
                       <span className="muted ml-auto text-[11px]">默认已读</span>
                     </button>
+                    {pinnedItems.length > 0 && (
+                      <button
+                        className={`notice-date ${sel === PINNED_KEY ? "on" : ""} ${pinnedItems.some((n) => !n.read) ? "unread" : ""}`}
+                        onClick={() => {
+                          setSel(PINNED_KEY);
+                          setDropOpen(false);
+                          setExpanded(new Set());
+                        }}
+                      >
+                        <span className="min-w-0 flex-1 truncate">📌 置顶通知</span>
+                        <span className="muted ml-2 shrink-0 text-[11px]">
+                          {pinnedItems.length} 条{pinnedItems.some((n) => !n.read) ? " · 未读" : ""}
+                        </span>
+                      </button>
+                    )}
                     {groups.map(([k, arr]) => {
                       const un = unreadDates.has(k);
                       return (
@@ -364,14 +386,21 @@ export default function NoticeBell() {
                 ) : (
                   <div className="space-y-2">
                     {loading && <p className="muted text-sm">加载中…</p>}
-                    {!loading && !selItems.length && <p className="muted text-sm">这一天没有通知</p>}
+                    {!loading && !selItems.length && <p className="muted text-sm">{sel === PINNED_KEY ? "没有置顶通知" : "这一天没有通知"}</p>}
                     {selItems.map((n) => {
                       const on = expanded.has(n.id);
                       return (
                         <div key={n.id} className={`notice-item ${on ? "open" : ""} ${n.read ? "" : "unread"}`}>
                           <button className="notice-head" onClick={() => toggle(n.id)} aria-expanded={on}>
                             <span className="notice-time">{timeLabel(n.createdAt, tz)}</span>
-                            <span className="min-w-0 flex-1 truncate text-left text-sm">{n.title}</span>
+                            <span className="min-w-0 flex-1 truncate text-left text-sm">
+                              {n.pinned && (
+                                <span className="mr-1" title="置顶" aria-label="置顶">
+                                  📌
+                                </span>
+                              )}
+                              {n.title}
+                            </span>
                             {!n.read && <span className="notice-unread-dot" aria-label="未读" />}
                             <span className="muted shrink-0 text-xs" aria-hidden>
                               {on ? "▲" : "▼"}

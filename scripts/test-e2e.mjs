@@ -1156,6 +1156,17 @@ async function sSite() {
   eq(r.data.unread, 0, "已读后未读数 0");
   r = await st.mgr.patch(`/notices/${nid}`, { title: T0 + "-改", pinned: true });
   ok(r.status === 200, "PATCH 通知");
+  // issue #5:置顶通知排在最前(即使更早发布),pinned 字段为布尔值
+  {
+    const r2 = await st.mgr.post("/notices", { title: T0 + "-新", body: "n2", pinned: false });
+    const n2 = r2.data?.id;
+    const l = (await st.vwr.get("/notices")).data.items;
+    const iOld = l.findIndex((n) => n.id === nid);
+    const iNew = l.findIndex((n) => n.id === n2);
+    ok(iOld >= 0 && iNew >= 0 && iOld < iNew, "置顶通知排在更新的非置顶通知之前", `${iOld} / ${iNew}`);
+    ok(l.every((n) => typeof n.pinned === "boolean") && l[iOld]?.pinned === true && l[iNew]?.pinned === false, "pinned 字段为布尔值");
+    if (n2) await st.mgr.del(`/notices/${n2}`);
+  }
   r = await st.mgr.del(`/notices/${nid}`);
   ok(r.status === 200, "删除通知");
   r = await st.mgr.del(`/notices/${nid}`);
