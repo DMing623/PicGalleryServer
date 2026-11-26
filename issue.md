@@ -225,3 +225,26 @@
   3. **扫描锁 `scanLocks` 仅按单个相册 `code` 互斥（第 1051 行）**：
      当父相册 `dir_parent` 正在执行递归扫描（`recursive=true`）时，若同时对子相册 `dir_child` 发起 `POST /albums/dir_child/scan`，由于 `scanLocks.has("dir_child")` 为 `false`，两个扫描任务会并发扫描同一子目录树。
 - **是否特意如此**：否。“空相册立即清理、非空相册二次确认”的注释表明作者希望避免幽灵空相册，但忽略了「父目录本层无文件而子孙目录有大量文件」的树形结构，以及与 7 天宽限期不一致的问题。
+
+---
+
+## Issue #9：挂载目录 (`storage='ext'`) 中的疑似损坏文件清理后未入黑名单，导致定时扫描无限重复入库与失败
+
+- **性质判定**：✅ **确实是缺陷（Actual Bug，源于只读保护设计与扫描机制未闭环）**
+- **代码定位**：`src/server/media/corrupt.ts` 第 103–126 行；配合 `src/server/albums.ts` 第 841–843 行
+- **预期功能（`README.md` / `project.md` §6.13）**：
+  疑似损坏文件可一键清理或停止上传满 5 小时后自动清理；对于挂载目录（`ext`），系统不删除服务器上的原文件，清理后该损坏文件不应再反复出现在疑似损坏列表中。
+- **实际代码实现与问题分析**：
+  在 `src/server/media/corrupt.ts` 的 `purgeCorrupt()`（第 109–124 行）中：
+  ```ts
+  const mounted = rows.filter((r) => r.storage === "ext").map((r) => r.id);
+  ...
+  // 挂载目录:只删登记,绝不物理删除用户自己的文件
+  if (mounted.length) {
+    const r = await deleteMediaByIds(mounted, false, { user: null, block: false });
+    removed += r.removed;
+    failed += r.failed.length;
+  }
+  ```
+  - **特意设计部分**：对 `storage === "ext"` 传 `purge = false`（不物理删除用户挂载目录中的源文件）是**项目特意如此的安全设计**。
+  - **实际缺陷部分**：同时传入了 `block: false`（不写入 `pgs_blocklist`）。由于源文件仍留在挂载目录中，且没有写入 `pgs_blocklist`，当下一次挂载目录扫描（`scanAllMounted` 定时扫描或手动扫描）执行时，`scanOne()` 发现该文件既不在 `pgs_media` 也不在 `blockedExtKeys()` 黑名单中，会**立即将其当作新文件重新入库并入队解码** → 解码再次失败变为 `status='failed'` → 再次进入「疑似损坏文件」 → 自动清理再次以 `block: false` 删除记录 → 下次扫描再次入库，形成无限循环。
