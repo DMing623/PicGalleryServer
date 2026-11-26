@@ -111,7 +111,9 @@ function readPassword() {
   return process.env.PGS_PASSWORD ?? "";
 }
 
-const TOKEN = flags.token ?? process.env.PGS_TOKEN ?? readCredFile()?.token ?? "";
+// `pgs login` 必须用密码换新令牌:忽略本地已保存/环境里的旧令牌(否则已登录过就永远报"缺少密码",也无法切换账号/服务器)
+const IS_LOGIN = pos[0] === "login";
+const TOKEN = IS_LOGIN ? "" : (flags.token ?? process.env.PGS_TOKEN ?? readCredFile()?.token ?? "");
 const PASS = TOKEN ? "" : readPassword();
 
 if (!TOKEN && !PASS && !["login", "help", "version", undefined].includes(pos[0])) {
@@ -126,7 +128,8 @@ const AUTH = TOKEN ? `Bearer ${TOKEN}` : "Basic " + Buffer.from(`${USER}:${PASS}
 
 /** 带超时与指数退避重试的请求(429/5xx/网络错误重试,issue §4.3) */
 async function call(method, p, body, { retries = 3, timeoutMs = 120_000 } = {}) {
-  const headers = { authorization: AUTH };
+  // 登录请求自带用户名/密码,不附带 Authorization(避免过期/失效的旧凭据干扰)
+  const headers = p === "/auth/login" ? {} : { authorization: AUTH };
   let payload = body;
   if (body && !(body instanceof FormData)) {
     headers["content-type"] = "application/json";

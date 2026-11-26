@@ -68,6 +68,9 @@ r = pgs(["status"], { noAuth: true });
 ok(r.code === 0 && json(r)?.version, "使用已保存令牌执行 status(无需密码)");
 r = pgs(["status", "queue"], { noAuth: true });
 ok(r.code === 0 && typeof json(r)?.concurrency === "number", "status queue");
+// issue #1:本地已有凭据文件时,login 仍须能用密码重新登录(此前恒报"缺少密码")
+r = pgs(["login", "--password-stdin"], { input: PASS + "\n", noAuth: true });
+ok(r.code === 0 && /已登录/.test(r.out), "已有凭据文件时 login 可重新登录", (r.err || r.out).trim().slice(0, 100));
 r = pgs(["status"], { noAuth: true, env: { PGS_PASSWORD: PASS } });
 ok(r.code === 0, "PGS_PASSWORD 环境变量 + Basic 也可用(令牌优先)");
 
