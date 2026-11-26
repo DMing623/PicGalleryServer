@@ -35,6 +35,8 @@ interface QueueState {
   waiters: Array<() => void>;
   /** 每个 id 的重试次数(指数退避,issue §2.7) */
   attempts: Map<string, number>;
+  /** 退避等待中的重试定时器:退避期间任务不在 queued/running,必须靠它才能让 idle/idleIds 知道「还没处理完」 */
+  retryTimers: Map<string, ReturnType<typeof setTimeout>>;
   /** 正在执行的 id 集合,以及「执行期间又被要求重新处理」的 id(执行结束后补跑一次) */
   runningIds: Set<string>;
   dirty: Set<string>;
@@ -60,10 +62,11 @@ export function schedulerLimits(): Limits {
 const g = globalThis as typeof globalThis & { __pgsQueue2?: QueueState };
 const state: QueueState = (g.__pgsQueue2 ??= {
   sched: new Scheduler(schedulerLimits()),
-  queued: new Set(), done: 0, failed: 0, runner: null, prober: null, rejector: null, waiters: [], attempts: new Map(),
+  queued: new Set(), done: 0, failed: 0, runner: null, prober: null, rejector: null, waiters: [], attempts: new Map(), retryTimers: new Map(),
   runningIds: new Set(), dirty: new Set(), probing: new Set(),
   pressure: { state: "normal", below: 0 }, pressureSince: Date.now(), pressureReason: "", sampling: false,
 });
+state.retryTimers ??= new Map(); // 热重载沿用旧 globalThis 状态时补齐新字段
 const sched = state.sched;
 sched.limits = schedulerLimits(); // 热重载后配置可能变化
 
@@ -159,7 +162,7 @@ function pump() {
     if (!p) break;
     runTask(p.entry);
   }
-  if (!sched.run.running && !sched.waiting) {
+  if (!sched.run.running && !sched.waiting && !state.retryTimers.size) {
     const w = state.waiters.splice(0);
     w.forEach((f) => f());
   }
@@ -180,9 +183,17 @@ function runTask(entry: { id: string; cls: Cls; estMB: number }) {
       const n = (state.attempts.get(id) ?? 0) + 1;
       if (n <= MAX_ATTEMPTS) {
         state.attempts.set(id, n);
-        // 注意:此时 finally 还没跑完,但等定时器触发时 queued 里早已没有该 id,
-        // 以前这里用 `if (!queued.has(id)) return` 判断,导致重试永远不会发生(attempts 也一直残留)
-        setTimeout(() => enqueue(id, true), 1000 * 4 ** (n - 1)).unref?.();
+        // 退避期间 id 会被 finally 移出 queued,所以把定时器登记到 retryTimers:
+        // idle()/idleIds() 据此判断「还有重试没做完」,媒体被删除时也能 cancelRetry() 取消
+        // (以前定时器句柄没有记录,upload?wait=1 会在退避窗口内提前返回)
+        const old = state.retryTimers.get(id);
+        if (old) clearTimeout(old);
+        const timer = setTimeout(() => {
+          state.retryTimers.delete(id);
+          enqueue(id, true);
+        }, 1000 * 4 ** (n - 1));
+        timer.unref?.();
+        state.retryTimers.set(id, timer);
       } else {
         state.attempts.delete(id);
         state.failed++;
@@ -197,6 +208,12 @@ function runTask(entry: { id: string; cls: Cls; estMB: number }) {
 
 /** 加入队列(同 id 去重)。priority=true 插队到最前。 */
 export function enqueue(id: string, priority = false) {
+  // 手动/补跑入队优先于退避等待:取消尚未触发的重试定时器,立即重新处理
+  const pending = state.retryTimers.get(id);
+  if (pending) {
+    clearTimeout(pending);
+    state.retryTimers.delete(id);
+  }
   if (state.queued.has(id)) {
     if (state.runningIds.has(id)) state.dirty.add(id);
     return;
@@ -204,6 +221,21 @@ export function enqueue(id: string, priority = false) {
   state.queued.add(id);
   sched.add(id, priority);
   pump();
+}
+
+/** 媒体被删除等场景:取消退避中的重试并清掉重试计数,避免到期后对已不存在的记录再次入队 */
+export function cancelRetry(ids: string[]) {
+  let changed = false;
+  for (const id of ids) {
+    const t = state.retryTimers.get(id);
+    if (t) {
+      clearTimeout(t);
+      state.retryTimers.delete(id);
+      changed = true;
+    }
+    state.attempts.delete(id);
+  }
+  if (changed) pump();
 }
 
 export function queueStats() {
@@ -234,7 +266,7 @@ export function queueStats() {
 
 /** 等待队列清空(整体) */
 export function idle(timeoutMs: number): Promise<void> {
-  if (!sched.run.running && !sched.waiting) return Promise.resolve();
+  if (!sched.run.running && !sched.waiting && !state.retryTimers.size) return Promise.resolve();
   return new Promise((resolve) => {
     const t = setTimeout(resolve, timeoutMs);
     state.waiters.push(() => {
@@ -251,7 +283,7 @@ export function idleIds(ids: string[], timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
     const started = Date.now();
     const tick = () => {
-      for (const id of [...target]) if (!state.queued.has(id)) target.delete(id);
+      for (const id of [...target]) if (!state.queued.has(id) && !state.retryTimers.has(id)) target.delete(id);
       if (!target.size || Date.now() - started > timeoutMs) {
         clearInterval(timer);
         resolve();

@@ -23,6 +23,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import zlib from "node:zlib";
 import sharp from "sharp";
 import { Client, createSuite, listFilesRec, sleep, waitFor, waitProcessed } from "./lib/harness.mjs";
 
@@ -389,6 +390,46 @@ async function sUpload() {
     ok(local.startsWith("2021-07-20T12:34:56"), "takenAt 取自 DateTimeOriginal", `${d.takenAt} → ${tz} ${local}`);
   }
   ok(String(d.sortAt) === String(d.takenAt), "sortAt = takenAt");
+  // issue #13:含 OffsetTimeOriginal 时,takenAt 与 summary.time.taken 都应是「墙上时间 + 该偏移」的绝对时刻,
+  // 与服务进程 TZ / 站点时区无关(12:00 +09:00 = 03:00Z);畸形 PNG iTXt(缺 NUL)不得产生下标回绕的垃圾条目
+  {
+    const offJpg = await sharp({ create: { width: 16, height: 16, channels: 3, background: "#789" } })
+      .withExif({ IFD0: { Make: "PGS-Off" }, IFD2: { DateTimeOriginal: "2021:07:20 12:00:00", OffsetTimeOriginal: "+09:00" } })
+      .jpeg().toBuffer();
+    const png0 = await sharp({ create: { width: 16, height: 16, channels: 3, background: "#987" } }).png().toBuffer();
+    const crcBuf = (t, data) => {
+      const b = Buffer.alloc(4);
+      b.writeUInt32BE(zlib.crc32(Buffer.concat([Buffer.from(t, "latin1"), data])) >>> 0);
+      return b;
+    };
+    const chunk = (t, data) => {
+      const len = Buffer.alloc(4);
+      len.writeUInt32BE(data.length);
+      return Buffer.concat([len, Buffer.from(t, "latin1"), data, crcBuf(t, data)]);
+    };
+    const iend = png0.length - 12; // IEND 固定 12 字节
+    const badPng = Buffer.concat([
+      png0.subarray(0, iend),
+      chunk("iTXt", Buffer.from("BadKey\0\0\0en", "latin1")), // keyword\0 flag method lang —— 缺语言/翻译关键字后的 NUL
+      png0.subarray(iend),
+    ]);
+    const up = await admin.upload({ album: st.A.code, wait: 1 }, [
+      { data: offJpg, filename: "pgs-issue13-offset.jpg" },
+      { data: badPng, filename: "pgs-issue13-bad-itxt.png" },
+    ]);
+    const [o1, o2] = up.data?.results ?? [];
+    ok(o1?.status === "created" && o2?.status === "created", "issue13 样本上传成功", JSON.stringify(up.data?.results));
+    if (o1?.id) {
+      const x = (await admin.get(`/media/${o1.id}`)).data;
+      eq(new Date(x.takenAt).toISOString(), "2021-07-20T03:00:00.000Z", "带 OffsetTimeOriginal:takenAt = 墙上时间 + 偏移(与 TZ 无关)");
+      eq(x.meta?.summary?.time?.taken, "2021-07-20T03:00:00.000Z", "summary.time.taken 与 takenAt 口径一致");
+    }
+    if (o2?.id) {
+      const x = (await admin.get(`/media/${o2.id}`)).data;
+      ok(x.status === "ready" && !("BadKey" in (x.meta?.text ?? {})), "畸形 iTXt 块被忽略,不产生回绕的垃圾文本", JSON.stringify(x.meta?.text));
+    }
+    for (const x of [o1, o2]) if (x?.id) await admin.del(`/media/${x.id}?purge=1`);
+  }
   eq(m.summary.file.format, "jpeg", "文件格式");
   const ai = (await admin.get(`/media/${st.up["ai-a1111.png"].id}`)).data;
   ok(ai.meta.ai && /panda/.test(ai.meta.ai.prompt || ""), "AI 元数据:prompt", JSON.stringify(ai.meta.ai).slice(0, 200));

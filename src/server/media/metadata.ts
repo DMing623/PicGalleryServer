@@ -163,6 +163,38 @@ function parseTaken(raw: string, tz: string): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/** 规范化 EXIF 偏移标签(OffsetTimeOriginal 等)为 ±hh:mm;非法返回 null */
+function normOffset(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const m = /^([+-])(\d{2}):?(\d{2})$/.exec(v.trim());
+  if (!m || +m[2] > 14 || +m[3] > 59) return null;
+  return `${m[1]}${m[2]}:${m[3]}`;
+}
+
+/**
+ * 统一解析 EXIF/XMP 时间 → 绝对时刻(与 takenAt 列、summary.time.* 共用同一口径):
+ *  - Date:exifr 的 reviveValues 把 EXIF 墙上时间按【进程 TZ】造成 Date(并不会结合 OffsetTime* 标签),先还原成墙上时间;
+ *  - 有合法偏移标签(offset)→ 按「墙上时间 + 该偏移」得到绝对时刻,与进程/站点时区无关;
+ *  - 否则按【站点时区】解释。
+ */
+function resolveTime(v: unknown, offset: string | null, tz: string): Date | null {
+  let raw: string;
+  if (v instanceof Date) {
+    if (Number.isNaN(v.getTime())) return null;
+    raw = formatWallClock(v);
+  } else if (typeof v === "string") raw = v;
+  else return toDate(v);
+  const off = normOffset(offset);
+  if (off) {
+    const m = /^(\d{4})[:-](\d{2})[:-](\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(raw.trim());
+    if (m) {
+      const d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}${off}`);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+  }
+  return parseTaken(raw, tz);
+}
+
 /** 把 Date / 字符串 / EXIF 的 "YYYY:MM:DD HH:MM:SS" 统一转成 Date;失败返回 null */
 function toDate(v: unknown): Date | null {
   if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;
@@ -338,14 +370,20 @@ export async function extractImageMeta(file: string, facts: ImageFacts, timezone
   // 于是同一张照片在 TZ=UTC 与 TZ=Asia/Shanghai 的机器上会差 8 小时。
   // 这里统一还原成「墙上时间」后按【站点时区】重新解释,与通知时间/日期分组口径一致。
   const tz = timezone || config.defaultTimezone;
-  const hasOffset = !!g("OffsetTimeOriginal", "OffsetTime", "OffsetTimeDigitized");
-  const takenAt = hasOffset
-    ? toDate(taken) // 带偏移量:已是绝对时刻,直接用
-    : taken instanceof Date
-      ? parseTaken(formatWallClock(taken), tz) // 还原 exifr 按进程 TZ 造出的墙上时间
-      : typeof taken === "string"
-        ? parseTaken(taken, tz)
-        : toDate(taken);
+  // exifr 不会把 OffsetTimeOriginal 合并进 DateTimeOriginal(实测:有偏移标签时 Date 仍随进程 TZ 变化),
+  // 所以带偏移也必须先还原墙上时间,再叠加该偏移(见 resolveTime)
+  const offOriginal = normOffset(g("OffsetTimeOriginal", "OffsetTime"));
+  const offDigitized = normOffset(g("OffsetTimeDigitized", "OffsetTimeOriginal", "OffsetTime"));
+  const offModify = normOffset(g("OffsetTime"));
+  // 偏移标签与时间字段一一对应:DateTimeOriginal ↔ OffsetTimeOriginal,CreateDate ↔ OffsetTimeDigitized
+  const takenOff = g("DateTimeOriginal") !== undefined ? offOriginal : g("CreateDate") !== undefined ? offDigitized : null;
+  const takenAt = resolveTime(taken, takenOff, tz);
+  // summary.time.* 与 takenAt 同一口径(统一输出 ISO 绝对时刻),避免进程 TZ ≠ 站点时区时详情面板与 taken_at 列相差数小时
+  const timeStr = (v: unknown, off: string | null): string | null => {
+    if (v === undefined || v === null || v === "") return null;
+    const d = resolveTime(v, off, tz);
+    return d ? d.toISOString() : dateStr(v);
+  };
 
   const lat = num(parsed.gps?.latitude ?? g("GPSLatitude"));
   const lon = num(parsed.gps?.longitude ?? g("GPSLongitude"));
@@ -388,9 +426,9 @@ export async function extractImageMeta(file: string, facts: ImageFacts, timezone
       },
       time: {
         // 拍摄时间:优先 EXIF 的 DateTimeOriginal;仅含 XMP 的文件回落到 DateCreated
-        taken: dateStr(g("DateTimeOriginal", "DateCreated")),
-        created: dateStr(g("CreateDate", "DateCreated")),
-        modified: dateStr(g("ModifyDate", "DateTime")),
+        taken: timeStr(g("DateTimeOriginal", "DateCreated"), g("DateTimeOriginal") !== undefined ? offOriginal : null),
+        created: timeStr(g("CreateDate", "DateCreated"), g("CreateDate") !== undefined ? offDigitized : null),
+        modified: timeStr(g("ModifyDate", "DateTime"), offModify),
         timezone: fmt(g("OffsetTimeOriginal", "OffsetTime")),
       },
       gps: {

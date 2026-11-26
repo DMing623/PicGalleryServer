@@ -55,9 +55,12 @@ function parseTextChunk(type: string, data: Buffer): [string, string] | null {
   if (type === "zTXt") return [key, inflateSync(data.subarray(nul + 2)).toString("utf8")];
   // iTXt: keyword\0 flag method lang\0 translated\0 text
   const flag = data[nul + 1];
-  let p = nul + 3;
-  p = data.indexOf(0, p) + 1;
-  p = data.indexOf(0, p) + 1;
+  // 畸形块可能缺少语言标签/翻译关键字后的 NUL:indexOf 返回 -1 时 `-1 + 1 = 0` 会让下标回绕到缓冲区起点,必须直接放弃
+  const langEnd = data.indexOf(0, nul + 3);
+  if (langEnd < 0) return null;
+  const transEnd = data.indexOf(0, langEnd + 1);
+  if (transEnd < 0) return null;
+  const p = transEnd + 1;
   const body = data.subarray(p);
   return [key, (flag ? inflateSync(body) : body).toString("utf8")];
 }

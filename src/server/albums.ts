@@ -11,7 +11,7 @@ import { config, dirs } from "./config";
 import { E } from "./http";
 import { removeDerived } from "./media/derive";
 import { detectKind, randomId } from "./media/types";
-import { enqueue } from "./queue";
+import { cancelRetry, enqueue } from "./queue";
 import { driverFor, isStorageCode, s3Available } from "./storage";
 import { getSite } from "./settings";
 
@@ -482,6 +482,7 @@ export async function deleteMediaByIds(
       }
       await tx.delete(media).where(inArray(media.id, chunk));
     });
+    cancelRetry(chunk); // 退避重试中的已删除媒体不再入队
     // 2) 事务提交后再动物理文件:失败只记录并返回,不再"静默继续"(issue §2.4)
     for (const r of rows) {
       if (purge) {

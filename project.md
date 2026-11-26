@@ -87,7 +87,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
 
 | 状态 | 位置 | 内容 | 重启/多实例后果 |
 |---|---|---|---|
-| `__pgsQueue` | `server/queue.ts` | 单点准入调度器 `Scheduler`(`admission.ts`:类别分池 + 软内存预算 + 老化 + HD 队列)、探测中集合、重试计数、`dirty` 集合、统计与已注册 `limiter` | 重启后 `ensureReady()` 先清 `tmp/`、识别崩溃中断记录(`processing_started_ms`),再把其余 `status='pending'`(最多 20000 条)重新入队;多实例会重复处理 |
+| `__pgsQueue2` | `server/queue.ts` | 单点准入调度器 `Scheduler`(`admission.ts`:类别分池 + 软内存预算 + 老化 + HD 队列)、探测中集合、重试计数与退避定时器 `retryTimers`、`dirty` 集合、统计与已注册 `limiter` | 重启后 `ensureReady()` 先清 `tmp/`、识别崩溃中断记录(`processing_started_ms`),再把其余 `status='pending'`(最多 20000 条)重新入队;多实例会重复处理 |
 | `__pgsMetrics` | `server/metrics.ts` | 1 秒采样器:最近 10 分钟峰值 RSS/anon 滑动窗口、事件循环延迟直方图、动态内存压力状态(`pressure.ts`) | 重启即清零 |
 | `__pgsHd` | `server/hd/cache.ts` | HD 基图与游客水印成品缓存索引(含 LRU 时间)、失效代数 `gen`、统计 | 首次访问时重扫缓存目录重建;多实例会各自淘汰、容量记账不一致 |
 | `__pgsGuard` | `server/hd/guard.ts` | HD 限流窗口、批量访问检测、封禁表、最近 300 条安全事件 | 重启即清零(封禁解除);`logs/security.log` 落盘保留 |
@@ -129,7 +129,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
 │   ├─ albums/<albumCode>/            受管相册(local 存储)的原文件;albums/_inbox/ 为未归类收件箱
 │   ├─ derived/<id前2位>/<id>.thumb.webp|.preview.webp   永久派生图
 │   ├─ cache/hd/<id前2位>/<id>.<ver12>.<宽>.webp          HD 无水印基图缓存(LRU+TTL,可随时删除)
-│   ├─ cache/hd/wm/<id前2位>/<id>.<ver12>.<宽>.<wmFp8>.webp  游客水印成品缓存(与基图共享容量上限与失效代数)
+│   ├─ cache/hd/<id前2位>/<id>.<ver12>.<宽>.<wmFp8>.webp     游客水印成品缓存(与基图同目录,以 `.<wmFp8>` 后缀区分)(与基图共享容量上限与失效代数)
 │   ├─ branding/icon                  自定义站点图标
 │   ├─ logs/security.log(.1)          HD 安全事件(JSON Lines,>5MB 轮转一次)
 │   ├─ tmp/                           上传/导入/私有副本/BMP 转换/视频抽帧临时文件(启动时全清,之后每小时清 6h 前遗留)
@@ -165,7 +165,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
    │   ├─ keys.ts                     下载密钥:创建(upsert)/列表/删除/验证/过期清理
    │   ├─ notices.ts                  站点通知:列表/未读/发布/编辑/删除/已读
    │   ├─ files.ts                    serveMedia():thumb/preview/file/stream 的授权与输出(Range/ETag;无效密钥限流走 clientIp)
-   │   ├─ queue.ts                    进程内任务队列:解码前轻量探测(probeLimiter)→ Scheduler 准入 → 重试 3 次指数退避 + limiter()
+   │   ├─ queue.ts                    进程内任务队列:解码前轻量探测(probeLimiter)→ Scheduler 准入 → 重试 3 次指数退避(退避期间登记 `retryTimers`,`idle`/`idleIds` 视为未完成;媒体删除时 `cancelRetry`) + limiter()
    │   ├─ storage/index.ts            存储驱动抽象:local / ext / s3,materialize()
    │   ├─ hd/                         高清预览(HD)子系统(§6.14)
    │   │   ├─ service.ts              令牌签发/校验 → 权限 → 游客水印成品缓存/基图缓存/按需转换(三路预算分流)→ 水印 → 输出
@@ -400,13 +400,13 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
 
 ### 6.11 `queue.ts`、`admission.ts`、`pressure.ts` 与 `ready.ts`
 
-**单点准入调度(`admission.ts` + `queue.ts`,状态在 `globalThis.__pgsQueue`)**
-- `enqueue(id, priorityOrOpts?)`:支持传入 `{priority, cls}`(`cls ∈ image|heic|video`,缺省由文件名后缀或探测补全);同 id 去重;若该 id 正在运行,登记进 `dirty`,运行结束后自动补跑一次。
+**单点准入调度(`admission.ts` + `queue.ts`,状态在 `globalThis.__pgsQueue2`)**
+- `enqueue(id, priority = false)`:`priority=true` 插队到最前;任务类别(`image|heic|video`)与内存估算由解码前的轻量探测补全;同 id 去重;若该 id 正在运行,登记进 `dirty`,运行结束后自动补跑一次;若该 id 正处于失败退避等待,则取消退避定时器并立即重新入队。失败重试期间(1s/4s/16s)id 记在 `retryTimers`,`idle()` / `idleIds()`(`upload?wait=1`)据此判断「还没处理完」,不会在退避窗口内提前返回;`cancelRetry(ids)` 供媒体删除后取消待触发的重试。
 - **解码前轻量探测**:`pump()` 对队首窗口未探测的任务调用 `probeMedia(id)`(`probeLimiter(4)` 并发,不占解码内存预算);若探测返回 `reject`(超过 `MEDIA_MAX_INPUT_MP` 或 `MEDIA_MAX_EST_MB`),直接调 `rejectMedia(id, reason)` 写 `[LIMIT]` 失败并摘除,不进入解码。
 - **单点准入(`Scheduler`)**:所有等待只发生在 `admission.ts` 一处,判定顺序固定为:
   1. **总并发与类别并发池**:`totalConcurrency`(`THUMB_CONCURRENCY`)且类别池未满(`image = THUMB_CONCURRENCY`、`heic = HEIC_CONCURRENCY`、`video = VIDEO_CONCURRENCY`),某类别满额时跳过队首继续挑选后面可运行的其它类别任务(消除 HEIC 阻塞 JPEG 的队首阻塞);
   2. **软内存预算(`MEDIA_BUDGET_MB`)与压力折扣**:并发任务估算内存总和 ≤ 有效预算;单个超软预算的大任务仅在当前无任何媒体任务运行时允许**独占启动**(`exclusive`);`MEDIA_BUDGET_MB=0` 时关闭预算约束;
-  3. **老化防饥饿(aging)与交互式优先**:被预算阻塞超过 10 秒的队首大任务成为栅栏,阻止后来的小任务继续插队;交互式 HD 请求(`withHd`)优先于后台派生任务,支持 `AbortSignal` 断开取消与 15 秒超时(`503 hd_busy` + `Retry-After`),并用 `AsyncLocalStorage` 禁止同一调用链嵌套申请预算。
+  3. **老化防饥饿(aging)与交互式优先**:被预算阻塞超过 30 秒(`agingMs`)的队首大任务成为栅栏,阻止后来的小任务继续插队;交互式 HD 请求(`withHd`)优先于后台派生任务,支持 `AbortSignal` 断开取消与 15 秒超时(`503 hd_busy` + `Retry-After`),并用 `AsyncLocalStorage` 禁止同一调用链嵌套申请预算。
 - **动态内存压力状态机(`pressure.ts` + `metrics.ts`)**:每秒读取 cgroup 工作集 `anon / limit`(无 cgroup 限制时取 `RSS / totalmem`):`<70% normal`、`70%~85% elevated`(有效预算 ×0.7)、`85%~93% high`(暂停 HEIC/视频/大图重任务,轻任务继续)、`>93% critical`(有任务运行时暂停新准入,空闲时仍放行最小任务以保证永不死锁);升级立即生效,降级需回落 5 个百分点并连续 3 次采样。
 - **失败重试**:非 `[LIMIT]` 异常最多重试 3 次,间隔 1s / 4s / 16s;手动点击"重新处理"时重置 `attempts = 0`。
 
@@ -438,14 +438,14 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
   - **令牌**:payload `{m:媒体id, s:"hd", u:用户id|null, w:宽度, exp}`,TTL `HD_TOKEN_TTL_SEC`(默认 90s);`checkHdToken` 校验 scope / 媒体 / 用户绑定。
   - **`serveHd` 流程与三路预算分流**:
     1. 验令牌(失败 → `hdStrike` + 403 `hd_token_invalid`)→ `guardHd(...,'serve')` → `loadVisibleImage`(`HD_COLS` 列投影,排除大字段,并检查 `row.missingAt` 与相册可见性)→ `versionOf(row)`(原文件不存在 → `invalidateHd` + 404);
-    2. **游客水印成品磁盘缓存(`cache/hd/wm/`)**:当水印开启、请求者为未登录游客(`uid === null`)且域名可信(`!wmDependsOnHost() || hostTrusted(req)`)时,以 `id + ver + width + wmFingerprint(host)` 查找成品缓存,命中直接返回(零 sharp 解码/合成开销);
+    2. **游客水印成品磁盘缓存(`cache/hd/` 下带 `.<wmFp8>` 后缀的文件)**:当水印开启、请求者为未登录游客(`uid === null`)且域名可信(`!wmDependsOnHost() || hostTrusted(req)`)时,以 `id + ver + width + wmFingerprint(host)` 查找成品缓存,命中直接返回(零 sharp 解码/合成开销);
     3. **未命中成品缓存时按三路申请 `Scheduler` 预算**:
        - `hit`(无水印基图缓存命中):仅申请轻量水印阶段预算 `wmEst`,执行 `applyWatermark`;
        - `coalesced`(同图同尺寸已有请求正在 `convert`):先等待 `inflight` Promise 拿到基图(期间不重复扣减解码预算),再申请 `wmEst` 执行 `applyWatermark`;
        - `miss`(基图未命中):用 `metaForRow(row)` 估算解码内存(超 `MEDIA_MAX_EST_MB` 返回 413 `hd_too_large`),申请覆盖 `convert + applyWatermark` 的预算,`convert` 产生产物并写入缓存后调用 `res.adjust(wmEst)` 立即释放解码差额,再完成水印合成;游客可缓存请求异步写入 `putCachedWm`;
     4. 响应头含 `cache-control: private, no-store, max-age=0`、`x-pgs-cache: hit|miss|coalesced`、`x-pgs-wm-cache: hit|miss|off|skip-user|untrusted-host`、`x-pgs-wm`、`x-pgs-hd-width`。
   - **`convert`**:`materialize` 原文件 → `storage==='ext'` 的常规图片先 `COPYFILE_FICLONE` 复制私有副本防 `SIGBUS` → HEIC 走 `heicToJpeg(file, true)`(`heicHdGate`),BMP 走 `bmpInput(file)` → `sharp().rotate().resize().webp().toBuffer()`。
-- `cache.ts`:管理基图(`cache/hd/<id前2位>/`)与游客水印成品(`cache/hd/wm/<id前2位>/`),共享 `HD_CACHE_MAX_MB` 容量上限、`HD_CACHE_TTL_DAYS` 过期时间与失效代数 `gen`(`invalidateHd(id)` 同步清理两类缓存)。
+- `cache.ts`:管理基图(`cache/hd/<id前2位>/`)与游客水印成品(与基图同在 `cache/hd/<id前2位>/`,文件名多一段 `.<wmFp8>`),共享 `HD_CACHE_MAX_MB` 容量上限、`HD_CACHE_TTL_DAYS` 过期时间与失效代数 `gen`(`invalidateHd(id)` 同步清理两类缓存)。
 - `watermark.ts`:`buildLayer` 将旋转文字瓦片合成到 `(W+2·pad)×(H+2·pad)` raw 画布后直接 `extract` 裁回 `W×H` 并单次编码 PNG(消除双重 PNG 编解码);`layerFor` 缓存 ≤24 个水印层(FIFO);登录用户奇数行叠加 `userMarkCode(userId)`(`U-XXXXXX`)。
 - `guard.ts`:1 分钟滑动窗口限流 + 批量访问检测 + 封禁 + `logs/security.log`。
 
@@ -507,6 +507,7 @@ MediaMeta {
 }
 ```
 AI 参数来源:PNG `parameters`(Stable Diffusion WebUI)、`Comment`+`Software`(NovelAI,含 alpha 通道 LSB 隐写 `stealth_pngcomp/pnginfo`)、`prompt`(ComfyUI API 图)、`invokeai_metadata`、JPEG/WebP 的 EXIF `UserComment`。无则 `ai=null`,前端显示 N/A。
+时间口径:`taken_at` 与 `summary.time.taken/created/modified` 同一套换算(`metadata.ts#resolveTime`,统一输出 ISO 绝对时刻)——EXIF 墙上时间若带 `OffsetTimeOriginal/Digitized/OffsetTime` 偏移则按「墙上时间 + 偏移」(exifr 不会自动合并偏移,且其 `Date` 随进程 `TZ` 变化,必须先还原墙上时间),否则按站点时区解释,结果与服务进程 `TZ` 无关。PNG `iTXt` 块缺少语言/翻译关键字后的 NUL 分隔符时整块忽略(`png.ts#parseTextChunk`)。
 增删展示字段:改 `metadata.ts`(提取)+ `lib/meta-labels.ts`(标签)。
 
 ### 7.4 删除与删除黑名单
@@ -533,7 +534,7 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(需 m
   GET /media/:id/hd-token?w=<屏宽×DPR>   → guardHd('token') → loadVisibleImage → {token, width, expiresIn}
   GET /media/:id/hd?t=<token>&w=<档位>    → serveHd()  (见 §6.14)
         1) 每次请求先校验: 令牌 + 限流 + 可见性 + missingAt + versionOf
-        2) 游客且域名可信: 先查 cache/hd/wm/ 成品缓存 → 命中直接返回(零 sharp 合成)
+        2) 游客且域名可信: 先查 cache/hd/ 里的水印成品缓存 → 命中直接返回(零 sharp 合成)
         3) 未命中成品缓存: 按 hit / coalesced / miss 三路向 Scheduler 申请内存预算:
              hit / coalesced → 仅申请水印阶段预算 wmEst → applyWatermark
              miss            → 申请全流水线预算 → convert → putCached → adjust(wmEst) → applyWatermark
@@ -772,7 +773,7 @@ curl $A -X POST $B/blocklist/<bid>/restore        # 解除黑名单并重生成�
 | EXIF 最大读取 `EXIF_MAX_BYTES` | 64MB(TIFF 逐级放大 `EXIF_READ_BYTES`→8MB→64MB) | `media/metadata.ts` | 每个并发任务最多一个该大小的 Buffer |
 | PNG 隐写提取像素上限 | 16,000,000 | `media/png.ts#readStealthInfo` | 超过不提取 |
 | 队列重试与崩溃回路上限 | 3 次(运行时退避 1s/4s/16s;崩溃中断达 3 次写 `[INTERRUPTED]`) | `queue.ts` / `ready.ts` | — |
-| 老化阈值 `agingMs` / HD 等待超时 | 10s / 15s | `admission.ts` / `hd/service.ts` | 防大任务饥饿 / 超时返回 503 `hd_busy` |
+| 老化阈值 `agingMs` / HD 等待超时 | 30s / 15s | `admission.ts` / `hd/service.ts` | 防大任务饥饿 / 超时返回 503 `hd_busy` |
 | 启动恢复 pending 上限 | 20000 条 | `ready.ts` | 超出只警告 |
 | 缓存 TTL | 相册树 10s、相册统计 5s、黑名单外部键 5s、`/status` 5s、ffmpeg 探测 60s、Basic 认证 60s、用户对象 15s | `albums.ts` `blocklist.ts` `api/admin.ts` `auth.ts` | — |
 | 软删除宽限期 `MISSING_GRACE_MS` | 7 天 | `albums.ts` | — |
@@ -878,7 +879,7 @@ node cli/pgs.mjs reprocess | regenerate-derived
 - 文件输出与派生/HD 查询均做列投影(不含 `meta`/`search_text`);派生图 `ETag` + `max-age=300`,原文件 `no-store`;所有 S3 访问懒加载 SDK。
 - 密码 scrypt;失败路径只跑 1 次 scrypt(时序均衡复用固定哈希);Basic 与登录共用 IP + 用户名双维度限流;下载密钥只存哈希、最小长度 16、校验单条 SQL 完成并通过 `clientIp()` 限流;令牌 HMAC 常量时间比较并携带 `token_version`(改密码即失效);`local` 存储路径防穿越;挂载路径 `realpath` 后比对白名单并检查重叠;自定义图标光栅化重编码、SVG 以 `sandbox` CSP 输出;媒体 `Content-Type` 来自扩展名白名单且附带 `nosniff`。
 - 全局安全响应头在 `next.config.ts` 统一注入;`/f/*` 与 `/api/v1/media/*` 带 `X-Robots-Tag: noindex`;`public/robots.txt` 默认 `Disallow: /`;游客元数据按 `GUEST_META` 裁剪(GPS/序列号/作者邮箱/raw 不返回),备注不进公开搜索、`error` 对游客置空。
-- 水印在服务端合成进最终 WebP 像素(默认透明度 8%),前端不会先展示无水印大图;游客且域名可信时缓存水印成品(`cache/hd/wm/`),每次请求仍先完整校验令牌、限流与可见性;高清缓存目录不对外暴露;水印层缓存变体上限 24,**FIFO** 淘汰。
+- 水印在服务端合成进最终 WebP 像素(默认透明度 8%),前端不会先展示无水印大图;游客且域名可信时缓存水印成品(`cache/hd/` 下带 `.<wmFp8>` 后缀的文件),每次请求仍先完整校验令牌、限流与可见性;高清缓存目录不对外暴露;水印层缓存变体上限 24,**FIFO** 淘汰。
 - 数据库连接池无条件缓存到 `globalThis` 并监听 `error` 事件(避免空闲连接出错杀死进程),带 `statement_timeout`。
 - **内存模型**:进程 RSS 的主要来源是 sharp/libvips 的解码工作集(随输入像素、格式布局、并发数增长),而不是 V8 堆,也不是输出 Buffer;实测数据与推导见 §16。
 - 已知边界:播放令牌 + `Sec-Fetch-Dest` 校验只能防"直接下载",无法阻止录屏/抓包;进程内队列、限流与缓存均为单进程内存,**仅支持单实例部署**;`/media/import` 仍是同步长请求。
@@ -907,7 +908,7 @@ CI:`ci.yml`(一致性校验 + 单元测试 + typecheck + lint + build,Node 22);`
 1. **RSS 峰值 ≈ 基线 + Σ(同时在解码的任务的工作集)**。单个任务的工作集由「输入像素数 × 每像素字节 × 格式布局系数」决定,**与输出 Buffer 无关**:preview/thumb 输出均值仅约 176KB / 50KB,把 `toBuffer()` 改成 `toFile()` 仅作为代码卫生,峰值完全相同。
 2. **格式布局系数差异巨大**:常规 PNG / TIFF / 基线 JPEG 在 `sequentialRead` 下是流式解码,工作集约 0.7~1.5 字节/像素;**隔行(interlaced)PNG** 与**渐进式(progressive)JPEG** 必须整幅缓冲,约 3.4~3.8 字节/像素;**CMYK** 色彩空间转换最重(可达 15~30 MB/MP)。`sharp().metadata()` 的 `isProgressive` / `space` / `depth` 在解码前由 `probe.ts` 只读文件头(256KB)即可零解码识别。
 3. **像素加权单点准入(`admission.ts` + `estimate.ts`)**:仅按"任务个数"限制并发会让 4 个 100MP 隔行 PNG 打出 1430MB 峰值;引入按「格式布局 × 百万像素」估算的软预算(`MEDIA_BUDGET_MB`)与硬限制(`MEDIA_MAX_EST_MB`)后,4×100MP 隔行 PNG 峰值降至约 500MB,而常规小图吞吐不受影响;类别并发池(`image/heic/video`)同时消除了 HEIC 嵌套闸门造成的队首阻塞。
-4. **HD 水印合成与游客成品缓存**:水印层通过 raw 画布直裁单次编码 PNG(消除双重 PNG 编解码);未登录游客在可信域名下命中 `cache/hd/wm/` 成品缓存时不再执行 sharp 水印合成,重复打开同一张大图服务端 CPU 与瞬时内存开销接近零。
+4. **HD 水印合成与游客成品缓存**:水印层通过 raw 画布直裁单次编码 PNG(消除双重 PNG 编解码);未登录游客在可信域名下命中水印成品缓存时不再执行 sharp 水印合成,重复打开同一张大图服务端 CPU 与瞬时内存开销接近零。
 5. **动态内存压力保护(`pressure.ts`)**:每秒根据容器 cgroup `memory.stat` 的 `anon`(不计可回收文件页缓存)与 `memory.max` 比值调整 `normal / elevated / high / critical` 四级水位,即使估算偏低也能防止容器 OOM kill。
 
 ### 16.2 内存来源清单
@@ -917,7 +918,7 @@ CI:`ci.yml`(一致性校验 + 单元测试 + typecheck + lint + build,Node 22);`
 | Next + Node 基线 | 空载 ~250MB | — | 裸 sharp 进程仅 ~61MB |
 | libvips 解码工作集(派生图) | 见 §16.3 表 | `Scheduler`(`THUMB_CONCURRENCY` + `MEDIA_BUDGET_MB`)、`MEDIA_MAX_INPUT_MP`、`MEDIA_MAX_EST_MB`、`SHARP_CONCURRENCY` | 受格式布局影响最大 |
 | libvips 解码工作集(HD `convert`) | 同上 | `Scheduler`(`withHd` 三路预算分流)、`HD_CONCURRENCY`、`HD_MAX_INPUT_MP` | 转换完成后 `res.adjust(wmEst)` 立即释放解码差额 |
-| HD 水印合成 | 每次输出尺寸 W×H×12B 量级 | `Scheduler`(`wmEst`)、`HD_CONCURRENCY`、游客成品缓存 `cache/hd/wm/` | 游客命中成品缓存时为 0 |
+| HD 水印合成 | 每次输出尺寸 W×H×12B 量级 | `Scheduler`(`wmEst`)、`HD_CONCURRENCY`、游客成品缓存(`cache/hd/` 带 `.<wmFp8>`) | 游客命中成品缓存时为 0 |
 | HEIC | 整文件 Buffer + libheif(wasm)RGBA + JPEG 编码 | 类别池 `heic`(`HEIC_CONCURRENCY`,默认 1)+ 高权重估算(`HEIC_COEF`,低置信度自动 ×1.5) | HD 路径有独立 `heicHdGate(1)`,不排在后台批量任务之后 |
 | BMP | `ffmpeg` 子进程文件进文件出转临时 PNG(无 `ffmpeg` 回退 `decodeBmp`) | `probe.ts` 读前 26B 头做像素/内存拦截 + `Scheduler` | 有 `ffmpeg` 时不在 Node 堆内整图展开 |
 | EXIF 读取 | ≤64MB Buffer(仅 TIFF 的最坏情况) | 随派生并发 | — |

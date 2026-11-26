@@ -339,6 +339,8 @@
 
 ## Issue #13：后台队列退避重试期间提前移出 `queued` 导致 `upload?wait=1` 提前返回，以及 EXIF 时区/PNG `iTXt` 边界处理缺陷
 
+> ✅ **已完成(已复现并修复)**:(1) 队列新增 `retryTimers` 记录退避定时器:`idle()`/`idleIds()` 在退避期间视为未完成(`upload?wait=1` 不再提前返回),手动入队会取消退避立即重跑,媒体删除时 `cancelRetry()` 取消;(2) 实测 exifr 对含 `OffsetTimeOriginal` 的图片仍随进程 `TZ` 变化,新增 `resolveTime()`:墙上时间 + 偏移标签(无偏移则按站点时区),`takenAt` 与 `summary.time.taken/created/modified` 同一口径;(3) `parseTextChunk` 对缺 NUL 的 `iTXt` 整块忽略,不再下标回绕。`test-e2e.mjs` 上传章节增加偏移 EXIF 与畸形 iTXt 回归断言;`project.md` 同步(含附表 3 处文档滞后:`__pgsQueue2`、`enqueue(id, priority)`、`agingMs=30s`、水印成品缓存路径)。
+
 - **性质判定**：✅ **确实是缺陷（Actual Bug）**
 - **代码定位**：
   - `src/server/queue.ts` 第 178–195 行、第 236–264 行
