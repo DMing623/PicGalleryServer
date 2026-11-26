@@ -248,3 +248,28 @@
   ```
   - **特意设计部分**：对 `storage === "ext"` 传 `purge = false`（不物理删除用户挂载目录中的源文件）是**项目特意如此的安全设计**。
   - **实际缺陷部分**：同时传入了 `block: false`（不写入 `pgs_blocklist`）。由于源文件仍留在挂载目录中，且没有写入 `pgs_blocklist`，当下一次挂载目录扫描（`scanAllMounted` 定时扫描或手动扫描）执行时，`scanOne()` 发现该文件既不在 `pgs_media` 也不在 `blockedExtKeys()` 黑名单中，会**立即将其当作新文件重新入库并入队解码** → 解码再次失败变为 `status='failed'` → 再次进入「疑似损坏文件」 → 自动清理再次以 `block: false` 删除记录 → 下次扫描再次入库，形成无限循环。
+
+---
+
+## Issue #10：上传入库瞬间将管理员备注 `note` 写入了 `search_text`，在后台派生完成前违背了“备注不进 `search_text`”的隐私控制契约
+
+- **性质判定**：✅ **确实是缺陷（Actual Bug / 与文档隐私契约冲突）**
+- **代码定位**：`src/server/media/ingest.ts` 第 209 行
+- **预期功能（`README.md` / `project.md` §4.4 & §5）**：
+  - `README.md`：「管理员备注不参与公开搜索」
+  - `project.md` §4.4：「**管理员备注不进 `search_text`**：登录用户搜索时额外匹配 `note` 列，游客无法通过搜索探测备注。」
+  - `project.md` §5：「`note`(管理员备注,**不进 search_text**)」
+- **实际代码实现与问题分析**：
+  在 `src/server/media/ingest.ts` 的 `ingestOneInner()` 第 206–210 行插入初始 `pending` 记录时：
+  ```ts
+  await db.insert(media).values({
+    id, albumId: target.album?.id ?? null, kind: kind.kind, filename: path.basename(key), mime: kind.mime, size: file.size,
+    hash: file.hash, sortAt: new Date(), storage: target.storage, storageKey: key, status: "pending", note,
+    searchText: `${path.basename(key)}\n${note}`.toLowerCase(), uploadedBy: opts.user.id,
+  });
+  ```
+  此处直接将 `${note}` 拼接进了 `searchText` 列！
+  虽然当后台队列执行 `processMedia()` 成功后（`src/server/media/derive.ts` 第 261 行），会用 `buildSearchText(row.filename, meta)`（不含 `note`）覆盖 `searchText`；但在以下场景下，游客可通过公开搜索 `GET /api/v1/media?q=` 直接搜出管理员备注内容：
+  1. 批量上传或队列繁忙、文件尚处于 `status = 'pending'` 期间（`listMedia` 默认展示 `pending` 状态记录）；
+  2. 文件在探测阶段因超出 `MEDIA_MAX_INPUT_MP` / `MEDIA_MAX_EST_MB` 被 `rejectMedia()` 拒绝或处理中断，未能执行到 `derive.ts` 第 261 行覆盖 `searchText`。
+- **是否特意如此**：否。这是早期版本将 `note` 放入 `search_text` 时的残留代码，后来实现“备注不进 `search_text`（issue §11.3）”时只改了 `metadata.ts#buildSearchText` 和 `service.ts#listMedia`，漏改了 `ingest.ts` 第 209 行。
