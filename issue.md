@@ -292,3 +292,21 @@
      `src/server/auth.ts` 中维护了两个缓存：`basicCache`（Basic 认证缓存 60 秒，第 137 行）和 `userCache`（用户行缓存 15 秒，第 144 行）。但第 151–153 行的 `invalidateUserCache()` **只执行了 `userCache.clear()`，未执行 `basicCache.clear()`**。因此当管理员禁用或删除某个用户后，该用户在最长 60 秒内仍可通过 `Authorization: Basic` 继续通过鉴权。
   4. **公开文件路由 `/f/[id]` 调用 `authenticate(req)` 漏传客户端 IP**：
      `src/app/f/[id]/route.ts` 第 18 行调用 `authenticate(req)` 时未传入 `clientIp(req)`，导致在 `/f/:id` 上使用 HTTP Basic 认证失败时的限流键全部落入 `"unknown"` 桶而非真实客户端 IP。
+
+---
+
+## Issue #12：前后端交互契约不一致的三处缺陷：① 下载密钥长度提示 8–128 位但后端要求 16–128 位；② `manager` 看到挂载相册删除按钮但点击必报 403；③ 直链上传全失败时丢失逐条错误原因
+
+- **性质判定**：✅ **确实是缺陷（Actual Bug / 前后端实现不一致）**
+- **代码定位**：
+  - `src/components/settings/AdminTabs.tsx` 第 355 行 vs `src/server/keys.ts` 第 15、23 行
+  - `src/components/AlbumActions.tsx` 第 139–161 行 vs `src/server/api/albums.ts` 第 69 行
+  - `src/components/UploadDialog.tsx` 第 150 行、第 204–218 行 vs `src/server/api/media.ts` 第 153–155 行
+- **实际代码实现与问题分析**：
+  1. **下载密钥自定义长度前端提示与后端正则冲突**：
+     前端 `KeysTab`（`AdminTabs.tsx` 第 355 行）输入框占位符写着 `placeholder="自定义密钥(留空自动生成,8-128 位字母数字_-)"`；而后端 `src/server/keys.ts` 第 15 行已升级为 `const KEY_RE = /^[A-Za-z0-9_-]{16,128}$/`（最小 16 位）。用户按界面提示输入 8–15 位密钥提交时会收到 400 `"自定义密钥只能含字母数字 _ -,长度 16~128"`。
+  2. **`AlbumActions` 对 `manager` 角色展示了无权执行的挂载相册「删除」按钮**：
+     `AlbumActions.tsx` 第 91 行和第 113 行对挂载相册的「只读切换」与「重新扫描」按钮均使用 `{mount && album.kind === "mounted" && ...}` 做了权限守卫（仅 `admin` 可见）；但第 139 行的「🗑 删除」按钮未对 `album.kind === "mounted" && !mount` 做隐藏或禁用。导致 `manager` 角色在挂载相册上看到「🗑 删除」按钮并弹出确认框，点击确认后才收到后端 `403 forbidden ("只有管理员可以移除挂载相册")`。
+  3. **直链上传全部失败时前端丢失后端返回的逐条失败原因**：
+     当直链上传 `/api/v1/media/upload-url` 全部链接均失败时，后端（`src/server/api/media.ts` 第 153–155 行）返回 HTTP 422 并在 `error.details.results` 中附带了每个 URL 的具体错误（如 `"不允许访问内网地址"`、`"远端返回 HTTP 404"`）。但前端 `src/lib/api.ts` 在抛 `ApiErr` 时丢弃了 `payload.error.details`，导致 `UploadDialog.tsx` 第 218 行 `catch` 块将所有 URL 行的错误信息统一覆盖成 `"所有链接都下载失败"`，用户无法得知每条链接的具体失败原因。
+     （另：`UploadDialog.tsx` 第 150 行本地文件过滤当浏览器未识别出 `f.type` 时，回退扩展名正则 `/\.(heic|heif|hif|avif|mkv|avi|wmv|flv|3gp|ts)$/i` 漏掉了服务端支持的 `tif|tiff|bmp|m4v|mpg|mpeg`。）
