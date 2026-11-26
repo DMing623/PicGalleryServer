@@ -335,3 +335,18 @@
      p = data.indexOf(0, p) + 1;
      ```
      若畸形 PNG 的 `iTXt` 块缺少语言或翻译关键字后的 NUL 字节，`data.indexOf(0, p)` 返回 `-1`，`-1 + 1 = 0` 会使 `p` 回绕到缓冲区起始位置而非返回 `null`。
+
+---
+
+## 附：易被误判为 Bug 但实为【项目特意如此的设计取舍】及文档细微滞后说明
+
+为严格区分“确实是代码缺陷”与“项目特意如此的实现取舍”，以下梳理了审查过程中初看疑似异常、但结合架构与代码注释确认属于**有意设计（Intentional Design）**或**仅文档描述轻微滞后（以代码为准）**的条目：
+
+| 序号 | 模块与位置 | 表面现象 | 真实性质判定与原因说明 |
+|---|---|---|---|
+| 1 | **直链上传 SSRF 校验**<br>`src/server/media/fetch-url.ts` L78–80 | `addrs.every((a) => isPrivateAddress(a.address))` 仅当域名解析出的**全部** IP 都是内网地址时才拒绝，而非 `some()` | 🛠️ **项目特意如此（Intentional Design）**<br>代码注释明确说明：部分双栈网络或透明代理 DNS 会对正常公网域名同时返回 IPv6 ULA（`fc00::/7`）与公网 IPv4，若用 `some()` 一刀切会导致正常公网直链被误杀。 |
+| 2 | **游客高清预览水印成品缓存条件**<br>`src/server/hd/service.ts` L217 | 未配置 `PUBLIC_BASE_URL` 且未配置 `ALLOWED_HOSTS` 时，响应头 `x-pgs-wm-cache: untrusted-host`，游客水印成品不落盘缓存 | 🛠️ **项目特意如此（Intentional Security Design）**<br>默认水印含 `{host}`，若在未配置域名白名单时按请求 `Host` 头分桶写入磁盘缓存，攻击者可通过伪造随机 `Host` 头撑爆磁盘缓存。 |
+| 3 | **父相册不展示子相册图片 & 相册内搜索不递归**<br>`src/server/media/service.ts` L69–72 | 进入父相册或相册内搜索时，`recursive` 默认为 `false`，看不到子相册里的图片 | 🛠️ **项目特意如此（Intentional Design）**<br>`README.md` 与 `project.md` §4.4/§7.5 明确规定“子相册的文件只在其子相册中显示，不会在父相册重复出现”。 |
+| 4 | **无密钥访问 `/f/:id` 返回 WebP 预览图而非 403**<br>`src/server/files.ts` L171–175 | 游客或无 `original` 权限用户访问原图直链 `/f/:id` 不报错，而是返回 1600px WebP 预览图（视频返回封面） | 🛠️ **项目特意如此（Intentional Design）**<br>`README.md` 与 `project.md` §4.3 明确设计的“原文件保护 + 外链安全降级”机制；仅当显式携带了错误/过期的 `?key=` 时才返回 `403 invalid_key`。 |
+| 5 | **受管相册删除文件 (`media=delete`) 与清理受管损坏文件不进黑名单**<br>`src/server/albums.ts` L675 / `corrupt.ts` L115 | 删除受管相册或清理 `local/s3` 损坏文件时传了 `block: false` | 🛠️ **项目特意如此（Intentional Design）**<br>受管存储的源文件已被物理删除，不存在“下次扫描目录又被重新入库”的问题，因此无需进入删除黑名单（区别于 Issue #9 中挂载目录源文件未删却传 `block: false` 的缺陷）。 |
+| 6 | **文档 `project.md` 与代码的 3 处细微滞后**<br>`src/server/hd/cache.ts` L58 / `src/server/queue.ts` L55, L60, L199 | ① `project.md` §3/§7.6 写游客水印成品缓存路径为 `cache/hd/wm/<id前2位>/...`，代码实际为 `cache/hd/<id前2位>/<id>.<ver>.<w>.<fp>.webp`；<br>② `project.md` §6.11 写 `enqueue(id, priorityOrOpts?)` 且老化阈值 10 秒，代码实际为 `enqueue(id, priority = false)` 且 `agingMs: 30_000`（30 秒）；<br>③ `project.md` §2.1 写队列全局变量为 `__pgsQueue`，代码实际为 `__pgsQueue2` | 📄 **以代码为准（Documentation Drift，非代码 Bug）**<br>根据 `project.md` §0 维护约定（“发现与代码不符时以代码为准并回改文档”），这三处属于代码重构优化后文档描述未完全同步，不影响运行时功能。 |
