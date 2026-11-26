@@ -659,7 +659,7 @@ export default function Viewer({
                     {origLink && (
                       <>
                         <a className="btn btn-primary !py-1 text-xs" href={`${origLink}&dl=1`}>下载原文件</a>
-                        <CopyLine label="" value={`${typeof window !== "undefined" ? window.location.origin : ""}${origLink}`} />
+                        <CopyLine label="" value={origLink} />
                       </>
                     )}
                     {d.canOriginal && <a className="btn !py-1 text-xs" href={`/f/${d.id}?dl=1`}>下载原文件(管理权限)</a>}
