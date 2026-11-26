@@ -621,6 +621,19 @@ async function sSearch() {
   ok(Array.isArray(d?.items), "SQL 注入式关键字不报错、不破坏表");
   d = await q(`q=${encodeURIComponent('%_\\"')}`);
   ok(Array.isArray(d?.items), "LIKE 通配符/引号字符不报错");
+  // issue #2:含 _ / % 的关键词应按字面量匹配(SQLite 的 LIKE 必须显式 ESCAPE)
+  {
+    const fn = `IMG_0042_${tag}.jpg`;
+    const up = await admin.upload({ album: st.A.code, wait: 1 }, [{ data: await sharp({ create: { width: 48, height: 48, channels: 3, background: "#336699" } }).jpeg().toBuffer(), filename: fn }]);
+    const uid = up.data?.results?.[0]?.id;
+    d = await q(`q=${encodeURIComponent(`img_0042_${tag}`)}`);
+    ok(d.items.some((i) => i.id === uid), "含下划线的文件名关键词(IMG_0042_…)可搜到", fn);
+    d = await q(`q=${encodeURIComponent(`img-0042-${tag}`)}`);
+    eq(d.items.length, 0, "下划线不被当作通配符(img-0042 不匹配 IMG_0042)");
+    d = await q(`q=${encodeURIComponent(`img%${tag}`)}`);
+    eq(d.items.length, 0, "% 不被当作通配符");
+    if (uid) await admin.del(`/media/${uid}?purge=1`);
+  }
   d = await q(`kind=video&album=${st.A.code}`);
   ok(d.items.every((i) => i.kind === "video"), "kind=video 过滤");
   d = await q(`kind=image&album=${st.A.code}&limit=200`);

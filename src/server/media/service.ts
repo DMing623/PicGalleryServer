@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-import { and, asc, desc, eq, inArray, like, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { media } from "@/db/schema";
 import { can, issueStreamToken, type AuthUser } from "../auth";
@@ -87,10 +87,12 @@ export async function listMedia(o: ListOptions) {
   for (const term of terms) {
     const pat = `%${term.replace(/[\\%_]/g, "\\$&")}%`;
     // 备注只对登录用户参与匹配:公开搜索若包含 note 会形成逐字探测备注的侧信道(issue §11.3)
+    // 必须显式 ESCAPE '\':PostgreSQL 默认以反斜杠转义,而 SQLite 的 LIKE 默认没有转义符,
+    // 否则含 _ / % 的词(IMG_001)在 SQLite 下永远匹配不到
     conds.push(
       o.user
-        ? sql`(${media.searchText} LIKE ${pat} OR lower(${media.note}) LIKE ${pat})`
-        : like(media.searchText, pat),
+        ? sql`(${media.searchText} LIKE ${pat} ESCAPE '\\' OR lower(${media.note}) LIKE ${pat} ESCAPE '\\')`
+        : sql`${media.searchText} LIKE ${pat} ESCAPE '\\'`,
     );
   }
 

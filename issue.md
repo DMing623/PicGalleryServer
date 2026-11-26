@@ -34,6 +34,8 @@
 
 ## Issue #2：SQLite 模式下搜索含下划线 `_` 或百分号 `%` 的关键词（如 `IMG_001`）始终返回 0 条结果
 
+> ✅ **已完成(已复现并修复)**:`listMedia()` 的 LIKE 显式加 `ESCAPE '\'`(PostgreSQL / SQLite 行为一致);`scripts/test-e2e.mjs` 搜索章节增加 `IMG_0042_*` 字面量匹配断言(SQLite 全链路通过)。
+
 - **性质判定**：✅ **确实是缺陷（Actual Bug / 双数据库驱动兼容性缺陷）**
 - **代码定位**：`src/server/media/service.ts` 第 86–95 行
 - **预期功能（`README.md` / `project.md` §2 & §4.4）**：
