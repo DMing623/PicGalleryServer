@@ -246,7 +246,8 @@ export async function collectFiles(paths: string[], recursive: boolean): Promise
     if (!st || st.isSymbolicLink()) return;
     if (st.isFile()) {
       if (detectKind(p)) out.push(p);
-    } else if (st.isDirectory() && depth < 12) {
+    } else if (st.isDirectory() && depth < 12 && (depth === 0 || recursive)) {
+      // recursive=false 只处理所给目录本层的文件,不下探子目录
       for (const e of await fs.readdir(p)) {
         if (e.startsWith(".")) continue;
         await walk(path.join(p, e), depth + 1);

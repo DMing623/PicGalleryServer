@@ -62,6 +62,8 @@
 
 ## Issue #3：服务器本地路径导入 `collectFiles(paths, recursive)` 完全忽略了 `recursive` 参数
 
+> ✅ **已完成(已复现并修复)**:`collectFiles` 现在在 `depth === 0 || recursive` 时才进入目录,`recursive=false` 仅导入本层文件;`scripts/test-e2e.mjs` 挂载章节增加断言。
+
 - **性质判定**：✅ **确实是缺陷（Actual Bug / 代码实现与接口契约不符）**
 - **代码定位**：`src/server/media/ingest.ts` 第 242–261 行（调用处：`src/server/api/media.ts` 第 183 行、`cli/pgs.mjs` 第 378 行）
 - **预期功能（`project.md` §6.8 & §8.4、`cli/pgs.mjs`）**：

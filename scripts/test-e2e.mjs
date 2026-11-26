@@ -1007,6 +1007,19 @@ async function sMount() {
   r = await admin.post("/media/import", { paths: [path.join(V, "2024/trip")], album: st.A1a.code, recursive: true, concurrency: 2 });
   ok(r.status === 200 && (r.data.created ?? r.data.summary?.created ?? 0) >= 1, "POST /media/import 目录复制导入受管相册", r.buf.toString().slice(0, 250));
   ok(fs.existsSync(path.join(H, "2024/trip/t1.jpg")) || t2id, "导入是复制,源文件保留");
+  // issue #3:recursive=false 只导入本层文件,不下探子目录
+  {
+    const mk = (c) => sharp({ create: { width: 32, height: 32, channels: 3, background: c } }).jpeg().toBuffer();
+    fs.mkdirSync(path.join(H, "imp-flat/sub"), { recursive: true });
+    fs.writeFileSync(path.join(H, "imp-flat/top.jpg"), await mk("#102030"));
+    fs.writeFileSync(path.join(H, "imp-flat/sub/deep.jpg"), await mk("#405060"));
+    const total = (x) => (x.data?.summary?.created ?? 0) + (x.data?.summary?.duplicate ?? 0) + (x.data?.summary?.failed ?? 0);
+    r = await admin.post("/media/import", { paths: [path.join(V, "imp-flat")], album: st.A1a.code, recursive: false });
+    eq(total(r), 1, "import recursive=false 只处理本层 1 个文件(不含子目录)", r.buf.toString().slice(0, 200));
+    r = await admin.post("/media/import", { paths: [path.join(V, "imp-flat")], album: st.A1a.code, recursive: true });
+    eq(total(r), 2, "import recursive=true 递归处理 2 个文件", r.buf.toString().slice(0, 200));
+    fs.rmSync(path.join(H, "imp-flat"), { recursive: true, force: true });
+  }
   r = await admin.post("/media/import", { paths: ["/etc/passwd"], album: st.A1a.code });
   ok(r.status >= 400 || (r.data?.failed ?? 0) >= 0, "导入白名单外路径不泄露/不 500", String(r.status));
   r = await st.mgr.post("/media/import", { paths: [V], album: st.A1a.code });
