@@ -273,3 +273,22 @@
   1. 批量上传或队列繁忙、文件尚处于 `status = 'pending'` 期间（`listMedia` 默认展示 `pending` 状态记录）；
   2. 文件在探测阶段因超出 `MEDIA_MAX_INPUT_MP` / `MEDIA_MAX_EST_MB` 被 `rejectMedia()` 拒绝或处理中断，未能执行到 `derive.ts` 第 261 行覆盖 `searchText`。
 - **是否特意如此**：否。这是早期版本将 `note` 放入 `search_text` 时的残留代码，后来实现“备注不进 `search_text`（issue §11.3）”时只改了 `metadata.ts#buildSearchText` 和 `service.ts#listMedia`，漏改了 `ingest.ts` 第 209 行。
+
+---
+
+## Issue #11：管理与认证三处缺陷：① `/status` 聚合统计漏过滤 `missing_at IS NULL`；② API 创建的管理员可自我降权锁死；③ 禁用/删用户后未清 `basicCache`
+
+- **性质判定**：✅ **确实是缺陷（Actual Bug）**
+- **代码定位**：
+  - `src/server/api/admin.ts` 第 92–123 行、第 173–182 行
+  - `src/server/auth.ts` 第 145–153 行
+  - `src/app/f/[id]/route.ts` 第 18 行
+- **实际代码实现与问题分析**：
+  1. **`GET /api/v1/status` 媒体统计未过滤软删除记录 (`missing_at IS NULL`)**：
+     在 `src/server/albums.ts` 的 `loadStats()`（第 187 行）和 `unsortedCount()`（第 215 行）中，SQL 均包含 `WHERE ... AND missing_at IS NULL`；但在 `src/server/api/admin.ts` 第 173–182 行 `/status` 的全表聚合查询中，没有任何 `WHERE missing_at IS NULL` 条件。当挂载相册中有文件处于 7 天软删除宽限期时，「系统状态」页显示的媒体总数、未归类数、占用字节数会与「相册」页、「图库」页的数据不一致。
+  2. **`PATCH /api/v1/users/:id` 允许接口创建的 `admin` 将自己的角色降级**：
+     在 `admin.ts` 第 98 行（禁用账户）和第 119 行（删除账户）中，均检查了 `if (row.source === "env" || row.id === ctx.user!.id) throw E.badRequest(...)` 防止管理员禁用或删除自己；但在第 92–96 行修改 `role` 时仅检查了 `if (row.source === "env")`，未禁止修改自身角色（前端 `UsersTab` 第 464 行也仅对 `u.source === "env"` 禁用角色下拉框）。接口创建的 `admin` 一旦在下拉框误改自己的角色，会立即丧失管理员权限。
+  3. **禁用/删除/改密用户时 `invalidateUserCache()` 未清理 `basicCache`**：
+     `src/server/auth.ts` 中维护了两个缓存：`basicCache`（Basic 认证缓存 60 秒，第 137 行）和 `userCache`（用户行缓存 15 秒，第 144 行）。但第 151–153 行的 `invalidateUserCache()` **只执行了 `userCache.clear()`，未执行 `basicCache.clear()`**。因此当管理员禁用或删除某个用户后，该用户在最长 60 秒内仍可通过 `Authorization: Basic` 继续通过鉴权。
+  4. **公开文件路由 `/f/[id]` 调用 `authenticate(req)` 漏传客户端 IP**：
+     `src/app/f/[id]/route.ts` 第 18 行调用 `authenticate(req)` 时未传入 `clientIp(req)`，导致在 `/f/:id` 上使用 HTTP Basic 认证失败时的限流键全部落入 `"unknown"` 桶而非真实客户端 IP。
