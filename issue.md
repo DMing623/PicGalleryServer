@@ -187,3 +187,41 @@
   3. **SQLite 模式下 `unblock()` 与 `isUniqueViolation()` 仅判断 PostgreSQL 错误码 `23505`**：
      `src/server/blocklist.ts` 第 133–141 行与 `src/server/media/ingest.ts` 第 97–104 行均通过 `code === "23505"` 识别唯一约束冲突。但在 `DB_DRIVER=sqlite`（`node:sqlite`）下，唯一约束冲突抛出的异常 `code` 为 `"ERR_SQLITE_ERROR"`（`errcode` 为 `2067` 或 `1555`，`message` 含 `"UNIQUE constraint failed"`），不会等于 `"23505"`。这导致在 SQLite 模式下解除黑名单遇到 ID/路径冲突时不会换新 ID 或返回 409 Conflict，而是直接抛 500 `internal_error`。
 - **是否特意如此**：否。属于权限校验遗漏与 SQLite 错误码适配遗漏。
+
+---
+
+## Issue #8：挂载目录扫描 (`scanOne`) 在父子相册本身无直接图片或二次扫描时，会跳过 7 天宽限期与熔断保护直接清空整棵子相册树
+
+- **性质判定**：✅ **确实是缺陷（Actual Bug）**
+- **代码定位**：`src/server/albums.ts` 第 1004–1021 行、第 1051–1052 行
+- **预期功能（`project.md` §6.6）**：
+  挂载目录扫描发现文件/目录消失时，应先打 `missing_at` 软删除标记（7 天 `MISSING_GRACE_MS` 宽限期）并受 `SCAN_PRUNE_MAX_RATIO` 熔断保护，防止外置硬盘掉线或目录短暂不可见时误删数据。
+- **实际代码实现与问题分析**：
+  在 `scanOne()` 处理本轮消失的子目录 `goneKids`（第 1004–1021 行）时：
+  ```ts
+  for (const g of goneKids) {
+    if (claimed.has(g.id)) continue;
+    const rows = await db.select({ id: media.id, missingAt: media.missingAt }).from(media).where(eq(media.albumId, g.id));
+    const fresh = rows.filter((r) => !r.missingAt);
+    if (fresh.length) {
+      await db.update(media).set({ missingAt: new Date() }).where(inArray(media.id, fresh.map((r) => r.id)));
+      s.missing += fresh.length;
+    }
+    // 空相册,或上一轮已全部标记缺失 → 目录确实没了,移除相册子树(记录一并清理,不进黑名单)
+    if (!rows.length || fresh.length === 0) {
+      const sub = descendants(t, g.id);
+      const subMedia = await db.select({ id: media.id }).from(media).where(inArray(media.albumId, sub));
+      if (subMedia.length) await deleteMediaByIds(subMedia.map((r) => r.id), false, { block: false });
+      await db.delete(albums).where(inArray(albums.id, sub));
+      s.albumsRemoved += sub.length;
+      invalidateAlbums();
+    }
+  }
+  ```
+  1. **中间层级目录（自身无直接图片，图片全在孙目录）在第一次扫描就立即级联删除整棵子树**：
+     第 1006 行仅查询了 `where(eq(media.albumId, g.id))`（只看 `g` 本层，未看 `descendants(t, g.id)`）。对于常见的按年份/月份分层目录（如 `/photos/2025` 下只有 `/photos/2025/01`、`/photos/2025/02` 子目录，`/photos/2025` 本层没有直接放图片），`rows.length` 为 `0`！一旦 `/photos/2025` 出现单次 `ENOENT`，第 1013 行 `!rows.length` 在**第一次扫描**就立即成立，当场将 `sub = descendants(t, g.id)` 所有子孙相册及其中全部媒体记录、派生缩略图和备注彻底删除，完全绕过了软删除标记与比例熔断。
+  2. **有直接图片的子目录也在第二次扫描就被立即删除，未等待 7 天 `MISSING_GRACE_MS`**：
+     本层单文件消失要等 `now - r.missingAt.getTime() > MISSING_GRACE_MS`（7 天，第 942 行）才清理；但子目录消失只要经过两轮扫描（例如间隔几分钟的定时扫描或连续点两次扫描），第二轮时 `fresh.length === 0` 即成立，立刻删除相册子树及全部媒体记录。
+  3. **扫描锁 `scanLocks` 仅按单个相册 `code` 互斥（第 1051 行）**：
+     当父相册 `dir_parent` 正在执行递归扫描（`recursive=true`）时，若同时对子相册 `dir_child` 发起 `POST /albums/dir_child/scan`，由于 `scanLocks.has("dir_child")` 为 `false`，两个扫描任务会并发扫描同一子目录树。
+- **是否特意如此**：否。“空相册立即清理、非空相册二次确认”的注释表明作者希望避免幽灵空相册，但忽略了「父目录本层无文件而子孙目录有大量文件」的树形结构，以及与 7 天宽限期不一致的问题。
