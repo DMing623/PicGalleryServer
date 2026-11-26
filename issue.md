@@ -99,6 +99,8 @@
 
 ## Issue #4：Markdown 渲染器未对已生成的链接/图片标签做占位保护，导致含下划线 `_` 的 URL 被错误替换为 `<em>` / `<strong>`
 
+> ✅ **已完成(已复现并修复)**:`<a>` / `<img>` 标签改用 `\u0000RAW` 占位符保护(链接文字内的强调仍生效);`safeUrl` 拒绝 `//host`、`/\host` 协议相对链接;新增 `scripts/unit/markdown.test.mjs`。
+
 - **性质判定**：✅ **确实是缺陷（Actual Bug）**
 - **代码定位**：`src/lib/markdown.ts` 第 28–53 行
 - **预期功能（`README.md` / `project.md` §3）**：

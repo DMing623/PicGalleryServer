@@ -20,7 +20,8 @@ function escapeHtml(s: string): string {
 
 function safeUrl(raw: string): string | null {
   const u = raw.trim();
-  if (/^(https?:\/\/|mailto:|\/)/i.test(u)) return u;
+  // 站内相对路径只放行单个 `/` 开头:`//host`、`/\host` 会被浏览器当作协议相对的外部链接
+  if (/^(https?:\/\/|mailto:|\/(?![\/\\]))/i.test(u)) return u;
   return null;
 }
 
@@ -33,21 +34,29 @@ function inline(text: string): string {
     codes.push(c);
     return `\u0000CODE${codes.length - 1}\u0000`;
   });
+  // 已生成的 <img> / <a> 标签用占位符保护起来:否则 URL 或 alt 里的 `_` `*`
+  // (如 https://x.com/pic_gallery_server、utm_source=a&utm_medium=b)会被后面的强调规则改写成 <em> 而损坏链接
+  const raws: string[] = [];
+  const hold = (html: string) => {
+    raws.push(html);
+    return `\u0000RAW${raws.length - 1}\u0000`;
+  };
   // 图片 ![alt](url)
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt: string, url: string) => {
     const u = safeUrl(url);
-    return u ? `<img src="${u}" alt="${alt}" class="md-img" loading="lazy" />` : m;
+    return u ? hold(`<img src="${u}" alt="${alt}" class="md-img" loading="lazy" />`) : m;
   });
-  // 链接 [text](url)
+  // 链接 [text](url):只保护开/闭标签,链接文字里仍可使用粗体/斜体
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt: string, url: string) => {
     const u = safeUrl(url);
-    return u ? `<a href="${u}" target="_blank" rel="noopener noreferrer nofollow">${txt}</a>` : m;
+    return u ? `${hold(`<a href="${u}" target="_blank" rel="noopener noreferrer nofollow">`)}${txt}${hold("</a>")}` : m;
   });
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/__([^_]+)__/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
   s = s.replace(/(^|[^_])_([^_\n]+)_/g, "$1<em>$2</em>");
   s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  s = s.replace(/\u0000RAW(\d+)\u0000/g, (_m, i: string) => raws[Number(i)]);
   s = s.replace(/\u0000CODE(\d+)\u0000/g, (_m, i: string) => `<code>${codes[Number(i)]}</code>`);
   return s;
 }

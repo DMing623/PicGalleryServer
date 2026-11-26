@@ -120,7 +120,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
 ├─ cli/pgs.mjs                        命令行管理工具(零依赖,util.parseArgs,调用 REST API)
 ├─ scripts/                           测试、一致性校验与基准套件(详见 scripts/TESTING.md 与 scripts/bench/README.md):
 │    fetch-samples.mjs  lib/harness.mjs  test-e2e.mjs  test-cli.mjs  test-hd.mjs  test-media.mjs  test-matrix.mjs
-│    test-unit.mjs  unit/admission.test.mjs  unit/cgroup.test.mjs  unit/estimate.test.mjs
+│    test-unit.mjs  unit/admission.test.mjs  unit/cgroup.test.mjs  unit/estimate.test.mjs  unit/markdown.test.mjs
 │    check-config.mjs  check-docs.mjs  test-docker.sh  test-compose.sh  bench-docker.sh  instabox-test.sh
 │    bench/generate-images.mjs  bench/bench-memory.mjs  bench/bench-hd.mjs  bench/bench-queue.mjs  bench/bench-scan.mjs  bench/lib.mjs  bench/README.md
 │    bench/baseline-synthetic-quick.json  bench/baseline-hd-synthetic-quick.json  bench/baseline-queue-synthetic-quick.json
@@ -145,7 +145,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
    │   ├─ theme.ts                    主题预设 PRESETS、themeCss()、DEFAULT_THEME
    │   ├─ api.ts                      浏览器 fetch 封装:api<T>() 自动解包信封,错误抛 ApiErr
    │   ├─ format.ts                   bytes/duration/dateTime/dayLabel 格式化
-   │   ├─ markdown.ts                 零依赖 Markdown 渲染(先整体 HTML 转义再替换,链接协议白名单)
+   │   ├─ markdown.ts                 零依赖 Markdown 渲染(先整体 HTML 转义再替换,链接协议白名单;生成的 <a>/<img> 用占位符保护,避免 URL 中的 _ * 被强调规则改写)
    │   └─ meta-labels.ts              元数据字段中文标签表(决定 UI 显示哪些字段)
    ├─ server/                         **全部服务端逻辑**(详见 §6)
    │   ├─ config.ts                   环境变量解析入口,导出 config 与 dirs(含 config.media.*、config.hd.*)
