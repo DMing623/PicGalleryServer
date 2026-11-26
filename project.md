@@ -426,7 +426,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
 - `noteUploadActivity()`:每次入库(含失败)调用,重置自动清理倒计时。
 - **非损坏错误硬性排除**:凡是 `error` 以 `[LIMIT]`(像素或内存估算超限)或 `[INTERRUPTED]`(处理多次中断)开头的记录,属于资源限制或运行中断而非文件损坏,`corruptSummary()`、未指定 `ids` 的 `purgeCorrupt()` 与定时 `sweep()` 均将其排除,**绝不自动物理删除用户原文件**。
 - `corruptSummary(limit)`:返回 `{count, items[≤limit], autoPurgeHours, purgeInSec}`。
-- `purgeCorrupt(ids?)`:受管存储(local/s3)连源文件删除;挂载目录(ext)只删登记,不动用户文件。
+- `purgeCorrupt(ids?)`:受管存储(local/s3)连源文件删除(不进黑名单);挂载目录(ext)只删登记、**写入删除黑名单**(`block:true`),不动用户文件——否则源文件仍在磁盘上,下次扫描会重新入库并再次失败,形成无限循环。可在「设置 → 删除黑名单」恢复或(管理员)彻底删除。
 - `startCorruptSweeper()`:每 10 分钟检查,若「距上次上传 ≥ `CORRUPT_AUTO_PURGE_HOURS`」则自动清理真正的损坏文件;`0` 关闭。
 
 ### 6.14 `hd/*`(高清预览)
@@ -642,7 +642,7 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(需 m
 | GET `/status` | status | 版本、运行时长、计数、队列(含类别池 `byClass`、各闸门 `gates`、预算准入 `admission` 与压力状态 `pressure`)、`hd` 缓存统计、工具可用性、`memory` (`{rss,heapUsed,heapTotal,external,arrayBuffers,maxRss,peak10m,cgroup}`)、`sharp` (`{cache,counters,concurrency}`)、`eventLoop` (`{p99Ms,maxMs}`)、磁盘、关键配置与预算推导(结果缓存 5 秒) |
 | GET `/status/queue` | status | `{concurrency,running,waiting,probing,done,failed,rejected,retrying,byClass,gates,admission,pressure}` |
 | GET `/status/corrupt` | status | 疑似损坏文件(已排除 `[LIMIT]`/`[INTERRUPTED]`):`{count, items[≤20], autoPurgeHours, purgeInSec}` |
-| POST `/status/corrupt/purge` | media.delete | 清理疑似损坏文件,body `{ids?}`(空 = 全部损坏项);受管存储连源文件删除,挂载目录只删登记 |
+| POST `/status/corrupt/purge` | media.delete | 清理疑似损坏文件,body `{ids?}`(空 = 全部损坏项);受管存储连源文件删除,挂载目录只删登记并加入删除黑名单 |
 
 ### 8.8 删除黑名单(仅 `media.delete`,即管理者及以上)
 

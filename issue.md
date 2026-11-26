@@ -246,6 +246,8 @@
 
 ## Issue #9：挂载目录 (`storage='ext'`) 中的疑似损坏文件清理后未入黑名单，导致定时扫描无限重复入库与失败
 
+> ✅ **已完成(已复现并修复)**:`purgeCorrupt` 对 ext 文件改为 `block: true`(只删登记、不删磁盘文件,并写入删除黑名单,扫描不再入库);受管存储仍 `block: false`(附表第 5 项的设计取舍不变);`test-e2e.mjs` 增加「清理 → 再扫描不重复入库 → 进黑名单」断言;`project.md` §6.13 同步。
+
 - **性质判定**：✅ **确实是缺陷（Actual Bug，源于只读保护设计与扫描机制未闭环）**
 - **代码定位**：`src/server/media/corrupt.ts` 第 103–126 行；配合 `src/server/albums.ts` 第 841–843 行
 - **预期功能（`README.md` / `project.md` §6.13）**：

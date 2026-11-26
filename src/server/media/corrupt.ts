@@ -98,7 +98,7 @@ export async function corruptSummary(limit = 20): Promise<CorruptSummary> {
 
 /**
  * 删除疑似损坏文件。ids 为空 = 删除全部 failed 记录。
- * 受管存储(local/s3)连源文件一并删除;挂载目录(ext)只删登记,不动服务器上的文件。
+ * 受管存储(local/s3)连源文件一并删除;挂载目录(ext)只删登记并加入删除黑名单(扫描不再入库),不动服务器上的文件。
  */
 export async function purgeCorrupt(ids?: string[]): Promise<{ removed: number; failed: number }> {
   const where = ids?.length ? and(corruptWhere(), inArray(media.id, ids)) : corruptWhere();
@@ -116,9 +116,12 @@ export async function purgeCorrupt(ids?: string[]): Promise<{ removed: number; f
     removed += r.removed;
     failed += r.failed.length;
   }
-  // 挂载目录:只删登记,绝不物理删除用户自己的文件
+  // 挂载目录:只删登记,绝不物理删除用户自己的文件。
+  // 必须写入删除黑名单(block: true):源文件仍留在磁盘上,否则下一次扫描会把它当新文件重新入库 →
+  // 再次解码失败 → 再次进入「疑似损坏」→ 再次清理,形成无限循环。
+  // (受管存储连源文件一起删了,不存在重复入库问题,所以上面 block: false)
   if (mounted.length) {
-    const r = await deleteMediaByIds(mounted, false, { user: null, block: false });
+    const r = await deleteMediaByIds(mounted, false, { user: null, block: true });
     removed += r.removed;
     failed += r.failed.length;
   }

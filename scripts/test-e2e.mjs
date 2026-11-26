@@ -1088,6 +1088,28 @@ async function sMount() {
     ok(r.status === 200 && !fs.existsSync(toHostPath(kp)), "可写挂载相册 purge=1 → 磁盘文件真正删除", `${r.status} ${r.err?.code}`);
   }
 
+  // issue #9:挂载目录里的疑似损坏文件清理后必须进黑名单,否则下次扫描会重新入库并陷入循环
+  {
+    const fn = `corrupt-ext-${tag}.jpg`;
+    fs.copyFileSync(S("corrupt.jpg"), path.join(H, fn));
+    chmodTree777(H);
+    r = await admin.post(`/albums/${M.code}/scan?wait=1`);
+    const cid = await waitFor(async () => ((await admin.get("/status/corrupt")).data.items.find((i) => i.filename === fn)?.id ?? null), { timeout: 60_000, what: "挂载目录中的损坏文件被识别" }).catch(() => null);
+    ok(!!cid, "挂载目录中的损坏文件进入疑似损坏列表");
+    if (cid) {
+      r = await admin.post("/status/corrupt/purge", { ids: [cid] });
+      ok(r.status === 200 && r.data.removed === 1, "清理挂载目录的疑似损坏文件", r.buf.toString().slice(0, 150));
+      ok(fs.existsSync(path.join(H, fn)), "只删登记,磁盘源文件仍在");
+      r = await admin.post(`/albums/${M.code}/scan?wait=1`);
+      await sleep(1500);
+      ok(!(await admin.get("/status/corrupt")).data.items.some((i) => i.filename === fn), "再次扫描不会把它重新入库(不再出现在疑似损坏列表)");
+      const bl = (await admin.get("/blocklist")).data.items.find((x) => x.filename === fn);
+      ok(!!bl, "损坏文件已进入删除黑名单");
+      if (bl) await admin.del(`/blocklist/${bl.id}`); // 可写挂载 + admin:连同源文件一起清掉,避免影响后续断言
+    }
+    fs.rmSync(path.join(H, fn), { force: true });
+  }
+
   // 熔断:一次扫描大面积消失时不批量清理(样本 ≥ SCAN_PRUNE_MIN_COUNT 才触发,小库不测)
   // 删除挂载相册:源文件保留
   const before = listFilesRec(H).length;
