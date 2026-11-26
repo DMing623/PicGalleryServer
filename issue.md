@@ -53,3 +53,38 @@
   - 在 **PostgreSQL** 中，`LIKE` 默认将反斜杠 `\` 视为转义字符，因此 `LIKE '%img\_001%'` 能正常匹配 `img_001.jpg`。
   - 但在 **SQLite**（`DB_DRIVER=sqlite`）中，`LIKE` **默认没有转义字符**，必须显式声明 `ESCAPE '\'`（即 `LIKE ? ESCAPE '\'`）才会将 `\` 解析为转义符。未写 `ESCAPE '\'` 时，SQLite 会把 `\_` 当作「字面量反斜杠 `\` + 单字符通配符 `_`」去匹配。由于实际文件名 `img_001.jpg` 中并没有反斜杠 `\`，导致在 SQLite 模式下搜索任何带下划线 `_` 或 `%` 的文件名/提示词均返回 0 条结果。
 - **是否特意如此**：否。作者加 `term.replace(/[\\%_]/g, "\\$&")` 的本意是防止用户输入的 `_` 和 `%` 被当成 SQL 通配符，但在适配双数据库驱动时忽略了 SQLite 的 `LIKE` 必须显式指定 `ESCAPE '\'`。
+
+---
+
+## Issue #3：服务器本地路径导入 `collectFiles(paths, recursive)` 完全忽略了 `recursive` 参数
+
+- **性质判定**：✅ **确实是缺陷（Actual Bug / 代码实现与接口契约不符）**
+- **代码定位**：`src/server/media/ingest.ts` 第 242–261 行（调用处：`src/server/api/media.ts` 第 183 行、`cli/pgs.mjs` 第 378 行）
+- **预期功能（`project.md` §6.8 & §8.4、`cli/pgs.mjs`）**：
+  `POST /api/v1/media/import` 支持参数 `recursive?=true`（命令行支持 `pgs import <路径> --no-recursive`），当 `recursive=false` 时应只导入指定目录本层的文件而不递归下探子目录。
+- **实际代码实现与问题分析**：
+  查看 `src/server/media/ingest.ts` 第 242–261 行：
+  ```ts
+  export async function collectFiles(paths: string[], recursive: boolean): Promise<string[]> {
+    const out: string[] = [];
+    const walk = async (p: string, depth: number) => {
+      const st = await fs.lstat(p).catch(() => null);
+      if (!st || st.isSymbolicLink()) return;
+      if (st.isFile()) {
+        if (detectKind(p)) out.push(p);
+      } else if (st.isDirectory() && depth < 12) {
+        for (const e of await fs.readdir(p)) {
+          if (e.startsWith(".")) continue;
+          await walk(path.join(p, e), depth + 1);
+        }
+      }
+    };
+    for (const p of paths) {
+      const abs = await assertMountAllowed(path.resolve(p));
+      await walk(abs, 0);
+    }
+    return out;
+  }
+  ```
+  函数签名接收了 `recursive: boolean`，但函数体内**从未读取 `recursive` 参数**（对比 `cli/pgs.mjs` 第 202 行本地 `upload` 的 `collect` 函数写了 `else if (st.isDirectory() && depth < 12 && (depth === 0 || recursive))`）。因此在服务端 `import` 接口中，无论传 `recursive: false` 还是 `pgs import --no-recursive`，都会强制递归遍历最多 12 层子目录。
+- **是否特意如此**：否。API 路由层（`b.recursive !== false`）与 CLI 层（`recursive: !flags["no-recursive"]`）都完整透传了该参数，仅 `collectFiles` 内部遗漏了 `depth === 0 || recursive` 判断。
