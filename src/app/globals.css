@@ -146,22 +146,190 @@ html[data-disc="ok"] #pgs-disclaimer { display: none; }
 .hd-spinner { width: 28px; height: 28px; border-radius: 50%; border: 3px solid rgba(255,255,255,.25); border-top-color: #fff; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ---------- 启动页动画 ---------- */
+/* ---------- 启动页动画(重构:多轴 3D 光学星环 + 逐字快门翻转揭示 + 金属流光扫光 + 镜面反射) ---------- */
 /* 纯 CSS 兜底:JS 未执行时启动页也会自动淡出,避免整站被永久遮挡 */
 @keyframes splash-auto-hide { to { opacity: 0; visibility: hidden; pointer-events: none; } }
-@keyframes ring-a { from { transform: rotateX(70deg) rotateZ(0); } to { transform: rotateX(70deg) rotateZ(360deg); } }
-@keyframes ring-b { from { transform: rotateY(70deg) rotateZ(0); } to { transform: rotateY(70deg) rotateZ(-360deg); } }
-@keyframes ring-c { from { transform: rotateX(25deg) rotateY(25deg) rotateZ(0); } to { transform: rotateX(25deg) rotateY(25deg) rotateZ(360deg); } }
-@keyframes title-spin { 0% { transform: rotateY(-28deg) rotateX(8deg); } 50% { transform: rotateY(28deg) rotateX(-6deg); } 100% { transform: rotateY(-28deg) rotateX(8deg); } }
+@keyframes ring-outer-spin { from { transform: rotateZ(0deg) scale(0.98); } 50% { transform: rotateZ(180deg) scale(1.02); } to { transform: rotateZ(360deg) scale(0.98); } }
+@keyframes ring-a { from { transform: rotateX(68deg) rotateY(-12deg) rotateZ(0deg); } to { transform: rotateX(68deg) rotateY(-12deg) rotateZ(360deg); } }
+@keyframes ring-b { from { transform: rotateY(68deg) rotateX(14deg) rotateZ(0deg); } to { transform: rotateY(68deg) rotateX(14deg) rotateZ(-360deg); } }
+@keyframes ring-c { from { transform: rotateX(34deg) rotateY(32deg) rotateZ(0deg); } to { transform: rotateX(34deg) rotateY(32deg) rotateZ(360deg); } }
+@keyframes ring-core-pulse { 0%, 100% { transform: translateZ(-20px) scale(0.92); opacity: 0.55; } 50% { transform: translateZ(15px) scale(1.06); opacity: 0.9; } }
+@keyframes title-spin {
+  0%, 100% { transform: rotateY(-14deg) rotateX(6deg) translateZ(10px); }
+  50% { transform: rotateY(14deg) rotateX(-5deg) translateZ(22px); }
+}
+@keyframes splash-char-in {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 58%, -70px) rotateX(-82deg) rotateY(18deg) scale(0.78);
+    filter: blur(10px) brightness(2.2);
+  }
+  65% {
+    opacity: 1;
+    transform: translate3d(0, -4%, 12px) rotateX(8deg) rotateY(-3deg) scale(1.03);
+    filter: blur(0px) brightness(1.35);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotateX(0deg) rotateY(0deg) scale(1);
+    filter: blur(0px) brightness(1);
+  }
+}
+@keyframes splash-shimmer {
+  0% { background-position: -180% 50%; }
+  100% { background-position: 220% 50%; }
+}
+@keyframes splash-sub-in {
+  0% { opacity: 0; transform: translateY(14px) scale(0.96); letter-spacing: 0.48em; filter: blur(6px); }
+  100% { opacity: 1; transform: translateY(0) scale(1); letter-spacing: 0.26em; filter: blur(0); }
+}
+@keyframes splash-badge-in {
+  0% { opacity: 0; transform: translateY(-12px) scale(0.92); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
 @keyframes splash-progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
-.ring { position: absolute; inset: 0; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
-  box-shadow: 0 0 24px color-mix(in srgb, var(--accent) 45%, transparent), inset 0 0 24px color-mix(in srgb, var(--accent) 25%, transparent); will-change: transform; }
-.ring-a { animation: ring-a 7s linear infinite; }
-.ring-b { animation: ring-b 9s linear infinite; inset: 8%; }
-.ring-c { animation: ring-c 12s linear infinite; inset: 18%; border-style: dashed; }
-.title3d { transform-style: preserve-3d; animation: title-spin 6s ease-in-out infinite; will-change: transform; }
-.title3d span.layer { position: absolute; left: 0; top: 0; width: 100%; text-align: center; white-space: nowrap; }
+
+.splash-grid-overlay {
+  background-image:
+    radial-gradient(circle at 50% 45%, transparent 25%, rgba(0, 0, 0, 0.72) 100%),
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 100% 100%, 48px 48px, 48px 48px;
+  mask-image: radial-gradient(circle at 50% 48%, #000 35%, transparent 88%);
+}
+.splash-aura {
+  position: absolute;
+  inset: 12%;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 34%, transparent) 0%, color-mix(in srgb, var(--accent) 10%, transparent) 48%, transparent 72%);
+  filter: blur(26px);
+  animation: ring-core-pulse 4.2s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+.ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 68%, rgba(255, 255, 255, 0.25));
+  box-shadow:
+    0 0 28px color-mix(in srgb, var(--accent) 42%, transparent),
+    inset 0 0 24px color-mix(in srgb, var(--accent) 22%, transparent);
+  will-change: transform;
+}
+.ring-outer {
+  inset: -8%;
+  border: 1px dashed color-mix(in srgb, var(--accent) 38%, rgba(255, 255, 255, 0.18));
+  box-shadow: none;
+  animation: ring-outer-spin 26s linear infinite;
+}
+.ring-a {
+  animation: ring-a 6.8s linear infinite;
+  border-width: 2px;
+  border-color: color-mix(in srgb, var(--accent) 82%, #fff);
+}
+.ring-b {
+  animation: ring-b 8.6s linear infinite;
+  inset: 7%;
+  border-color: color-mix(in srgb, var(--accent) 62%, rgba(255, 255, 255, 0.45));
+}
+.ring-c {
+  animation: ring-c 11.5s linear infinite;
+  inset: 16%;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 55%, rgba(255, 255, 255, 0.3));
+}
+.ring-core {
+  inset: 25%;
+  border: 1px solid color-mix(in srgb, #fff 32%, transparent);
+  box-shadow: 0 0 40px color-mix(in srgb, var(--accent) 35%, transparent);
+  animation: ring-core-pulse 3.6s ease-in-out infinite;
+}
+.splash-badge {
+  background: color-mix(in srgb, var(--accent) 14%, rgba(255, 255, 255, 0.05));
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, rgba(255, 255, 255, 0.14));
+  color: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 0 24px -4px color-mix(in srgb, var(--accent) 45%, transparent);
+  backdrop-filter: blur(12px);
+  animation: splash-badge-in 0.65s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.splash-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent), 0 0 4px #fff;
+  animation: dot-pulse 1.8s ease-in-out infinite;
+}
+.title3d {
+  transform-style: preserve-3d;
+  animation: title-spin 6.4s ease-in-out infinite;
+  will-change: transform;
+}
+.splash-title-stage {
+  display: inline-grid;
+  place-items: center;
+  text-align: center;
+}
+.splash-title-stage > span.layer,
+.splash-title-stage > span.splash-title-front {
+  grid-area: 1 / 1;
+  white-space: nowrap;
+}
+.splash-char {
+  display: inline-block;
+  background-image: linear-gradient(
+    115deg,
+    #ffffff 0%,
+    #ffffff 28%,
+    color-mix(in srgb, var(--accent) 88%, #ffffff) 48%,
+    #ffffff 62%,
+    color-mix(in srgb, var(--accent) 72%, #ffffff) 82%,
+    #ffffff 100%
+  );
+  background-size: 240% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 26px color-mix(in srgb, var(--accent) 58%, transparent));
+  transform-origin: 50% 85%;
+  animation:
+    splash-char-in 0.72s cubic-bezier(0.16, 1, 0.3, 1) var(--char-delay, 0ms) both,
+    splash-shimmer 4.2s linear 0.6s infinite;
+  will-change: transform, opacity, filter;
+}
+.splash-reflect {
+  grid-area: 1 / 1;
+  white-space: nowrap;
+  transform: translateY(72%) rotateX(180deg) scaleY(0.38) translateZ(-10px);
+  background-image: linear-gradient(to bottom, rgba(255, 255, 255, 0.45), color-mix(in srgb, var(--accent) 35%, transparent) 45%, transparent 88%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  opacity: 0.32;
+  filter: blur(2.5px);
+  mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.75) 0%, transparent 72%);
+  -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.75) 0%, transparent 72%);
+}
+.splash-subtitle-wrap {
+  animation: splash-sub-in 0.85s cubic-bezier(0.16, 1, 0.3, 1) 0.22s both;
+}
+.splash-subtitle {
+  color: rgba(255, 255, 255, 0.78);
+  text-shadow: 0 0 18px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.splash-sub-line {
+  height: 1px;
+  width: clamp(24px, 6vw, 56px);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 80%, #fff), transparent);
+}
+.splash-skip-btn {
+  transition: transform 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+.splash-skip-btn:hover {
+  transform: translateY(-1px) scale(1.03);
+  box-shadow: 0 0 20px -4px color-mix(in srgb, var(--accent) 65%, transparent);
+}
 .fade-in { animation: rise .35s ease both; }
 .tile { transition: transform .18s ease, box-shadow .18s ease; contain: layout paint style; } /* 相册卡片 */
 .tile:hover { transform: translateY(-2px) scale(1.01); box-shadow: 0 10px 30px -10px color-mix(in srgb, var(--fg) 45%, transparent); }

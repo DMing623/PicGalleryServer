@@ -197,7 +197,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
    │       └─ admin.ts                /keys*  /users*  /health*  /status*
    ├─ app/
    │   ├─ layout.tsx                  根布局:注入主题 <style id="pgs-theme">、站点图标 metadata、免责声明启动脚本、Splash、AppProvider、Pwa
-   │   ├─ globals.css                 CSS 变量兜底、毛玻璃(.glass)、按钮/输入样式、瀑布流(.masonry)、启动页 3D 动画、通知面板
+   │   ├─ globals.css                 CSS 变量兜底、毛玻璃(.glass)、按钮/输入样式、瀑布流(.masonry)、启动页多轴 3D 星环与逐字流光动画、通知面板
    │   ├─ manifest.ts                 PWA 清单(站点名/图标跟随设置)
    │   ├─ pwa-icon/[name]/route.ts    PWA 图标 PNG(192/512/512-maskable/180,由站点图标按需渲染)
    │   ├─ (app)/layout.tsx            带 Shell 的页面分组
@@ -211,7 +211,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
    │   └─ api/v1/[[...path]]/route.ts REST 入口:GET/POST/PUT/PATCH/DELETE 全部转交 server/router.dispatch(HEAD 当 GET 处理)
    └─ components/                     前端组件(全部 "use client",除特别说明)
        ├─ AppProvider.tsx             上下文:me(user/perms/site/features)、can(perm)、reload() + 零延迟客户端路由与滚动记忆(navigateApp/replaceAppUrl/useAppLocation)
-       ├─ Splash.tsx                  启动页:粒子 canvas + 3D 光环 + 3D 挤出文字;url 模式支持图片/视频/iframe
+       ├─ Splash.tsx                  启动页(重构):深空极光星轨粒子 canvas + 光学星盘刻线 + 多轴 3D 陀螺星环 + 可替换自适应逐字快门翻转 3D 挤出文字/副标题与镜面倒影;url 模式支持图片/视频/iframe
        ├─ Shell.tsx                   毛玻璃顶栏、搜索框、底部工具栏(pointerdown 即时高亮反馈)与图库/相册/设置三大主视图常驻保活(Keep-Alive)
        ├─ Gallery.tsx                 固定列等宽瀑布流 + 二分视口窗口化(仅渲染视口±1.5 屏瓦片,Memo 瓦片)+ 游标无限滚动(每页 80)+ 处理中按需轮询;导出 MediaItem
        ├─ Viewer.tsx                  全屏查看器:HD 图(加载中转圈→带水印大图,手势缩放直接写 DOM transform)、会话详情 LRU 缓存、文件链接、备注编辑、元数据侧栏、删除/重处理
@@ -229,7 +229,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
        ├─ LoginForm.tsx               登录表单
        └─ settings/
            ├─ SettingsView.tsx        设置页标签容器(按权限显示标签,已访问子面板常驻保活)
-           ├─ AppearanceTab.tsx       站点名/图标上传/主题/明暗/启动页/游客开关,主题实时预览
+           ├─ AppearanceTab.tsx       站点名/图标上传/主题/明暗/启动页(含可替换主标题、副标题与快捷文案预设)/游客开关,主题实时预览
            ├─ NoticeTab.tsx           通知发布(Markdown 编辑 + 预览)
            ├─ AdminTabs.tsx           导出 AlbumManager(文件夹式导航 + 目录挂载对话框)/BlocklistTab/KeysTab/UsersTab
            └─ SystemTab.tsx           系统状态面板(3 秒轮询)+ 时区 + 疑似损坏文件 + 重处理按钮
@@ -316,7 +316,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
 
 **pgs_download_keys**:`id` `key_hash`(SHA-256,唯一) `hint`(前 2 位 + `*`) `label` `expires_at`(null=永不) `created_by` `created_at` `last_used_at` `use_count`。
 
-**pgs_settings**:`key`(PK) `value`(jsonb) `updated_at`。目前只有 `key="site"`,内容为 `SiteSettings`(见 `server/settings.ts`):`siteName, theme{preset,mode,accent,background}, splash{enabled,mode,url,durationMs,title}, iconVersion, iconMime, guestBrowse, timezone`。
+**pgs_settings**:`key`(PK) `value`(jsonb) `updated_at`。目前只有 `key="site"`,内容为 `SiteSettings`(见 `server/settings.ts`):`siteName, theme{preset,mode,accent,background}, splash{enabled,mode,url,durationMs,title,subtitle}, iconVersion, iconMime, guestBrowse, timezone`。
 
 **pgs_notices**(站点通知):`id`(PK) `title` `body`(Markdown 原文) `pinned` `created_by` `created_by_name`(用户名快照) `created_at` `updated_at`;索引 `created_at`。发布需要 `notice.publish`(admin / manager)。
 
@@ -565,7 +565,7 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(源�
 | GET `/site` | public | — | 公开站点配置 `{siteName,theme,splash,iconUrl,guestBrowse}` |
 | GET `/branding/icon` | public | — | 站点图标(自定义或内置 SVG) |
 | GET `/settings` | settings | — | 完整 `SiteSettings` |
-| PUT `/settings` | settings | body 补丁:`siteName`、`guestBrowse`、`theme{preset,mode(light\|dark\|auto),accent,background}`、`splash{enabled,mode(builtin\|url),url(https),durationMs,title}`、`timezone`(IANA,经 `Intl` 校验) | 返回合并后的设置(附 `can`)。预设:`claude ocean forest rose violet mono` |
+| PUT `/settings` | settings | body 补丁:`siteName`、`guestBrowse`、`theme{preset,mode(light\|dark\|auto),accent,background}`、`splash{enabled,mode(builtin\|url),url(https),durationMs,title,subtitle}`、`timezone`(IANA,经 `Intl` 校验) | 返回合并后的设置(附 `can`)。预设:`claude ocean forest rose violet mono` |
 | POST `/settings/icon` | settings | multipart,任意字段名的一个文件(PNG/JPG/WebP/SVG,≤2MB) | 光栅图统一转 256×256 PNG;SVG 原样保存并以严格 CSP 输出。返回 `{iconUrl}` |
 | DELETE `/settings/icon` | settings | — | 恢复默认图标 |
 
@@ -832,7 +832,7 @@ node cli/pgs.mjs reprocess | regenerate-derived
 | 改令牌有效期 / 强制下线 | `SESSION_DAYS`;强制下线调用 `auth.ts#bumpTokenVersion(userId)` |
 | 改挂载目录白名单 / 只读 | `ALLOWED_MOUNT_ROOTS`;`albums.ts#assertMountAllowed`、`pgs_albums.readonly` |
 | 新增主题预设 | `lib/theme.ts#PRESETS`(自动出现在设置页) |
-| 改启动页 | `components/Splash.tsx`;动画 CSS 在 `app/globals.css`;配置项在 `server/settings.ts` |
+| 改启动页 | `components/Splash.tsx`;动画 CSS 在 `app/globals.css`;配置项在 `server/settings.ts`(支持 `title`/`subtitle` 可替换文本与自动字号适配) |
 | 改图库布局 | `components/Gallery.tsx#columns`(分列算法,最矮列优先)、`app/globals.css` 的 `.masonry/.mtile`;列数由 `cols` 状态按视口宽度决定 |
 | 改上传界面 | `components/UploadDialog.tsx`;服务端 `api/media.ts` + `media/ingest.ts` |
 | 改删除行为 / 黑名单 | `server/albums.ts#deleteMediaByIds`、`server/blocklist.ts`、`components/Viewer.tsx#remove`、`components/settings/AdminTabs.tsx#BlocklistTab` |
@@ -867,7 +867,7 @@ node cli/pgs.mjs reprocess | regenerate-derived
 - 高清图查看:`Viewer.tsx` 在 HD 就绪前只显示转圈加载态,不先渲染无水印预览图;HD 响应本身已在服务端合成水印(`x-pgs-wm: 1`),客户端在生成 Blob URL 后先完成 `img.decode()` 异步预解码再挂载舞台,缩放/平移手势期间直接更新 DOM `transform`(`translate3d + scale`)避免逐帧触发 React 重渲染。
 - 登录态与权限来自 `AppProvider`(`/auth/me`)。页面是否展示管理控件只做体验层判断,**真正的授权永远在服务端 `route()` 的 access 参数**。
 - 图库(`Gallery.tsx`):**固定列数等宽瀑布流 + 二分视口窗口化**(每张图放入当前最矮的列,高度由 `aspect-ratio` 精确计算,宽高比钳制在 0.35~3;按列内单调递增高度通过二分查找只渲染视口 ±1.5 屏内的 Memo 瓦片,上下不可见区域合并为等高透明占位块,使万级图库滚动时 DOM 节点数与图片解码内存近似常数);游标分页每页 80 条,`IntersectionObserver`(`rootMargin` 1200px)触底加载;存在 `pending` 项时每 3 秒请求一次前 80 项并仅在字段变化时刷新状态,最多 40 次(约 2 分钟)后停止。
-- 启动页每个标签页会话只显示一次(`sessionStorage["pgs-splash"]`);`url` 模式按扩展名选择 `<img>`/`<video>`/`<iframe sandbox="allow-scripts">`。
+- 启动页每个标签页会话只显示一次(`sessionStorage["pgs-splash"]`),支持点击「跳过」或按 `Esc`/`Space` 立即关闭;内置模式针对可替换 `title`/`subtitle` 自动计算视觉宽度权重并做逐字 3D 快门翻转揭示、12 层纵深挤出与镜面反射;`url` 模式按扩展名选择 `<img>`/`<video>`/`<iframe sandbox="allow-scripts">`。
 
 ## 14. 性能与安全设计要点
 

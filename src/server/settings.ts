@@ -10,11 +10,13 @@ import { E } from "./http";
 
 export interface SplashSetting {
   enabled: boolean;
-  /** builtin = 内置粒子+3D 文字; url = 使用 https 链接(图片/视频/网页) */
+  /** builtin = 内置星轨粒子+3D 光学星环+可替换逐字流光 3D 文字; url = 使用 https 链接(图片/视频/网页) */
   mode: "builtin" | "url";
   url: string;
   durationMs: number;
   title: string;
+  /** 启动页副标题/标语(可替换,留空则不显示) */
+  subtitle?: string;
 }
 
 export interface SiteSettings {
@@ -33,7 +35,14 @@ export interface SiteSettings {
 export const DEFAULT_SITE: SiteSettings = {
   siteName: "PicGalleryServer",
   theme: DEFAULT_THEME,
-  splash: { enabled: true, mode: "builtin", url: "", durationMs: 2800, title: "PicGalleryServer" },
+  splash: {
+    enabled: true,
+    mode: "builtin",
+    url: "",
+    durationMs: 2800,
+    title: "PicGalleryServer",
+    subtitle: "LIGHT & MEMORY · 视觉典藏画廊",
+  },
   iconVersion: 0,
   iconMime: "",
   guestBrowse: true,
@@ -132,6 +141,7 @@ export async function patchSite(patch: Record<string, unknown>): Promise<SiteSet
       next.splash.durationMs = Math.round(n);
     }
     if (s.title !== undefined) next.splash.title = String(s.title).slice(0, 40) || "PicGalleryServer";
+    if (s.subtitle !== undefined) next.splash.subtitle = String(s.subtitle).slice(0, 60);
   }
   if (next.splash.mode === "url" && !next.splash.url) throw E.badRequest("splash.mode=url 时必须提供 url");
 

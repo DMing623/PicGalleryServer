@@ -9,9 +9,16 @@ import { useApp } from "../AppProvider";
 interface Site {
   siteName: string;
   theme: ThemeSetting;
-  splash: { enabled: boolean; mode: "builtin" | "url"; url: string; durationMs: number; title: string };
+  splash: { enabled: boolean; mode: "builtin" | "url"; url: string; durationMs: number; title: string; subtitle?: string };
   guestBrowse: boolean;
 }
+
+const SPLASH_TEXT_PRESETS: Array<{ label: string; title: string; subtitle: string }> = [
+  { label: "默认经典", title: "PicGalleryServer", subtitle: "LIGHT & MEMORY · 视觉典藏画廊" },
+  { label: "东方光影", title: "浮光 · 拾影集", subtitle: "CINE & OPTICS · 帧享瞬间之美" },
+  { label: "极客暗房", title: "LUMEN ARCHIVE", subtitle: "RAW OPTICAL ENGINE · 自托管高画质图库" },
+  { label: "私人画廊", title: "时光私人美术馆", subtitle: "CURATED MOMENTS · 每一帧皆为典藏" },
+];
 
 function applyTheme(t: ThemeSetting) {
   const el = document.getElementById("pgs-theme");
@@ -183,7 +190,7 @@ export default function AppearanceTab({ active = true }: { active?: boolean }) {
           <label className="text-sm">
             <span className="muted mb-1 block text-xs">样式</span>
             <select className="field" value={s.splash.mode} onChange={(e) => setS({ ...s, splash: { ...s.splash, mode: e.target.value as "builtin" | "url" } })}>
-              <option value="builtin">内置:粒子 + 3D 旋转光环 + 3D 文字</option>
+              <option value="builtin">内置:星轨流光粒子 + 3D 光学星环 + 可替换逐字立体文字</option>
               <option value="url">自定义 https 链接(图片 / 视频 / 网页)</option>
             </select>
           </label>
@@ -192,10 +199,35 @@ export default function AppearanceTab({ active = true }: { active?: boolean }) {
             <input className="field" type="number" min={800} max={20000} step={200} value={s.splash.durationMs} onChange={(e) => setS({ ...s, splash: { ...s.splash, durationMs: Number(e.target.value) } })} />
           </label>
           {s.splash.mode === "builtin" ? (
-            <label className="text-sm sm:col-span-2">
-              <span className="muted mb-1 block text-xs">3D 标题文字</span>
-              <input className="field" maxLength={40} value={s.splash.title} onChange={(e) => setS({ ...s, splash: { ...s.splash, title: e.target.value } })} />
-            </label>
+            <>
+              <label className="text-sm">
+                <span className="muted mb-1 block text-xs">3D 主标题文字(可自由替换中英文/符号,自动适配字号与逐字动效)</span>
+                <input className="field" maxLength={40} placeholder="PicGalleryServer" value={s.splash.title} onChange={(e) => setS({ ...s, splash: { ...s.splash, title: e.target.value } })} />
+              </label>
+              <label className="text-sm">
+                <span className="muted mb-1 block text-xs">副标题 / 标语(可自由替换,留空则隐藏)</span>
+                <input
+                  className="field"
+                  maxLength={60}
+                  placeholder="LIGHT & MEMORY · 视觉典藏画廊"
+                  value={s.splash.subtitle ?? ""}
+                  onChange={(e) => setS({ ...s, splash: { ...s.splash, subtitle: e.target.value } })}
+                />
+              </label>
+              <div className="flex flex-wrap items-center gap-1.5 text-xs sm:col-span-2">
+                <span className="muted">快捷文案预设:</span>
+                {SPLASH_TEXT_PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    className="btn !px-2.5 !py-1 text-xs"
+                    onClick={() => setS({ ...s, splash: { ...s.splash, title: p.title, subtitle: p.subtitle } })}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </>
           ) : (
             <label className="text-sm sm:col-span-2">
               <span className="muted mb-1 block text-xs">启动页链接(必须 https://;.png/.jpg/.gif/.webp 作图片,.mp4/.webm 作视频,其它按网页嵌入)</span>

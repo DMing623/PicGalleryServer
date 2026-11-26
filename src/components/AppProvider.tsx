@@ -8,7 +8,7 @@ import { api } from "@/lib/api";
 export interface SiteInfo {
   siteName: string;
   theme: { preset: string; mode: "light" | "dark" | "auto"; accent: string; background: string };
-  splash: { enabled: boolean; mode: "builtin" | "url"; url: string; durationMs: number; title: string };
+  splash: { enabled: boolean; mode: "builtin" | "url"; url: string; durationMs: number; title: string; subtitle?: string };
   iconUrl: string;
   guestBrowse: boolean;
   /** 站点时区(IANA),通知时间按它换算 */
