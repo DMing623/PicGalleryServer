@@ -159,3 +159,31 @@
      `markAllRead()` 第 142 行执行 `db.select({ id: notices.id }).from(notices).limit(MAX_NOTICES)` 时没有指定排序（`listNotices` 有 `orderBy(desc(notices.createdAt))`）。当通知总数超过 `MAX_NOTICES`（300）时，`markAllRead` 标记的是任意 300 条而非最新 300 条，且 `unreadCount()` 统计全表通知数，导致点击「一键已读」后顶栏铃铛红点仍无法清零。
   3. **游客通知行为与 `project.md` §5 描述不一致（服务端刻意设计 vs 文档/注释滞后）**：
      `project.md` §5 写明：“游客没有账户，其已读状态保存在浏览器 localStorage”；但 `src/server/notices.ts` 第 31 行 `if (!user) return { items: [], unread: 0, total: 0 };` 对未登录游客直接返回空列表，且 `NoticeBell.tsx` 中并无任何 `localStorage` 已读状态存储逻辑。根据 `notices.ts` 顶部注释（“站点通知:管理者及以上发布,所有登录用户可读”），仅对登录用户下发通知属于**服务端刻意设计**，但 `project.md` §5 中关于游客 `localStorage` 记录通知已读的描述与实际代码不符。
+
+---
+
+## Issue #7：删除黑名单两处缺陷：① `manager` 角色可借由黑名单绕过 `media.purge` 权限物理删除源文件；② SQLite 下唯一约束冲突错误码不兼容
+
+- **性质判定**：✅ **确实是缺陷（Actual Bug / 权限边界绕过 + SQLite 驱动兼容性缺陷）**
+- **代码定位**：
+  - `src/server/api/blocklist.ts` 第 16 行
+  - `src/server/blocklist.ts` 第 130–147 行、第 155–169 行
+  - `src/server/media/ingest.ts` 第 97–104 行
+- **预期功能（`project.md` §4.5 & §7.4）**：
+  - 角色权限矩阵（§4.5）明确规定：`media.delete`（删除文件，默认只排除进黑名单）开放给 `admin` 与 `manager`；而 **`media.purge`（物理删除源文件）仅限 `admin`**（`manager` 不可物理删除服务器原文件）。
+  - 在 `DELETE /api/v1/media/:id?purge=1` 与 `POST /api/v1/media/batch` 中，代码均严格检查了 `if (purge && !can(user, "media.purge")) throw E.forbidden("物理删除源文件需要管理员权限")`。
+- **实际代码实现与问题分析**：
+  1. **通过黑名单两步操作绕过 `media.purge` 限制**：
+     在 `src/server/api/blocklist.ts` 第 16 行：
+     ```ts
+     route("DELETE", "/blocklist/:id", "media.delete", async (ctx) => purgeBlocked(ctx.params.id));
+     ```
+     该路由仅要求 `"media.delete"` 权限而未校验 `"media.purge"`（前端 `BlocklistTab` 的「彻底删除」按钮也未检查 `can("media.purge")`）。
+     因此，`manager` 角色虽然不能直接 `DELETE /media/:id?purge=1`，但只需：
+     - 第一步：调用 `DELETE /media/:id?purge=0`（仅需 `media.delete`）将文件移入黑名单；
+     - 第二步：调用 `DELETE /blocklist/:blocklistId`（同样仅检查 `media.delete`）触发 `purgeBlocked()`，即可物理删除服务器或 S3 上的原文件，形成完整的权限绕过。
+  2. **只读挂载相册解除挂载后黑名单残留记录可被物理删除**：
+     `purgeBlocked()` 第 158–161 行通过 `b.albumId` 查询 `pgs_albums.readonly`。若某只读挂载相册中的文件曾被加入黑名单，随后管理员移除了该挂载相册登记（`pgs_albums` 行被删，但黑名单行保留），此时 `owner` 查询为空，`owner?.readonly` 为 `undefined`，再次在黑名单点「彻底删除」会直接物理删除挂载目录中的原文件。
+  3. **SQLite 模式下 `unblock()` 与 `isUniqueViolation()` 仅判断 PostgreSQL 错误码 `23505`**：
+     `src/server/blocklist.ts` 第 133–141 行与 `src/server/media/ingest.ts` 第 97–104 行均通过 `code === "23505"` 识别唯一约束冲突。但在 `DB_DRIVER=sqlite`（`node:sqlite`）下，唯一约束冲突抛出的异常 `code` 为 `"ERR_SQLITE_ERROR"`（`errcode` 为 `2067` 或 `1555`，`message` 含 `"UNIQUE constraint failed"`），不会等于 `"23505"`。这导致在 SQLite 模式下解除黑名单遇到 ID/路径冲突时不会换新 ID 或返回 409 Conflict，而是直接抛 500 `internal_error`。
+- **是否特意如此**：否。属于权限校验遗漏与 SQLite 错误码适配遗漏。
