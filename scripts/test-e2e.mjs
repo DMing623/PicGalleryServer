@@ -634,6 +634,25 @@ async function sSearch() {
     eq(d.items.length, 0, "% 不被当作通配符");
     if (uid) await admin.del(`/media/${uid}?purge=1`);
   }
+  // issue #10:上传带备注 → 入库瞬间(pending 期间)游客也不能通过搜索探测到备注
+  {
+    const nt = `pendnote${tag}`;
+    const files = [];
+    for (let i = 0; i < 10; i++) files.push({ data: await sharp({ create: { width: 900, height: 700, channels: 3, noise: { type: "gaussian", mean: 128, sigma: 40 } } }).jpeg().toBuffer(), filename: `pend-note-${tag}-${i}.jpg` });
+    const up = await admin.upload({ album: st.A.code, note: nt }, files);
+    const ids = (up.data?.results ?? []).map((x) => x.id).filter(Boolean);
+    eq(ids.length, 10, "带备注批量上传(不等待处理)", up.buf.toString().slice(0, 120));
+    d = await q(`q=${nt}`, guest);
+    eq(d.items.length, 0, "pending 期间游客搜不到备注内容");
+    d = await q(`q=pend-note-${tag}&album=${st.A.code}&limit=50`, guest);
+    ok(d.items.length > 0, "但游客可按文件名搜到这些文件(pending/ready 均可)", String(d.items.length));
+    await waitProcessed(admin, ids);
+    d = await q(`q=${nt}`, guest);
+    eq(d.items.length, 0, "处理完成后游客仍搜不到备注");
+    d = await q(`q=${nt}`);
+    eq(d.items.length, 10, "登录用户可按备注搜到", String(d.items.length));
+    for (const id of ids) await admin.del(`/media/${id}?purge=1`);
+  }
   d = await q(`kind=video&album=${st.A.code}`);
   ok(d.items.every((i) => i.kind === "video"), "kind=video 过滤");
   d = await q(`kind=image&album=${st.A.code}&limit=200`);

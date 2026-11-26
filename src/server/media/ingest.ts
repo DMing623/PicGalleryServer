@@ -190,10 +190,11 @@ async function ingestOneInner(
       const key = await uniqueKey(target.storage, target.dirKey, name);
       const id = randomId(12);
       try {
+        // search_text 只放文件名:管理员备注不进 search_text(游客搜索会逐字探测到备注);完成派生后由 buildSearchText 追加元数据
         await db.insert(media).values({
           id, albumId: target.album?.id ?? null, kind: kind.kind, filename: path.basename(key), mime: kind.mime, size: file.size,
           hash: file.hash, sortAt: new Date(), storage: target.storage, storageKey: key, status: "pending", note,
-          searchText: `${path.basename(key)}\n${note}`.toLowerCase(), uploadedBy: opts.user.id,
+          searchText: path.basename(key).toLowerCase(), uploadedBy: opts.user.id,
         });
       } catch (e) {
         // 唯一索引冲突:换一个新名字重试(此时临时文件尚未落盘,仍在)

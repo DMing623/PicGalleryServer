@@ -271,6 +271,8 @@
 
 ## Issue #10：上传入库瞬间将管理员备注 `note` 写入了 `search_text`，在后台派生完成前违背了“备注不进 `search_text`”的隐私控制契约
 
+> ✅ **已完成(已复现并修复)**:`ingestOneInner` 入库时 `search_text` 只写文件名,备注仅存 `note` 列(登录用户搜索时额外匹配 `note`);`test-e2e.mjs` 搜索章节增加「pending 期间游客搜不到备注」断言。
+
 - **性质判定**：✅ **确实是缺陷（Actual Bug / 与文档隐私契约冲突）**
 - **代码定位**：`src/server/media/ingest.ts` 第 209 行
 - **预期功能（`README.md` / `project.md` §4.4 & §5）**：
