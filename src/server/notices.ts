@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, notExists, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { noticeReads, notices } from "@/db/schema";
 import type { AuthUser } from "./auth";
@@ -10,7 +10,7 @@ import { randomId } from "./media/types";
  * 站点通知:管理者及以上发布,所有登录用户可读。
  *
  * 已读状态按「用户 × 通知」记录在 pgs_notice_reads 里;游客没有账户,
- * 服务端对游客只返回空列表(游客看不到站点通知)。
+ * 服务端对游客只返回空列表(游客看不到站点通知,前端也不做 localStorage 已读)。
  * 置顶通知(pinned)排在最前,其后按发布时间倒序。
  */
 
@@ -53,18 +53,29 @@ export async function listNotices(user: AuthUser | null): Promise<{ items: Notic
     createdByName: r.createdByName ?? "",
     read: readSet.has(r.id),
   }));
-  return { items, unread: items.filter((i) => !i.read).length, total: items.length };
+  // unread 与铃铛红点(unreadCount)同口径:统计全部通知,而不是只统计返回的最近 MAX_NOTICES 条
+  return { items, unread: await unreadCount(user), total: items.length };
 }
 
-/** 未读数(铃铛红点用),不返回正文,开销很小 */
+/**
+ * 未读数(铃铛红点用),不返回正文,开销很小。
+ * 以「通知是否存在对应已读行」判定(NOT EXISTS),而不是 总数 − 已读行数:
+ * 后者会被孤儿已读行(通知已删除、或对不存在的 id 调用过 read)抵消而漏掉新通知。
+ */
 export async function unreadCount(user: AuthUser | null): Promise<number> {
   if (!user) return 0;
-  const [total] = await db.select({ n: sql<number>`CAST(count(*) AS INTEGER)` }).from(notices);
-  const [read] = await db
+  const [row] = await db
     .select({ n: sql<number>`CAST(count(*) AS INTEGER)` })
-    .from(noticeReads)
-    .where(eq(noticeReads.userId, user.id));
-  return Math.max(0, Number(total?.n ?? 0) - Number(read?.n ?? 0));
+    .from(notices)
+    .where(
+      notExists(
+        db
+          .select({ one: sql`1` })
+          .from(noticeReads)
+          .where(and(eq(noticeReads.noticeId, notices.id), eq(noticeReads.userId, user.id))),
+      ),
+    );
+  return Number(row?.n ?? 0);
 }
 
 export async function createNotice(input: { title: string; body: string; pinned?: boolean }, user: AuthUser): Promise<NoticeDto> {
@@ -138,9 +149,9 @@ export async function deleteNotice(id: string): Promise<boolean> {
   return true;
 }
 
-/** 一键已读:把当前所有通知标记为已读 */
+/** 一键已读:把当前所有通知标记为已读(与 unreadCount 同口径,不受 MAX_NOTICES 截断) */
 export async function markAllRead(user: AuthUser): Promise<{ marked: number }> {
-  const rows = await db.select({ id: notices.id }).from(notices).limit(MAX_NOTICES);
+  const rows = await db.select({ id: notices.id }).from(notices);
   if (!rows.length) return { marked: 0 };
   const existing = await db
     .select({ noticeId: noticeReads.noticeId })
@@ -159,5 +170,8 @@ export async function markAllRead(user: AuthUser): Promise<{ marked: number }> {
 }
 
 export async function markRead(user: AuthUser, id: string): Promise<void> {
+  // 通知必须存在:否则会写入孤儿已读行
+  const [n] = await db.select({ id: notices.id }).from(notices).where(eq(notices.id, id)).limit(1);
+  if (!n) throw E.notFound("通知不存在");
   await db.insert(noticeReads).values({ userId: user.id, noticeId: id, readAt: new Date() }).onConflictDoNothing();
 }

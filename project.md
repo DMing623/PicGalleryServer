@@ -320,7 +320,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
 
 **pgs_notices**(站点通知):`id`(PK) `title` `body`(Markdown 原文) `pinned` `created_by` `created_by_name`(用户名快照) `created_at` `updated_at`;索引 `created_at`。发布需要 `notice.publish`(admin / manager)。
 
-**pgs_notice_reads**(通知已读):`user_id` + `notice_id` 复合主键 `read_at`;索引 `user_id`。存在即已读,「一键已读」= 批量插入缺失行。游客没有账户,其已读状态保存在浏览器 localStorage。
+**pgs_notice_reads**(通知已读):`user_id` + `notice_id` 复合主键 `read_at`;索引 `user_id`。存在即已读,「一键已读」= 批量插入缺失行。游客没有账户,服务端对游客不下发站点通知(`GET /notices` 返回空列表,前端也没有 localStorage 已读逻辑)。未读数用 `NOT EXISTS` 统计(不受孤儿已读行影响),`POST /notices/:id/read` 对不存在的通知返回 404。
 
 > 修改表结构:① 改 `schema.ts` ② 同步改 `bootstrap.ts` 的 `PG_DDL`(含 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`)与 `LITE_DDL`(含 `LITE_UPGRADE` 数组)③ 运行 `node scripts/check-config.mjs` 校验双驱动列定义一致。
 

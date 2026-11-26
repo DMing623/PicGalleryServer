@@ -1154,6 +1154,21 @@ async function sSite() {
   ok(r.status === 200 && typeof r.data.marked === "number", "一键已读 marked 数字", JSON.stringify(r.data));
   r = await st.vwr.get("/notices/unread");
   eq(r.data.unread, 0, "已读后未读数 0");
+  // issue #6:对不存在的通知标记已读 → 404,且不会污染未读数(新通知仍应亮红点)
+  r = await st.vwr.post("/notices/no-such-notice-" + tag + "/read");
+  eq(r.status, 404, "对不存在的通知标记已读 → 404");
+  {
+    const r3 = await st.mgr.post("/notices", { title: T0 + "-未读", body: "n3" });
+    const n3 = r3.data?.id;
+    r = await st.vwr.get("/notices/unread");
+    eq(r.data.unread, 1, "新通知仍使未读数 +1(未被孤儿已读行抵消)", JSON.stringify(r.data));
+    r = await st.vwr.get("/notices");
+    eq(r.data.unread, 1, "/notices 的 unread 与 /notices/unread 一致");
+    r = await st.vwr.post("/notices/read-all");
+    r = await st.vwr.get("/notices/unread");
+    eq(r.data.unread, 0, "一键已读后未读数归零");
+    if (n3) await st.mgr.del(`/notices/${n3}`);
+  }
   r = await st.mgr.patch(`/notices/${nid}`, { title: T0 + "-改", pinned: true });
   ok(r.status === 200, "PATCH 通知");
   // issue #5:置顶通知排在最前(即使更早发布),pinned 字段为布尔值

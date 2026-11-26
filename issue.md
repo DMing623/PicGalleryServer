@@ -153,6 +153,8 @@
 
 ## Issue #6：站点通知未读数计算 (`unreadCount`) 与已读接口 (`markRead` / `markAllRead`) 的一致性缺陷，及游客通知与 `project.md` 描述差异
 
+> ✅ **已完成(已复现并修复)**:(1) `markRead` 先校验通知存在,否则 404;`unreadCount` 改为 `NOT EXISTS` 统计,孤儿已读行不再抵消新通知。(2) `markAllRead` 去掉 300 条截断,与 `unreadCount` 同口径;`listNotices.unread` 复用 `unreadCount`。(3) 以代码为准,`project.md` §5 / `notices.ts` 注释已改为「游客不下发通知」。`test-e2e.mjs` 增加对应断言。
+
 - **性质判定**：✅ **(1)(2) 确实是缺陷（Actual Bug）；⚠️ (3) 属于刻意实现取舍但与 `project.md` 描述不一致**
 - **代码定位**：`src/server/notices.ts` 第 30–67 行、第 141–162 行；对照 `project.md` §5（`pgs_notice_reads`）
 - **实际代码实现与问题分析**：
