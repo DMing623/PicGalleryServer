@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { memo, Suspense, useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { bytes } from "@/lib/format";
 import AlbumActions, { type AlbumDto } from "./AlbumActions";
-import { useApp } from "./AppProvider";
+import { navigateApp, useApp } from "./AppProvider";
 import { useDialog } from "./DialogProvider";
 import Gallery from "./Gallery";
 
@@ -16,9 +15,26 @@ interface Detail extends AlbumDto {
   children: AlbumDto[];
 }
 
+interface RootAlbumsCache {
+  userId: string | null;
+  albums: AlbumDto[];
+  unsorted: number | null;
+}
+
+/** 会话级相册列表与详情缓存:切换相册页或进入子相册时首帧即刻展示,后台静默刷新 */
+let rootCache: RootAlbumsCache | null = null;
+const detailCache = new Map<string, Detail>();
+
+function onAlbumLinkClick(e: React.MouseEvent<HTMLAnchorElement>, href: string) {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+  e.preventDefault();
+  navigateApp(href);
+}
+
 const Card = memo(function Card({ a, showManage }: { a: AlbumDto; showManage: boolean }) {
+  const href = `/albums/${a.code}`;
   return (
-    <Link href={`/albums/${a.code}`} className="tile glass group block overflow-hidden rounded-2xl">
+    <Link href={href} onClick={(e) => onAlbumLinkClick(e, href)} className="tile glass group block overflow-hidden rounded-2xl">
       <div className="relative aspect-[4/3] w-full overflow-hidden" style={{ background: "linear-gradient(135deg, var(--bg2), color-mix(in srgb, var(--accent) 25%, var(--bg)))" }}>
         {a.coverId ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -51,22 +67,40 @@ const Card = memo(function Card({ a, showManage }: { a: AlbumDto; showManage: bo
   );
 });
 
-export default function AlbumsView({ code }: { code?: string }) {
+export default function AlbumsView({ code, active = true }: { code?: string; active?: boolean }) {
   const { loading, can, me } = useApp();
-  const router = useRouter();
   const dlg = useDialog();
-  const [detail, setDetail] = useState<Detail | null>(null);
-  const [list, setList] = useState<AlbumDto[] | null>(null);
-  const [unsorted, setUnsorted] = useState<number | null>(null);
+  const userId = me?.user?.id ?? null;
+  const [detail, setDetail] = useState<Detail | null>(() => (code && code !== "_unsorted" ? detailCache.get(code) ?? null : null));
+  const [list, setList] = useState<AlbumDto[] | null>(() => (!code && rootCache && rootCache.userId === userId ? rootCache.albums : null));
+  const [unsorted, setUnsorted] = useState<number | null>(() => (!code && rootCache && rootCache.userId === userId ? rootCache.unsorted : null));
   const [err, setErr] = useState("");
   const showManage = can("album.manage");
 
   const load = useCallback(async () => {
     try {
       if (code === "_unsorted") return;
-      if (code) setDetail(await api<Detail>(`/albums/${code}`));
-      else {
+      if (code) {
+        const d = await api<Detail>(`/albums/${code}`);
+        detailCache.set(code, d);
+        for (const c of d.children) {
+          if (!detailCache.has(c.code)) {
+            detailCache.set(c.code, {
+              ...c,
+              breadcrumbs: [...d.breadcrumbs, { code: c.code, name: c.name }],
+              children: [],
+            });
+          }
+        }
+        setDetail(d);
+      } else {
         const r = await api<{ albums: AlbumDto[]; unsorted: number | null }>("/albums?parent=root");
+        rootCache = { userId, albums: r.albums, unsorted: r.unsorted };
+        for (const a of r.albums) {
+          if (!detailCache.has(a.code)) {
+            detailCache.set(a.code, { ...a, breadcrumbs: [{ code: a.code, name: a.name }], children: [] });
+          }
+        }
         setList(r.albums);
         setUnsorted(r.unsorted);
       }
@@ -74,7 +108,7 @@ export default function AlbumsView({ code }: { code?: string }) {
     } catch (e) {
       setErr((e as Error).message);
     }
-  }, [code]);
+  }, [code, userId]);
 
   useEffect(() => {
     if (loading) return;
@@ -82,13 +116,13 @@ export default function AlbumsView({ code }: { code?: string }) {
     const h = () => void load();
     window.addEventListener("pgs:albums", h);
     return () => window.removeEventListener("pgs:albums", h);
-  }, [load, loading, me?.user?.id]);
+  }, [load, loading, userId]);
 
   if (code === "_unsorted") {
     return (
       <div>
         <h1 className="mb-2 px-2 text-lg font-semibold">未归类(收件箱)</h1>
-        <Suspense fallback={null}><Gallery album="_unsorted" /></Suspense>
+        <Suspense fallback={null}><Gallery album="_unsorted" active={active} /></Suspense>
       </div>
     );
   }
@@ -97,7 +131,7 @@ export default function AlbumsView({ code }: { code?: string }) {
     return (
       <div className="glass mx-auto mt-10 max-w-md rounded-3xl p-10 text-center">
         <p className="font-medium">{err}</p>
-        <Link href="/albums" className="btn mt-4">返回相册列表</Link>
+        <Link href="/albums" onClick={(e) => onAlbumLinkClick(e, "/albums")} className="btn mt-4">返回相册列表</Link>
       </div>
     );
   }
@@ -127,7 +161,7 @@ export default function AlbumsView({ code }: { code?: string }) {
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
           {unsorted !== null && (
-            <Link href="/albums/_unsorted" className="tile glass group block overflow-hidden rounded-2xl">
+            <Link href="/albums/_unsorted" onClick={(e) => onAlbumLinkClick(e, "/albums/_unsorted")} className="tile glass group block overflow-hidden rounded-2xl">
               <div className="relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden" style={{ background: "linear-gradient(135deg, var(--bg2), color-mix(in srgb, var(--accent) 25%, var(--bg)))" }}>
                 <span className="text-4xl opacity-60">📥</span>
               </div>
@@ -156,10 +190,10 @@ export default function AlbumsView({ code }: { code?: string }) {
     <div>
       <div className="glass mx-2 mb-3 rounded-2xl p-3">
         <nav className="muted mb-1 flex flex-wrap items-center gap-1 text-sm">
-          <Link href="/albums" className="hover:underline">相册</Link>
+          <Link href="/albums" onClick={(e) => onAlbumLinkClick(e, "/albums")} className="hover:underline">相册</Link>
           {detail.breadcrumbs.map((b) => (
             <span key={b.code}>
-              / <Link href={`/albums/${b.code}`} className="hover:underline">{b.name}</Link>
+              / <Link href={`/albums/${b.code}`} onClick={(e) => onAlbumLinkClick(e, `/albums/${b.code}`)} className="hover:underline">{b.name}</Link>
             </span>
           ))}
         </nav>
@@ -173,7 +207,7 @@ export default function AlbumsView({ code }: { code?: string }) {
           )}
           <span className="muted text-sm">{detail.counts.mediaTotal} 项 · {bytes(detail.counts.sizeTotal)}</span>
           <div className="ml-auto">
-            <AlbumActions album={detail} onChanged={load} onDeleted={() => router.push(detail.parent ? `/albums/${detail.parent}` : "/albums")} />
+            <AlbumActions album={detail} onChanged={load} onDeleted={() => navigateApp(detail.parent ? `/albums/${detail.parent}` : "/albums")} />
           </div>
         </div>
         {detail.rootPath && <p className="muted mt-1 break-all text-xs">📂 {detail.rootPath}</p>}
@@ -186,7 +220,7 @@ export default function AlbumsView({ code }: { code?: string }) {
         </div>
       )}
       <Suspense fallback={null}>
-        <Gallery album={code} />
+        <Gallery album={code} active={active} />
       </Suspense>
     </div>
   );

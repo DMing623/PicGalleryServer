@@ -18,25 +18,55 @@ function applyTheme(t: ThemeSetting) {
   if (el) el.textContent = themeCss(t);
 }
 
-export default function AppearanceTab() {
+export default function AppearanceTab({ active = true }: { active?: boolean }) {
   const { me, reload } = useApp();
-  const [s, setS] = useState<Site | null>(null);
+  const [s, setS] = useState<Site | null>(() =>
+    me?.site
+      ? {
+          siteName: me.site.siteName,
+          theme: { ...me.site.theme },
+          splash: { ...me.site.splash },
+          guestBrowse: me.site.guestBrowse,
+        }
+      : null,
+  );
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
-  const saved = useRef<ThemeSetting | null>(null);
+  const saved = useRef<ThemeSetting | null>(me?.site ? { ...me.site.theme } : null);
   const file = useRef<HTMLInputElement>(null);
   const [iconKey, setIconKey] = useState(0);
+
+  useEffect(() => {
+    if (!s && me?.site) {
+      const init: Site = {
+        siteName: me.site.siteName,
+        theme: { ...me.site.theme },
+        splash: { ...me.site.splash },
+        guestBrowse: me.site.guestBrowse,
+      };
+      saved.current = init.theme;
+      setS(init);
+    }
+  }, [me?.site, s]);
 
   useEffect(() => {
     api<Site>("/settings").then((r) => {
       setS(r);
       saved.current = r.theme;
     });
-    // 离开页面时恢复到已保存的主题(未保存的预览不保留)
+    // 卸载时恢复到已保存的主题(未保存的预览不保留)
     return () => {
       if (saved.current) applyTheme(saved.current);
     };
   }, []);
+
+  // Keep-Alive 切换离开本页时,恢复已保存的主题(未保存的预览不保留)
+  useEffect(() => {
+    if (!active && saved.current) {
+      applyTheme(saved.current);
+      setS((prev) => (prev && saved.current ? { ...prev, theme: { ...saved.current } } : prev));
+    }
+  }, [active]);
 
   if (!s) return <p className="muted text-sm">加载中…</p>;
 

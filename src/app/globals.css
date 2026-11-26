@@ -54,8 +54,8 @@ body::before {
   padding: .45rem .9rem; border-radius: .75rem; font-size: .875rem; line-height: 1.25rem;
   background: color-mix(in srgb, var(--surface) 60%, transparent);
   border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-  transition: transform .12s ease, background .15s ease, opacity .15s;
-  cursor: pointer; white-space: nowrap;
+  transition: transform .08s ease-out, background .08s ease-out, opacity .12s;
+  cursor: pointer; white-space: nowrap; touch-action: manipulation; user-select: none; -webkit-tap-highlight-color: transparent;
 }
 .btn:hover { background: color-mix(in srgb, var(--surface) 90%, transparent); }
 .btn:active { transform: scale(.97); }
@@ -88,15 +88,15 @@ select.field { appearance: auto; }
 .dock::-webkit-scrollbar { display: none; }
 /* 开发模式下左下角有 Next 悬浮球,工具栏紧贴在它右侧、高度与之近似 */
 .dock.dev { left: 64px; }
-.dbtn { display: inline-flex; align-items: center; justify-content: center; gap: 3px; height: 28px; min-width: 28px; padding: 0 9px; border-radius: 14px; font-size: 12px; line-height: 1; white-space: nowrap; cursor: pointer; transition: background .15s, transform .1s; flex: none; }
+.dbtn { display: inline-flex; align-items: center; justify-content: center; gap: 3px; height: 28px; min-width: 28px; padding: 0 9px; border-radius: 14px; font-size: 12px; line-height: 1; white-space: nowrap; cursor: pointer; touch-action: manipulation; user-select: none; -webkit-tap-highlight-color: transparent; transition: transform .07s ease-out, background .05s ease-out, color .05s ease-out; flex: none; }
 .dbtn:hover { background: color-mix(in srgb, var(--fg) 10%, transparent); }
-.dbtn:active { transform: scale(.94); }
+.dbtn:active, .dbtn.pressing { transform: scale(.94); }
 .dbtn.on { background: var(--accent); color: var(--accent-fg); }
 .dsep { width: 1px; height: 18px; margin: 0 4px; background: color-mix(in srgb, var(--fg) 18%, transparent); flex: none; }
 .compact-field { height: 28px; padding: 0 10px; font-size: 13px; border-radius: 10px; }
 
 /* ---------- 通知铃铛 / 通知面板 ---------- */
-.bell-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; height: 28px; width: 28px; flex: none; border-radius: 10px; font-size: 15px; line-height: 1; cursor: pointer; transition: background .15s, transform .1s; }
+.bell-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; height: 28px; width: 28px; flex: none; border-radius: 10px; font-size: 15px; line-height: 1; cursor: pointer; touch-action: manipulation; user-select: none; -webkit-tap-highlight-color: transparent; transition: background .08s, transform .08s; }
 .bell-btn:hover { background: color-mix(in srgb, var(--fg) 10%, transparent); }
 .bell-btn:active { transform: scale(.92); }
 .bell-dot { position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; border-radius: 50%; background: #e5484d; box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--surface) 85%, transparent); animation: dot-pulse 2.4s ease-in-out infinite; will-change: opacity; }

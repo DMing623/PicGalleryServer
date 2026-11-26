@@ -1,11 +1,10 @@
 "use client";
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-import { useSearchParams } from "next/navigation";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, qs } from "@/lib/api";
 import { duration } from "@/lib/format";
-import { useApp } from "./AppProvider";
+import { useApp, useAppLocation } from "./AppProvider";
 import Viewer from "./Viewer";
 
 export interface MediaItem {
@@ -177,8 +176,16 @@ function sameMediaRow(a: MediaItem, b: MediaItem): boolean {
   );
 }
 
-export default function Gallery({ album }: { album?: string }) {
-  const sp = useSearchParams();
+export default function Gallery({ album, active = true }: { album?: string; active?: boolean }) {
+  const { search } = useAppLocation();
+  const [activeSearch, setActiveSearch] = useState(search);
+
+  useEffect(() => {
+    if (active) setActiveSearch(search);
+  }, [active, search]);
+
+  const effectiveSearch = active ? search : activeSearch;
+  const sp = useMemo(() => new URLSearchParams(effectiveSearch), [effectiveSearch]);
   const q = sp.get("q") ?? "";
   const kind = sp.get("kind") ?? "";
   const order: "asc" | "desc" = sp.get("order") === "asc" ? "asc" : "desc";
@@ -199,6 +206,13 @@ export default function Gallery({ album }: { album?: string }) {
   const reqId = useRef(0);
   const cursorRef = useRef<string | null>(null);
   const busy = useRef(false);
+  const activeRef = useRef(active);
+  const calcWinRef = useRef<(measureTop?: boolean) => void>(() => undefined);
+
+  useEffect(() => {
+    activeRef.current = active;
+    if (!active) setOpen(null);
+  }, [active]);
 
   const params = useMemo(() => ({ album, q, kind, order, limit: 80 }), [album, q, kind, order]);
   const handleSelect = useCallback((idx: number) => setOpen(idx), []);
@@ -244,26 +258,31 @@ export default function Gallery({ album }: { album?: string }) {
     return () => window.removeEventListener("pgs:changed", h);
   }, []);
 
-  // 无限滚动
+  // 无限滚动(仅当当前标签页可见时触发追加)
   useEffect(() => {
+    if (!active) return;
     const el = sentinel.current;
     if (!el) return;
     const io = new IntersectionObserver(
-      (es) => es[0].isIntersecting && cursorRef.current && void fetchPage(false),
+      (es) => es[0].isIntersecting && activeRef.current && cursorRef.current && void fetchPage(false),
       { rootMargin: "1200px" },
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [fetchPage, items.length]);
+  }, [fetchPage, items.length, active]);
 
-  // 容器宽度与列数(仅在宽度或列数真正变化时更新状态,忽略分页追加引起的高度变化)
+  // 容器宽度与列数(当 Keep-Alive 容器处于 hidden 状态时 clientWidth 为 0,直接忽略以避免列宽归零重算)
   useEffect(() => {
     const el = box.current;
     if (!el) return;
     let lastW = -1;
     const update = () => {
-      boxDocTop.current = el.getBoundingClientRect().top + window.scrollY;
-      const w = el.clientWidth;
+      const cw = el.clientWidth;
+      if (cw <= 0 && lastW > 0) return;
+      if (cw > 0) {
+        boxDocTop.current = el.getBoundingClientRect().top + window.scrollY;
+      }
+      const w = cw > 0 ? cw : Math.max(320, window.innerWidth);
       if (Math.abs(w - lastW) >= 0.5) {
         lastW = w;
         setWidth((prev) => (Math.abs(prev - w) < 0.5 ? prev : w));
@@ -281,13 +300,14 @@ export default function Gallery({ album }: { album?: string }) {
     };
   }, []);
 
-  // 窗口化:只渲染视口附近的瓦片,其余用等高占位(DOM 节点数与内存近似常数,几万张也不卡)
+  // 窗口化:只渲染视口附近的瓦片,其余用等高占位;隐藏态冻结窗口区间,切回时无需重新挂载瓦片
   useEffect(() => {
     let raf = 0;
     const calc = (measureTop = false) => {
       raf = 0;
+      if (!activeRef.current) return;
       const el = box.current;
-      if (!el) return;
+      if (!el || el.clientWidth <= 0) return;
       if (measureTop) {
         boxDocTop.current = el.getBoundingClientRect().top + window.scrollY;
       }
@@ -298,10 +318,13 @@ export default function Gallery({ album }: { album?: string }) {
       const bottom = Math.ceil((rel + vh + margin) / WINDOW_STEP) * WINDOW_STEP;
       setWin((p) => (p.top === top && p.bottom === bottom ? p : { top, bottom }));
     };
+    calcWinRef.current = calc;
     const onScroll = () => {
+      if (!activeRef.current) return;
       if (!raf) raf = requestAnimationFrame(() => calc(false));
     };
     const onResize = () => {
+      if (!activeRef.current) return;
       if (!raf) raf = requestAnimationFrame(() => calc(true));
     };
     window.addEventListener("scroll", onScroll, { passive: true });
@@ -314,13 +337,19 @@ export default function Gallery({ album }: { album?: string }) {
     };
   }, []);
 
-  // 有处理中的文件时轮询前几十项的状态(仅当字段实际变化时才更新对应项引用)
+  useEffect(() => {
+    if (!active) return;
+    const id = requestAnimationFrame(() => calcWinRef.current(true));
+    return () => cancelAnimationFrame(id);
+  }, [active]);
+
+  // 有处理中的文件时轮询前几十项的状态(仅当当前视图可见且字段实际变化时才更新对应项引用)
   const pending = useMemo(() => items.some((i) => i.status === "pending"), [items]);
   useEffect(() => {
-    if (!pending) return;
+    if (!pending || !active) return;
     let n = 0;
     const t = setInterval(async () => {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (!activeRef.current || (typeof document !== "undefined" && document.visibilityState === "hidden")) return;
       if (++n > 40) return clearInterval(t);
       try {
         const page = await api<Page>(`/media${qs({ ...params, limit: 80 })}`);
@@ -340,7 +369,7 @@ export default function Gallery({ album }: { album?: string }) {
       }
     }, 3000);
     return () => clearInterval(t);
-  }, [pending, params]);
+  }, [pending, params, active]);
 
   /** 瀑布流分列:每张图放进当前最矮的列,所有列等宽;图片按真实宽高比显示;同时算出每张图在列内的位置(供窗口化) */
   const columns = useMemo(() => {

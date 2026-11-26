@@ -14,6 +14,7 @@ const nextConfig: NextConfig = {
   // 原生/大体积依赖不参与打包
   serverExternalPackages: ["sharp", "exifr", "heic-convert", "busboy", "@aws-sdk/client-s3"],
   poweredByHeader: false,
+  experimental: { staleTimes: { dynamic: 300, static: 300 } },
   // 开发模式下允许局域网 / 本机回环地址访问 dev 资源(否则 Next 会拦截跨源请求,
   // 表现为页面能打开但客户端脚本/HMR 被拦,启动页卡住不消失)
   allowedDevOrigins: ["127.0.0.1", "localhost", "0.0.0.0", "10.2.84.81"],

@@ -125,7 +125,7 @@ function CorruptCard({ data, onPurged }: { data: CorruptSummary; onPurged: () =>
   );
 }
 
-export default function SystemTab() {
+export default function SystemTab({ active = true }: { active?: boolean }) {
   const { can, me, reload } = useApp();
   const [s, setS] = useState<Status | null>(null);
   const [corrupt, setCorrupt] = useState<CorruptSummary | null>(null);
@@ -150,6 +150,7 @@ export default function SystemTab() {
   const loadCorrupt = useCallback(() => api<CorruptSummary>("/status/corrupt").then(setCorrupt).catch(() => undefined), []);
 
   useEffect(() => {
+    if (!active) return;
     let alive = true;
     const load = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
@@ -176,7 +177,7 @@ export default function SystemTab() {
       clearInterval(t);
       clearInterval(t2);
     };
-  }, [loadCorrupt]);
+  }, [loadCorrupt, active]);
 
   const tzFmt = useMemo(() => {
     try {

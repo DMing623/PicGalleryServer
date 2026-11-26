@@ -1,11 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-import { Suspense } from "react";
-import Gallery from "@/components/Gallery";
-
+/** 首页图库由 Shell 常驻保活渲染,此处仅作路由占位 */
 export default function HomePage() {
-  return (
-    <Suspense fallback={null}>
-      <Gallery />
-    </Suspense>
-  );
+  return null;
 }

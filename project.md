@@ -210,16 +210,16 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
    │   ├─ api/health/route.ts         平台健康检查(DB select 1)
    │   └─ api/v1/[[...path]]/route.ts REST 入口:GET/POST/PUT/PATCH/DELETE 全部转交 server/router.dispatch(HEAD 当 GET 处理)
    └─ components/                     前端组件(全部 "use client",除特别说明)
-       ├─ AppProvider.tsx             上下文:me(user/perms/site/features)、can(perm)、reload()
+       ├─ AppProvider.tsx             上下文:me(user/perms/site/features)、can(perm)、reload() + 零延迟客户端路由与滚动记忆(navigateApp/replaceAppUrl/useAppLocation)
        ├─ Splash.tsx                  启动页:粒子 canvas + 3D 光环 + 3D 挤出文字;url 模式支持图片/视频/iframe
-       ├─ Shell.tsx                   毛玻璃顶栏、导航、搜索框(相册页自动限定范围)、上传入口、账户菜单、底部工具栏
+       ├─ Shell.tsx                   毛玻璃顶栏、搜索框、底部工具栏(pointerdown 即时高亮反馈)与图库/相册/设置三大主视图常驻保活(Keep-Alive)
        ├─ Gallery.tsx                 固定列等宽瀑布流 + 二分视口窗口化(仅渲染视口±1.5 屏瓦片,Memo 瓦片)+ 游标无限滚动(每页 80)+ 处理中按需轮询;导出 MediaItem
        ├─ Viewer.tsx                  全屏查看器:HD 图(加载中转圈→带水印大图,手势缩放直接写 DOM transform)、会话详情 LRU 缓存、文件链接、备注编辑、元数据侧栏、删除/重处理
        ├─ useHd.ts                    HD 加载 hook:申请令牌→取图→Blob URL→异步预解码(img.decode);只保留当前±1 张,预加载相邻 2 张
        ├─ DialogProvider.tsx          内置对话框:choose/confirm/prompt/alert/confirmCheck
        ├─ MetaPanel.tsx               元数据渲染(固定字段缺失显示 N/A、AI 区块、原始段折叠)
        ├─ UploadDialog.tsx            上传对话框:相册下拉、存储选择、并发、进度、结果去向提示、只读挂载禁用
-       ├─ AlbumsView.tsx              相册列表/详情页的客户端主体、相册卡片
+       ├─ AlbumsView.tsx              相册列表/详情页的客户端主体(含会话级相册缓存)、相册卡片
        ├─ AlbumActions.tsx            相册操作按钮组(新建/重命名/公开私有/只读切换/重扫/删除),导出 AlbumDto
        ├─ NoticeBell.tsx              顶栏通知铃铛 + 覆盖式面板(必须 Portal 到 body)
        ├─ Markdown.tsx                dangerouslySetInnerHTML 承载 lib/markdown.ts 的输出
@@ -228,7 +228,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
        ├─ DevI18n.tsx                 仅 `next dev` 生效:Next 开发悬浮球汉化(生产不渲染)
        ├─ LoginForm.tsx               登录表单
        └─ settings/
-           ├─ SettingsView.tsx        设置页标签容器(按权限显示标签)
+           ├─ SettingsView.tsx        设置页标签容器(按权限显示标签,已访问子面板常驻保活)
            ├─ AppearanceTab.tsx       站点名/图标上传/主题/明暗/启动页/游客开关,主题实时预览
            ├─ NoticeTab.tsx           通知发布(Markdown 编辑 + 预览)
            ├─ AdminTabs.tsx           导出 AlbumManager(文件夹式导航 + 目录挂载对话框)/BlocklistTab/KeysTab/UsersTab

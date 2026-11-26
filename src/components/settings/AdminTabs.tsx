@@ -167,7 +167,7 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
   return typeof document === "undefined" ? panel : createPortal(panel, document.body);
 }
 
-export function AlbumManager() {
+export function AlbumManager({ active = true }: { active?: boolean }) {
   const { can, me } = useApp();
   const dlg = useDialog();
   const [albums, setAlbums] = useState<AlbumDto[]>([]);
@@ -191,18 +191,23 @@ export function AlbumManager() {
 
   useEffect(() => {
     void load();
+    const onChanged = () => void load();
+    window.addEventListener("pgs:albums", onChanged);
+    return () => window.removeEventListener("pgs:albums", onChanged);
+  }, [load]);
+
+  useEffect(() => {
+    if (!active) return;
     const h = () => {
       if (typeof document === "undefined" || document.visibilityState !== "hidden") void load();
     };
-    window.addEventListener("pgs:albums", h);
     document.addEventListener("visibilitychange", h);
     const t = setInterval(h, 5000);
     return () => {
-      window.removeEventListener("pgs:albums", h);
       document.removeEventListener("visibilitychange", h);
       clearInterval(t);
     };
-  }, [load]);
+  }, [load, active]);
 
   const byCode = useMemo(() => new Map(albums.map((a) => [a.code, a])), [albums]);
 
@@ -502,7 +507,7 @@ interface BlockRow {
   createdAt: string;
 }
 
-export function BlocklistTab() {
+export function BlocklistTab({ active = true }: { active?: boolean }) {
   const dlg = useDialog();
   const [items, setItems] = useState<BlockRow[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -519,7 +524,9 @@ export function BlocklistTab() {
       .catch((e) => setErr((e as Error).message))
       .finally(() => setLoaded(true));
   }, []);
-  useEffect(() => void load(), [load]);
+  useEffect(() => {
+    if (active) void load();
+  }, [load, active]);
 
   const shown = useMemo(() => {
     const k = q.trim().toLowerCase();
