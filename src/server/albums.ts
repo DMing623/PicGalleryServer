@@ -1000,23 +1000,48 @@ async function scanOne(a: AlbumRow, recursive: boolean, s: ScanState, depth: num
       }
     }
 
-    // 2) 其余消失目录:先软删除媒体;确认(第二次扫描仍缺失 / 空相册)后移除相册
-    for (const g of goneKids) {
-      if (claimed.has(g.id)) continue;
-      const rows = await db.select({ id: media.id, missingAt: media.missingAt }).from(media).where(eq(media.albumId, g.id));
-      const fresh = rows.filter((r) => !r.missingAt);
-      if (fresh.length) {
-        await db.update(media).set({ missingAt: new Date() }).where(inArray(media.id, fresh.map((r) => r.id)));
-        s.missing += fresh.length;
-      }
-      // 空相册,或上一轮已全部标记缺失 → 目录确实没了,移除相册子树(记录一并清理,不进黑名单)
-      if (!rows.length || fresh.length === 0) {
+    // 2) 其余消失目录:按【整棵子树】处理,与文件级一致 —— 先软删除(打 missing_at)、
+    //    受熔断保护,子树内所有记录都已缺失超过宽限期(或子树本来就没有任何记录)才移除相册子树。
+    //    只看目录本层会误判:按年/月分层的中间目录自身没有图片,会被当成"空相册"在第一次扫描就整棵清空。
+    const pending = goneKids.filter((g) => !claimed.has(g.id));
+    if (pending.length) {
+      const plans: Array<{ g: AlbumRow; sub: string[]; rows: Array<{ id: string; missingAt: Date | null }> }> = [];
+      for (const g of pending) {
         const sub = descendants(t, g.id);
-        const subMedia = await db.select({ id: media.id }).from(media).where(inArray(media.albumId, sub));
-        if (subMedia.length) await deleteMediaByIds(subMedia.map((r) => r.id), false, { block: false });
-        await db.delete(albums).where(inArray(albums.id, sub));
-        s.albumsRemoved += sub.length;
-        invalidateAlbums();
+        const rows = await db.select({ id: media.id, missingAt: media.missingAt }).from(media).where(inArray(media.albumId, sub));
+        plans.push({ g, sub, rows });
+      }
+      // 熔断(写入任何改动之前):本次新消失的记录占本相册子树全部记录的比例过高 → 多半是盘没挂上,中止并保留
+      const newly = plans.reduce((n, p) => n + p.rows.filter((r) => !r.missingAt).length, 0);
+      if (newly) {
+        const [tot] = await db
+          .select({ n: sql<number>`CAST(count(*) AS INTEGER)` })
+          .from(media)
+          .where(inArray(media.albumId, descendants(t, a.id)));
+        const total = Number(tot?.n ?? 0);
+        const ratio = total ? newly / total : 0;
+        if (total >= config.scanPruneMinCount && ratio > config.scanPruneMaxRatio) {
+          throw new Error(
+            `检测到子目录消失导致 ${newly}/${total} 个文件缺失(${Math.round(ratio * 100)}%),已中止清理并保留现有记录。` +
+              `若确属预期(如批量删除),请调大 SCAN_PRUNE_MAX_RATIO 或手动删除后再扫描。`,
+          );
+        }
+      }
+      const now = Date.now();
+      for (const { g, sub, rows } of plans) {
+        const fresh = rows.filter((r) => !r.missingAt);
+        if (fresh.length) {
+          await db.update(media).set({ missingAt: new Date() }).where(inArray(media.id, fresh.map((r) => r.id)));
+          s.missing += fresh.length;
+        }
+        // 子树里每条记录都已缺失超过宽限期(空子树自然满足)→ 目录确实没了,移除相册子树(记录一并清理,不进黑名单)
+        const expired = rows.every((r) => r.missingAt && now - r.missingAt.getTime() > MISSING_GRACE_MS);
+        if (expired) {
+          if (rows.length) await deleteMediaByIds(rows.map((r) => r.id), false, { block: false });
+          await db.delete(albums).where(inArray(albums.id, sub));
+          s.albumsRemoved += sub.length;
+          invalidateAlbums();
+        }
       }
     }
 
@@ -1056,6 +1081,15 @@ export async function scanAlbum(code: string, recursive = true): Promise<ScanSta
     const a = t.byCode.get(code);
     if (!a) throw E.notFound("相册不存在");
     if (a.kind !== "mounted" || !a.rootPath) throw E.badRequest("只有挂载的目录相册可以扫描");
+    // 互斥范围是整棵相册树:祖先正在递归扫描、或子孙正在扫描时,同一目录会被两个任务并发处理
+    // (重复建相册/重复入队/重复标记缺失),所以祖先、子孙任一在扫描都拒绝
+    const related = new Set<string>(descendants(t, a.id).filter((id) => id !== a.id).map((id) => t.byId.get(id)?.code ?? ""));
+    for (let p = a.parentId ? t.byId.get(a.parentId) : undefined; p; p = p.parentId ? t.byId.get(p.parentId) : undefined) related.add(p.code);
+    for (const c of related) {
+      if (c && scanLocks.has(c)) {
+        throw E.conflict("该相册的父相册或子相册正在扫描中");
+      }
+    }
     s = {
       running: true, startedAt: new Date().toISOString(), finishedAt: null, added: 0, removed: 0, updated: 0, renamed: 0,
       missing: 0, albumsCreated: 0, albumsRemoved: 0, albumsMoved: 0, truncated: 0, error: null,

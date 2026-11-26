@@ -953,6 +953,27 @@ async function sMount() {
   chmodTree777(H);
   r = await admin.post(`/albums/${M.code}/scan?wait=1&recursive=1`);
   ok(r.data?.albumsCreated >= 2 && r.data.added >= 1, "新增子目录 → 自动建子相册并入库", JSON.stringify(r.data));
+  // issue #8:消失的中间层目录(自身没有图片,图片在孙目录)不能在首次扫描就被整棵清空,
+  // 应先软删除(打 missing_at),宽限期内保留相册子树
+  {
+    const g1 = (await admin.get("/media?q=g.gif&limit=50")).data.items.find((i) => i.filename === "g.gif");
+    ok(!!g1, "new-sub/deeper/g.gif 已入库(消失测试前置)");
+    if (g1) await waitProcessed(admin, [g1.id]); // 等派生完成,避免源文件被删时正在处理而变成 failed
+    fs.rmSync(path.join(H, "new-sub"), { recursive: true, force: true });
+    for (let i = 0; i < 2; i++) {
+      r = await admin.post(`/albums/${M.code}/scan?wait=1&recursive=1`);
+      ok(r.status === 200, `目录消失后第 ${i + 1} 次扫描成功`, r.buf.toString().slice(0, 160));
+    }
+    const kids2 = (await admin.get(`/albums/${M.code}`)).data.children;
+    ok(kids2.some((k) => k.name === "new-sub"), "消失的中间层目录:相册子树在宽限期内保留(不被立即清空)", kids2.map((k) => k.name).join(","));
+    ok(!(await admin.get("/media?q=g.gif&limit=50")).data.items.some((i) => i.filename === "g.gif"), "消失目录里的文件已软删除(不再列出)");
+    // 目录回来:记录自动恢复
+    fs.mkdirSync(path.join(H, "new-sub/deeper"), { recursive: true, mode: 0o777 });
+    fs.copyFileSync(S("fmt.gif"), path.join(H, "new-sub/deeper/g.gif"));
+    chmodTree777(H);
+    r = await admin.post(`/albums/${M.code}/scan?wait=1&recursive=1`);
+    ok((await admin.get("/media?q=g.gif&limit=50")).data.items.some((i) => i.filename === "g.gif"), "目录重新出现后记录恢复可见", r.buf.toString().slice(0, 300));
+  }
   r = await st.mgr.post(`/albums/${M.code}/scan`);
   eq(r.status, 403, "manager 触发扫描 → 403");
   r = await admin.post(`/albums/${st.A.code}/scan`);
