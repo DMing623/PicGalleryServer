@@ -193,6 +193,25 @@ export async function pingDb(): Promise<void> {
 }
 
 /**
+ * 判断错误链里是否含「唯一约束冲突」,两种驱动通用:
+ *  - PostgreSQL:SQLSTATE `23505`;
+ *  - SQLite(node:sqlite):`code` 为 `ERR_SQLITE_ERROR`,`errcode` 为 19(CONSTRAINT)/ 1555(PRIMARYKEY)/ 2067(UNIQUE),
+ *    `message` 含 `UNIQUE constraint failed`。
+ * Drizzle 会把底层错误包进 DrizzleQueryError,原始信息在 `cause` 上,故沿链查找。
+ */
+export function isUniqueViolation(e: unknown): boolean {
+  let cur: unknown = e;
+  for (let i = 0; i < 6 && cur && typeof cur === "object"; i++) {
+    const x = cur as { code?: unknown; errcode?: unknown; message?: unknown; cause?: unknown };
+    if (x.code === "23505") return true;
+    if (x.errcode === 1555 || x.errcode === 2067) return true;
+    if (typeof x.message === "string" && /UNIQUE constraint failed|PRIMARY KEY constraint failed/i.test(x.message)) return true;
+    cur = x.cause;
+  }
+  return false;
+}
+
+/**
  * NULL 安全的等值比较:
  *  - PostgreSQL:`a IS NOT DISTINCT FROM b`
  *  - SQLite:`a IS b`(SQLite 的 IS 本身就是 NULL 安全的等值比较)

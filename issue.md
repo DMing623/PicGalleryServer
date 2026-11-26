@@ -176,6 +176,8 @@
 
 ## Issue #7：删除黑名单两处缺陷：① `manager` 角色可借由黑名单绕过 `media.purge` 权限物理删除源文件；② SQLite 下唯一约束冲突错误码不兼容
 
+> ✅ **已完成(已复现并修复)**:① `DELETE /blocklist/:id` 改为需要 `media.purge`,设置页「彻底删除」按钮仅管理员可见;② `purgeBlocked` 对 ext 文件按源路径匹配已登记挂载判断只读,挂载登记已移除时同样拒绝;③ 新增 `@/db` 的 `isUniqueViolation()`(兼容 PG `23505` 与 SQLite `UNIQUE constraint failed`/`errcode 1555·2067`),`unblock()` 与 `ingest.ts` 共用;`test-e2e.mjs` 增加 manager 403 断言;`project.md` 路由表同步。
+
 - **性质判定**：✅ **确实是缺陷（Actual Bug / 权限边界绕过 + SQLite 驱动兼容性缺陷）**
 - **代码定位**：
   - `src/server/api/blocklist.ts` 第 16 行

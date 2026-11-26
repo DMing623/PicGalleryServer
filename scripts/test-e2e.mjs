@@ -757,6 +757,13 @@ async function sMedia() {
   ok(!!bl, "黑名单出现该文件");
   r = await st.upl.get("/blocklist");
   eq(r.status, 403, "uploader 看黑名单 → 403");
+  // issue #7:manager 有 media.delete 但没有 media.purge,不能经黑名单绕过去物理删除源文件
+  r = await st.mgr.get("/blocklist");
+  eq(r.status, 200, "manager 可查看黑名单");
+  r = await st.mgr.del(`/blocklist/${bl.id}`);
+  eq(r.status, 403, "manager 彻底删除黑名单项(物理删除源文件) → 403");
+  if (DATA) ok(fs.existsSync(path.join(DATA, d1key)), "被拒绝后源文件仍在磁盘");
+  ok((await admin.get("/blocklist")).data.items.some((b) => b.id === bl.id), "被拒绝后黑名单项仍在");
   r = await admin.post(`/blocklist/${bl.id}/restore`);
   ok(r.status === 200, "解除黑名单", r.buf.toString().slice(0, 150));
   await waitProcessed(admin, [d1]);

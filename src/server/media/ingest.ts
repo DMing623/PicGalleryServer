@@ -4,7 +4,7 @@ import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { db, nullSafeEq } from "@/db";
+import { db, isUniqueViolation, nullSafeEq } from "@/db";
 import { albums, media } from "@/db/schema";
 import { invalidateAlbums, invalidateMediaCaches, loadTree, assertMountAllowed, type AlbumRow } from "../albums";
 import type { AuthUser } from "../auth";
@@ -88,19 +88,6 @@ export async function resolveTarget(p: { album?: string | null; dir?: string | n
   if (st === "ext") throw E.badRequest("未指定相册时 storage 只能是 local 或 s3");
   if (st === "s3" && !s3Available()) throw E.badRequest("未配置对象存储", "s3_not_configured");
   return { album: null, storage: st, dirKey: "albums/_inbox" };
-}
-
-/**
- * 判断错误链里是否含 PostgreSQL 唯一约束冲突(23505)。
- * Drizzle 会把底层错误包进 DrizzleQueryError,原始 code 在 cause 上,故需沿链查找。
- */
-function isUniqueViolation(e: unknown): boolean {
-  let cur: unknown = e;
-  for (let i = 0; i < 6 && cur && typeof cur === "object"; i++) {
-    if ((cur as { code?: unknown }).code === "23505") return true;
-    cur = (cur as { cause?: unknown }).cause;
-  }
-  return false;
 }
 
 /**

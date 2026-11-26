@@ -509,6 +509,8 @@ interface BlockRow {
 
 export function BlocklistTab({ active = true }: { active?: boolean }) {
   const dlg = useDialog();
+  const { can } = useApp();
+  const canPurge = can("media.purge"); // 物理删除源文件仅管理员
   const [items, setItems] = useState<BlockRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState("");
@@ -566,7 +568,7 @@ export function BlocklistTab({ active = true }: { active?: boolean }) {
         <h2 className="mb-1 font-semibold">删除黑名单</h2>
         <p className="muted text-xs leading-relaxed">
           在图片/视频详情页删除时,若未勾选「同时删除服务器上的原文件」,记录会出现在这里:源文件仍保留在服务器上,但被本项目排除,挂载目录重新扫描也不会再入库。
-          点击「解除」即可恢复记录并重新生成缩略图/预览图;点击「彻底删除」才会真正移除源文件。
+          点击「解除」即可恢复记录并重新生成缩略图/预览图;点击「彻底删除」才会真正移除源文件(仅管理员)。
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <input className="field min-w-0 flex-1" placeholder="按文件名或路径筛选…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -590,7 +592,9 @@ export function BlocklistTab({ active = true }: { active?: boolean }) {
             <p className="muted mt-0.5 text-xs">加入时间 {dateTime(it.createdAt)}</p>
             <div className="mt-2 flex flex-wrap gap-1.5">
               <button className="btn btn-primary !py-1 text-xs" disabled={busy === it.id} onClick={() => restore(it)}>↩ 解除黑名单</button>
-              <button className="btn btn-danger !py-1 text-xs" disabled={busy === it.id} onClick={() => purge(it)}>🗑 彻底删除源文件</button>
+              {canPurge && (
+                <button className="btn btn-danger !py-1 text-xs" disabled={busy === it.id} onClick={() => purge(it)}>🗑 彻底删除源文件</button>
+              )}
             </div>
           </div>
         ))}

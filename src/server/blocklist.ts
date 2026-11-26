@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+import path from "node:path";
 import { desc, eq } from "drizzle-orm";
-import { db } from "@/db";
+import { db, isUniqueViolation } from "@/db";
 import { albums, blocklist, media } from "@/db/schema";
 import type { AuthUser } from "./auth";
 import { E } from "./http";
@@ -130,19 +131,14 @@ export async function unblock(id: string) {
   try {
     await db.insert(media).values({ id: newId, ...values });
   } catch (e) {
-    const code = (e as { code?: string; cause?: { code?: string } }).code ?? (e as { cause?: { code?: string } }).cause?.code;
-    if (code === "23505") {
-      // id 已被占用(极少见):换新 id 再试一次
-      newId = randomId(12);
-      try {
-        await db.insert(media).values({ id: newId, ...values });
-      } catch (e2) {
-        const c2 = (e2 as { code?: string; cause?: { code?: string } }).code ?? (e2 as { cause?: { code?: string } }).cause?.code;
-        if (c2 === "23505") throw E.conflict("该文件已存在于相册中,无需恢复");
-        throw e2;
-      }
-    } else {
-      throw e;
+    if (!isUniqueViolation(e)) throw e;
+    // id 或 (storage,storage_key) 冲突:先换新 id 再试一次;仍冲突说明同一源文件已有记录
+    newId = randomId(12);
+    try {
+      await db.insert(media).values({ id: newId, ...values });
+    } catch (e2) {
+      if (isUniqueViolation(e2)) throw E.conflict("该文件已存在于相册中,无需恢复");
+      throw e2;
     }
   }
   await db.delete(blocklist).where(eq(blocklist.id, id));
@@ -154,10 +150,21 @@ export async function unblock(id: string) {
 /** 彻底删除:移除服务器上的源文件并删除黑名单记录 */
 export async function purgeBlocked(id: string) {
   const b = await getEntry(id);
-  // 只读挂载目录里的文件不归本系统管,拒绝物理删除(issue §1.10)
-  if (b.storage === "ext" && b.albumId) {
-    const [owner] = await db.select({ readonly: albums.readonly }).from(albums).where(eq(albums.id, b.albumId)).limit(1);
-    if (owner?.readonly) throw E.forbidden("该文件位于只读挂载目录,不能物理删除");
+  // 挂载目录里的文件不归本系统管:只读挂载拒绝物理删除(issue §1.10)。
+  // 不能只按 album_id 查 readonly:挂载登记被移除后相册行已不存在,会得到 undefined 而误放行。
+  // 因此按源文件路径找覆盖它的已登记挂载(取最深的一层);找不到(登记已移除)同样拒绝。
+  if (b.storage === "ext") {
+    const mounts = await db.select({ rootPath: albums.rootPath, readonly: albums.readonly }).from(albums).where(eq(albums.kind, "mounted"));
+    let best: { root: string; readonly: boolean } | null = null;
+    for (const m of mounts) {
+      if (!m.rootPath) continue;
+      const root = path.resolve(m.rootPath);
+      if ((b.storageKey === root || b.storageKey.startsWith(root + path.sep)) && (!best || root.length > best.root.length)) {
+        best = { root, readonly: !!m.readonly };
+      }
+    }
+    if (!best) throw E.forbidden("该文件所在的挂载目录已不在登记中,无法确认是否可写,不能物理删除(请先重新挂载为可写目录)");
+    if (best.readonly) throw E.forbidden("该文件位于只读挂载目录,不能物理删除");
   }
   try {
     await (await driverFor(b.storage)).remove(b.storageKey);

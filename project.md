@@ -418,7 +418,8 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
 - `addToBlocklist(rows, user)`:把即将删除的 `pgs_media` 行写入黑名单(同 `(storage,key)` 已存在则忽略),并冗余保存相册代码。
 - `listBlocklist()`:按创建时间倒序返回,`leftJoin pgs_albums` 带出当前相册名。
 - `unblock(id)`:校验源文件仍存在 → 重新插入 `pgs_media`(`status=pending`,沿用原相册/备注/元数据)→ 删除黑名单行 → `enqueue(id, true)` 重新生成缩略图;源文件缺失抛 `source_missing`,已存在同路径记录抛 409。
-- `purgeBlocked(id)`:物理删除源文件并移除黑名单行。
+- `purgeBlocked(id)`:物理删除源文件并移除黑名单行。`ext` 文件按**源文件路径**匹配已登记的挂载(取最深一层)判断只读;匹配不到(登记已移除)同样拒绝。
+- 唯一约束冲突统一用 `@/db` 的 `isUniqueViolation()` 判断(兼容 PG `23505` 与 SQLite `UNIQUE constraint failed`)。
 - 刻意不 import `albums.ts`(避免与 `albums.ts → blocklist.ts` 形成循环依赖)。
 
 ### 6.13 `media/corrupt.ts`(疑似损坏文件)
@@ -515,7 +516,7 @@ DELETE /media/:id?purge=0|1     (purge=1 需要 media.purge,即仅 admin)
   purge=0 → 事务内:记录移入 pgs_blocklist + 删除记录 → 删派生图;源文件保留
              (挂载目录重新扫描时按路径跳过,不会再入库)
 POST /blocklist/:id/restore → 复用原 media_id 重新插入记录(status=pending) + enqueue → 缩略图/预览图重新生成
-DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(源文件删失败返回 409)
+DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(需 media.purge;源文件删失败返回 409;只读挂载 / 挂载登记已移除 → 403)
 ```
 前端 `Viewer.tsx` 用 `dlg.confirmCheck()` 弹出带勾选框的确认框:勾选"同时删除服务器上的原文件"才 `purge=1`,否则 `purge=0`。批量删除走 `POST /media/batch {action:"delete"}`。
 
@@ -649,7 +650,7 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(源�
 |---|---|---|
 | GET `/blocklist` | media.delete | `{items:[{id,mediaId,albumId,albumCode,albumName,kind,filename,mime,size,storage,storageKey,note,createdBy,createdAt}]}` |
 | POST `/blocklist/:id/restore` | media.delete | 解除黑名单:恢复记录并重新生成缩略图,返回 `{id,albumId}`;源文件不存在 → 400 `source_missing` |
-| DELETE `/blocklist/:id` | media.delete | 彻底删除:移除服务器源文件并删除黑名单行 |
+| DELETE `/blocklist/:id` | media.purge(仅 admin) | 彻底删除:移除服务器源文件并删除黑名单行;挂载文件所在目录为只读、或挂载登记已被移除 → 403 |
 
 ### 8.9 站点通知(读取 public,发布需 `notice.publish`)
 
