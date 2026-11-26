@@ -88,3 +88,34 @@
   ```
   函数签名接收了 `recursive: boolean`，但函数体内**从未读取 `recursive` 参数**（对比 `cli/pgs.mjs` 第 202 行本地 `upload` 的 `collect` 函数写了 `else if (st.isDirectory() && depth < 12 && (depth === 0 || recursive))`）。因此在服务端 `import` 接口中，无论传 `recursive: false` 还是 `pgs import --no-recursive`，都会强制递归遍历最多 12 层子目录。
 - **是否特意如此**：否。API 路由层（`b.recursive !== false`）与 CLI 层（`recursive: !flags["no-recursive"]`）都完整透传了该参数，仅 `collectFiles` 内部遗漏了 `depth === 0 || recursive` 判断。
+
+---
+
+## Issue #4：Markdown 渲染器未对已生成的链接/图片标签做占位保护，导致含下划线 `_` 的 URL 被错误替换为 `<em>` / `<strong>`
+
+- **性质判定**：✅ **确实是缺陷（Actual Bug）**
+- **代码定位**：`src/lib/markdown.ts` 第 28–53 行
+- **预期功能（`README.md` / `project.md` §3）**：
+  站点通知支持 Markdown 语法（含链接 `[文本](https://...)` 与图片 `![alt](https://...)`），合法的 `http/https` 链接应当原样渲染进 `href` / `src` 属性。
+- **实际代码实现与问题分析**：
+  在 `src/lib/markdown.ts` 的 `inline(text)` 函数中：
+  ```ts
+  // 图片 ![alt](url)
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt: string, url: string) => {
+    const u = safeUrl(url);
+    return u ? `<img src="${u}" alt="${alt}" class="md-img" loading="lazy" />` : m;
+  });
+  // 链接 [text](url)
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt: string, url: string) => {
+    const u = safeUrl(url);
+    return u ? `<a href="${u}" target="_blank" rel="noopener noreferrer nofollow">${txt}</a>` : m;
+  });
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  s = s.replace(/(^|[^_])_([^_\n]+)_/g, "$1<em>$2</em>");
+  ```
+  1. 代码虽然对行内代码 `` `code` `` 使用了 `\u0000CODE...\u0000` 占位符防止其内部的 `*` 和 `_` 被当作斜体/粗体，但**没有对生成的 `<img>` 和 `<a>` 标签做占位保护**。
+  2. 当 URL（或图片的 `alt` 属性）中含有两个及以上下划线 `_`（例如 `[项目地址](https://example.com/pic_gallery_server/doc)` 或带 `utm_source=a&utm_medium=b` 的链接）时，后续执行的 `s.replace(/(^|[^_])_([^_\n]+)_/g, "$1<em>$2</em>")` 会在已生成的 HTML 字符串上直接把 `href` 属性里的 `_gallery_` 替换成 `<em>gallery</em>`，产出 `<a href="https://example.com/pic<em>gallery</em>server/doc">` 的损坏链接。
+  3. 此外第 23 行 `safeUrl` 的正则 `/^(https?:\/\/|mailto:|\/)/i` 会放行以 `//` 开头的协议相对外部链接（如 `//evil.com`）。
+- **是否特意如此**：否。注释虽说明“表格等复杂语法不处理”是设计取舍，但链接/图片是明确声明支持的核心语法，URL 中的 `_` 被斜体正则破坏属于典型的替换顺序缺陷。
