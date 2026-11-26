@@ -138,3 +138,24 @@
   2. **前端通知面板 (`NoticeBell.tsx`) 完全忽略了 `pinned` 字段**：`NoticeBell.tsx` 在第 161–172 行按日期分组并在组内仅按 `b.createdAt.localeCompare(a.createdAt)` 排序；在渲染面板顶部概况栏（第 180 行 `const latest = items[0]`）和展开通知列表（第 368–388 行）时，既没有优先展示置顶通知，也没有渲染任何「置顶」标记。
   3. **SQLite 布尔列白名单遗漏 `pinned`**：`src/db/index.ts` 第 82 行 `const BOOL_COLUMNS = new Set(["disabled", "readonly"])` 未加入后来新增的 `"pinned"` 列（虽然 `notices.ts` 通过 `pinned: !!r.pinned` 手动强转规避了 API 返回 `0/1`，但 Drizzle 查询出的原始行对象在 SQLite 下 `r.pinned` 为数字 `0/1` 而非布尔值）。
 - **是否特意如此**：否。数据库字段、API 读写、管理端「置顶」复选框均已实现，仅展示端与排序逻辑漏掉了对 `pinned` 的处理。
+
+---
+
+## Issue #6：站点通知未读数计算 (`unreadCount`) 与已读接口 (`markRead` / `markAllRead`) 的一致性缺陷，及游客通知与 `project.md` 描述差异
+
+- **性质判定**：✅ **(1)(2) 确实是缺陷（Actual Bug）；⚠️ (3) 属于刻意实现取舍但与 `project.md` 描述不一致**
+- **代码定位**：`src/server/notices.ts` 第 30–67 行、第 141–162 行；对照 `project.md` §5（`pgs_notice_reads`）
+- **实际代码实现与问题分析**：
+  1. **`POST /notices/:id/read` 未校验通知是否存在，可污染未读数统计（确实是缺陷）**：
+     `markRead(user, id)`（第 160–162 行）直接向 `pgs_notice_reads` 插入 `{ userId: user.id, noticeId: id }`，既无数据库外键约束，也未先查询 `id` 是否存在于 `pgs_notices`。
+     而 `unreadCount()`（第 59–67 行）采用全表计数相减：
+     ```ts
+     const [total] = await db.select({ n: sql<number>`CAST(count(*) AS INTEGER)` }).from(notices);
+     const [read] = await db.select({ n: sql<number>`CAST(count(*) AS INTEGER)` }).from(noticeReads).where(eq(noticeReads.userId, user.id));
+     return Math.max(0, Number(total?.n ?? 0) - Number(read?.n ?? 0));
+     ```
+     一旦调用 `POST /api/v1/notices/<不存在的id>/read`，`pgs_notice_reads` 中便会多出孤儿行，导致该用户的 `read` 计数虚高，后续新发布的通知会被抵消而不再亮起铃铛未读红点。
+  2. **`markAllRead` 缺少 `.orderBy(desc(notices.createdAt))` 且与 `unreadCount` 口径不一致（确实是缺陷）**：
+     `markAllRead()` 第 142 行执行 `db.select({ id: notices.id }).from(notices).limit(MAX_NOTICES)` 时没有指定排序（`listNotices` 有 `orderBy(desc(notices.createdAt))`）。当通知总数超过 `MAX_NOTICES`（300）时，`markAllRead` 标记的是任意 300 条而非最新 300 条，且 `unreadCount()` 统计全表通知数，导致点击「一键已读」后顶栏铃铛红点仍无法清零。
+  3. **游客通知行为与 `project.md` §5 描述不一致（服务端刻意设计 vs 文档/注释滞后）**：
+     `project.md` §5 写明：“游客没有账户，其已读状态保存在浏览器 localStorage”；但 `src/server/notices.ts` 第 31 行 `if (!user) return { items: [], unread: 0, total: 0 };` 对未登录游客直接返回空列表，且 `NoticeBell.tsx` 中并无任何 `localStorage` 已读状态存储逻辑。根据 `notices.ts` 顶部注释（“站点通知:管理者及以上发布,所有登录用户可读”），仅对登录用户下发通知属于**服务端刻意设计**，但 `project.md` §5 中关于游客 `localStorage` 记录通知已读的描述与实际代码不符。
