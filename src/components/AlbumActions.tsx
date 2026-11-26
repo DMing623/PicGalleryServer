@@ -136,29 +136,32 @@ export default function AlbumActions({ album, onChanged, onDeleted }: { album: A
           ⟳ 重新扫描
         </button>
       )}
-      <button
-        className="btn btn-danger !py-1 text-xs"
-        disabled={busy}
-        onClick={async () => {
-          if (album.kind === "mounted") {
-            if (!(await dlg.confirm({ title: "移除挂载相册", message: `移除挂载相册「${album.name}」?只会删除登记信息,服务器上的原文件不会被删除。`, confirmText: "移除", danger: true }))) return;
-            void run(() => api(`/albums/${album.code}`, { method: "DELETE" }), onDeleted ?? onChanged);
-          } else {
-            const pick = await dlg.choose({
-              title: `删除相册「${album.name}」`,
-              message: `相册内有 ${album.counts.media} 个文件,请选择处理方式:`,
-              options: [
-                { value: "delete", label: `同时删除相册内的 ${album.counts.media} 个文件`, kind: "danger" },
-                { value: "move", label: "仅删除相册,文件移到上级相册(或未归类)" },
-              ],
-            });
-            if (!pick) return;
-            void run(() => api(`/albums/${album.code}?media=${pick}`, { method: "DELETE" }), onDeleted ?? onChanged);
-          }
-        }}
-      >
-        🗑 删除
-      </button>
+      {/* 移除挂载相册仅管理员可用(后端同样 403),manager 不展示以免点击必报错 */}
+      {(album.kind !== "mounted" || mount) && (
+        <button
+          className="btn btn-danger !py-1 text-xs"
+          disabled={busy}
+          onClick={async () => {
+            if (album.kind === "mounted") {
+              if (!(await dlg.confirm({ title: "移除挂载相册", message: `移除挂载相册「${album.name}」?只会删除登记信息,服务器上的原文件不会被删除。`, confirmText: "移除", danger: true }))) return;
+              void run(() => api(`/albums/${album.code}`, { method: "DELETE" }), onDeleted ?? onChanged);
+            } else {
+              const pick = await dlg.choose({
+                title: `删除相册「${album.name}」`,
+                message: `相册内有 ${album.counts.media} 个文件,请选择处理方式:`,
+                options: [
+                  { value: "delete", label: `同时删除相册内的 ${album.counts.media} 个文件`, kind: "danger" },
+                  { value: "move", label: "仅删除相册,文件移到上级相册(或未归类)" },
+                ],
+              });
+              if (!pick) return;
+              void run(() => api(`/albums/${album.code}?media=${pick}`, { method: "DELETE" }), onDeleted ?? onChanged);
+            }
+          }}
+        >
+          🗑 删除
+        </button>
+      )}
     </div>
   );
 }

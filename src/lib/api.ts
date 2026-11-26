@@ -2,7 +2,7 @@
 /** 浏览器端 API 客户端:自动解包 {ok,data} 信封,错误统一抛 ApiErr。 */
 
 export class ApiErr extends Error {
-  constructor(public status: number, public code: string, message: string) {
+  constructor(public status: number, public code: string, message: string, public details?: unknown) {
     super(message);
   }
 }
@@ -15,14 +15,14 @@ export async function api<T = unknown>(path: string, init: (RequestInit & { json
     body = JSON.stringify(init.json);
   }
   const res = await fetch(`/api/v1${path}`, { ...init, headers, body, credentials: "same-origin" });
-  let payload: { ok?: boolean; data?: T; error?: { code: string; message: string } } | null = null;
+  let payload: { ok?: boolean; data?: T; error?: { code: string; message: string; details?: unknown } } | null = null;
   try {
     payload = await res.json();
   } catch {
     /* 非 JSON */
   }
   if (!res.ok || !payload?.ok) {
-    throw new ApiErr(res.status, payload?.error?.code ?? "error", payload?.error?.message ?? `请求失败 (${res.status})`);
+    throw new ApiErr(res.status, payload?.error?.code ?? "error", payload?.error?.message ?? `请求失败 (${res.status})`, payload?.error?.details);
   }
   return payload.data as T;
 }

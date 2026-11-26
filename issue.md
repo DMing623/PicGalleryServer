@@ -319,6 +319,8 @@
 
 ## Issue #12：前后端交互契约不一致的三处缺陷：① 下载密钥长度提示 8–128 位但后端要求 16–128 位；② `manager` 看到挂载相册删除按钮但点击必报 403；③ 直链上传全失败时丢失逐条错误原因
 
+> ✅ **已完成(已复现并修复)**:① 密钥输入框占位提示改为 16-128 位;② 挂载相册的「删除/移除」按钮仅对拥有 `album.mount` 的管理员显示(与后端一致);③ `ApiErr` 新增 `details`,`UploadDialog` 在 422 全部失败时按序还原每条链接的具体原因;④ 本地文件扩展名兜底正则改由 `IMAGE_EXT`/`VIDEO_EXT` 生成,补全 `tif/tiff/bmp/m4v/mpg/mpeg` 等。`test-e2e.mjs` 直链章节增加 422 `details.results` 断言。
+
 - **性质判定**：✅ **确实是缺陷（Actual Bug / 前后端实现不一致）**
 - **代码定位**：
   - `src/components/settings/AdminTabs.tsx` 第 355 行 vs `src/server/keys.ts` 第 15、23 行

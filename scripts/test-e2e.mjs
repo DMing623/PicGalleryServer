@@ -1197,6 +1197,13 @@ async function sUrlUpload() {
     const x = r.data?.results?.[0];
     ok(r.status >= 400 || x?.status === "error", `SSRF/非法协议被拒绝: ${u}`, `${r.status} ${JSON.stringify(x)}`);
   }
+  // issue #12:全部失败时 422 的 error.details.results 必须带逐条失败原因(前端据此逐行展示)
+  {
+    const r0 = await admin.post("/media/upload-url", { urls: ["http://127.0.0.1/a.jpg", "http://10.0.0.1/b.jpg"], album: st.A.code });
+    eq(r0.status, 422, "直链全部失败 → 422");
+    const det = r0.err?.details;
+    ok(Array.isArray(det?.results) && det.results.length === 2 && det.results.every((x) => x.status === "error" && x.error), "422 响应携带逐条失败原因 details.results", JSON.stringify(det)?.slice(0, 200));
+  }
   let r = await admin.post("/media/upload-url", { urls: Array.from({ length: 51 }, (_, i) => `example.com/${i}.jpg`) });
   ok(r.status >= 400 && r.status < 500, "超过 50 条被拒绝", String(r.status));
   r = await admin.post("/media/upload-url", { urls: [] });

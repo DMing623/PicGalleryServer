@@ -3,9 +3,13 @@
 
 import { useRouter } from "next/navigation";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "@/lib/api";
+import { api, type ApiErr } from "@/lib/api";
 import { bytes } from "@/lib/format";
+import { IMAGE_EXT, VIDEO_EXT } from "@/server/media/types";
 import { useApp } from "./AppProvider";
+
+/** 浏览器没识别出 MIME(f.type 为空)时,按服务端支持的全部扩展名兜底(与 detectKind 同源) */
+const LOCAL_EXT_RE = new RegExp(`\\.(${[...Object.keys(IMAGE_EXT), ...Object.keys(VIDEO_EXT)].join("|")})$`, "i");
 
 interface AlbumLite {
   code: string;
@@ -147,7 +151,7 @@ export default function UploadDialog({ defaultAlbum, onClose }: { defaultAlbum: 
       : "数据目录 albums/_inbox/ · 未归类收件箱(仅登录用户可见)";
 
   function add(list: FileList | File[]) {
-    const ok = Array.from(list).filter((f) => /^(image|video)\//.test(f.type) || /\.(heic|heif|hif|avif|mkv|avi|wmv|flv|3gp|ts)$/i.test(f.name));
+    const ok = Array.from(list).filter((f) => /^(image|video)\//.test(f.type) || LOCAL_EXT_RE.test(f.name));
     setJobs((j) => [...j, ...ok.map((file) => ({ file, state: "wait" as const, pct: 0 }))]);
     setFinished(false);
   }
@@ -215,7 +219,11 @@ export default function UploadDialog({ defaultAlbum, onClose }: { defaultAlbum: 
         }),
       );
     } catch (e) {
-      setUrlJobs(urls.map((url) => ({ url, state: "err", msg: (e as Error).message })));
+      // 全部失败时后端返回 422,逐条原因在 error.details.results 里,按顺序还原到每一行
+      const results = (e as ApiErr).details && ((e as ApiErr).details as { results?: Array<{ error?: string }> }).results;
+      setUrlJobs(
+        urls.map((url, i) => ({ url, state: "err" as const, msg: (Array.isArray(results) && results[i]?.error) || (e as Error).message })),
+      );
     } finally {
       setRunning(false);
       setFinished(true);

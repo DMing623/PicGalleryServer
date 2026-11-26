@@ -143,7 +143,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
    │   └─ bootstrap.ts                幂等建表与老库升级 DDL(pg 带 advisory lock 7351001;sqlite/pg 两套)。改 schema 必须同步改这里
    ├─ lib/                            前后端共用的纯函数(无 IO)
    │   ├─ theme.ts                    主题预设 PRESETS、themeCss()、DEFAULT_THEME
-   │   ├─ api.ts                      浏览器 fetch 封装:api<T>() 自动解包信封,错误抛 ApiErr
+   │   ├─ api.ts                      浏览器 fetch 封装:api<T>() 自动解包信封,错误抛 ApiErr(带 status/code/details)(含 status/code/message 与后端 error.details)
    │   ├─ format.ts                   bytes/duration/dateTime/dayLabel 格式化
    │   ├─ markdown.ts                 零依赖 Markdown 渲染(先整体 HTML 转义再替换,链接协议白名单;生成的 <a>/<img> 用占位符保护,避免 URL 中的 _ * 被强调规则改写)
    │   └─ meta-labels.ts              元数据字段中文标签表(决定 UI 显示哪些字段)

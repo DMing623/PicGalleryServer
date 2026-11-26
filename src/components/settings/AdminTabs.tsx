@@ -352,7 +352,7 @@ export function KeysTab() {
         <h2 className="mb-1 font-semibold">设置下载密钥</h2>
         <p className="muted mb-3 text-xs">游客通过文件链接只能获得缩略图/预览图;在链接后追加 <code>?key=密钥</code> 才能下载服务器原图/原分辨率视频。选择 24 小时后过期的密钥会被自动删除。</p>
         <div className="grid gap-3 sm:grid-cols-4">
-          <input className="field sm:col-span-2" placeholder="自定义密钥(留空自动生成,8-128 位字母数字_-)" value={key} onChange={(e) => setKey(e.target.value)} />
+          <input className="field sm:col-span-2" placeholder="自定义密钥(留空自动生成,16-128 位字母数字_-)" value={key} onChange={(e) => setKey(e.target.value)} />
           <input className="field" placeholder="备注标签(可选)" value={label} onChange={(e) => setLabel(e.target.value)} />
           <select className="field" value={expires} onChange={(e) => setExpires(e.target.value)}>
             <option value="never">永不过期</option>
