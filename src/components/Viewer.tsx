@@ -360,7 +360,7 @@ function InfoRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex gap-3 border-b border-line/40 py-1.5 text-[13px] last:border-0">
       <dt className="muted w-20 shrink-0">{label}</dt>
-      <dd className="min-w-0 flex-1 break-words">{children}</dd>
+      <dd className="min-w-0 flex-1 break-all">{children}</dd>
     </div>
   );
 }

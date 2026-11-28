@@ -59,6 +59,27 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
 
+  const treeOptions = useMemo(() => {
+    const byParent = new Map<string | null, AlbumDto[]>();
+    const codes = new Set(albums.map((a) => a.code));
+    for (const a of albums) {
+      const p = a.parent && codes.has(a.parent) ? a.parent : null;
+      const list = byParent.get(p);
+      if (list) list.push(a);
+      else byParent.set(p, [a]);
+    }
+    const out: Array<{ a: AlbumDto; d: number }> = [];
+    const walk = (p: string | null, d: number) => {
+      if (d > 16) return;
+      for (const a of byParent.get(p) ?? []) {
+        out.push({ a, d });
+        walk(a.code, d + 1);
+      }
+    };
+    walk(null, 0);
+    return out;
+  }, [albums]);
+
   async function mount() {
     setBusy(true);
     try {
@@ -131,7 +152,11 @@ function MountDialog({ albums, onClose, onDone }: { albums: AlbumDto[]; onClose:
               <span className="muted mb-1 block text-xs">放在哪个相册下(嵌套)</span>
               <select className="field" value={parentAlbum} onChange={(e) => setParentAlbum(e.target.value)}>
                 <option value="">顶层</option>
-                {albums.map((a) => <option key={a.code} value={a.code}>{a.name}</option>)}
+                {treeOptions.map(({ a, d }) => (
+                  <option key={a.code} value={a.code}>
+                    {"　".repeat(d)}{a.name}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="text-sm">
@@ -258,16 +283,16 @@ export function AlbumManager({ active = true }: { active?: boolean }) {
       {err && <p className="text-sm text-red-600">{err}</p>}
 
       {/* 文件夹式导航:只显示当前层级的相册,子相册需点击文件夹图标进入 */}
-      <div className="glass flex flex-wrap items-center gap-1 rounded-2xl px-3 py-2 text-sm">
-        <button className="hover:underline" onClick={() => setPath([])}>全部相册</button>
+      <div className="glass flex flex-wrap items-center gap-1 overflow-hidden rounded-2xl px-3 py-2 text-sm">
+        <button className="shrink-0 hover:underline" onClick={() => setPath([])}>全部相册</button>
         {crumbs.map((c, i) => (
-          <span key={c.code} className="flex items-center gap-1">
-            <span className="muted">/</span>
-            <button className="hover:underline" onClick={() => setPath(path.slice(0, i + 1))}>{c.name}</button>
+          <span key={c.code} className="flex min-w-0 items-center gap-1">
+            <span className="muted shrink-0">/</span>
+            <button className="min-w-0 break-all text-left hover:underline" onClick={() => setPath(path.slice(0, i + 1))}>{c.name}</button>
           </span>
         ))}
         {path.length > 0 && (
-          <button className="btn ml-auto !px-2 !py-0.5 text-xs" onClick={() => setPath(path.slice(0, -1))}>⬆ 上一级</button>
+          <button className="btn ml-auto shrink-0 !px-2 !py-0.5 text-xs" onClick={() => setPath(path.slice(0, -1))}>⬆ 上一级</button>
         )}
       </div>
 
@@ -275,7 +300,7 @@ export function AlbumManager({ active = true }: { active?: boolean }) {
         {current.map((a) => {
           const kids = childCount(a.code);
           return (
-            <div key={a.code} className="glass rounded-2xl p-3">
+            <div key={a.code} className="glass overflow-hidden rounded-2xl p-3">
               <div className="flex flex-wrap items-center gap-2">
                 {kids > 0 ? (
                   <button
@@ -289,7 +314,7 @@ export function AlbumManager({ active = true }: { active?: boolean }) {
                 ) : (
                   <span className="grid h-6 w-6 shrink-0 place-items-center opacity-45" title="没有子相册">📄</span>
                 )}
-                <span className="font-medium">{a.name}</span>
+                <span className="min-w-0 break-all font-medium">{a.name}</span>
                 <span className="chip">{a.visibility === "public" ? "公开" : "私有"}</span>
                 <span className="chip">{a.kind === "mounted" ? (a.readonly ? "挂载·只读" : "挂载·可写") : a.storage === "s3" ? "受管·S3" : "受管·本地"}</span>
                 <code className="muted text-xs">{a.code}</code>
@@ -585,13 +610,13 @@ export function BlocklistTab({ active = true }: { active?: boolean }) {
 
       <div className="space-y-2">
         {shown.map((it) => (
-          <div key={it.id} className="glass rounded-2xl p-3">
+          <div key={it.id} className="glass overflow-hidden rounded-2xl p-3">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium break-all">{it.filename}</span>
+              <span className="min-w-0 font-medium break-all">{it.filename}</span>
               <span className="chip">{it.kind === "video" ? "视频" : "图片"}</span>
               <span className="chip">{it.storage}</span>
               <span className="muted text-xs">{bytes(it.size)}</span>
-              {it.albumName || it.albumCode ? <span className="chip">原相册:{it.albumName ?? it.albumCode}</span> : <span className="chip">未归类</span>}
+              {it.albumName || it.albumCode ? <span className="chip max-w-full break-all">原相册:{it.albumName ?? it.albumCode}</span> : <span className="chip">未归类</span>}
             </div>
             <p className="muted mt-0.5 break-all text-xs">{it.storageKey}</p>
             <p className="muted mt-0.5 text-xs">加入时间 {dateTime(it.createdAt)}</p>

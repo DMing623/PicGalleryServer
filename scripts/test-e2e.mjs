@@ -288,8 +288,10 @@ async function sAlbums() {
   r = await admin.patch(`/albums/${st.A1a.code}`, { parent: null }).catch(() => null);
   const moved = r && r.status === 200 && r.data.parent === null;
   ok(moved, "parent=null 移到顶层", r ? `${r.status} ${JSON.stringify(r.data?.parent)}` : "");
+  if (DATA) ok(fs.existsSync(path.join(DATA, "albums", st.A1a.code)), "受管相册移到顶层后磁盘源文件夹同步移到顶层");
   r = await admin.patch(`/albums/${st.A1a.code}`, { parent: st.A1.code });
   eq(r.data?.parent, st.A1.code, "移回子相册下");
+  if (DATA) ok(fs.existsSync(path.join(DATA, "albums", st.A.code, st.A1.code, st.A1a.code)), "受管相册移回子相册后磁盘源文件夹同步移入目的文件夹");
   r = await admin.get(`/albums/${st.A.code}/status`);
   ok(r.status === 200 && r.data.descendants >= 2, "GET /albums/:code/status 含 descendants", JSON.stringify(r.data).slice(0, 200));
   r = await admin.get("/albums/alb_nonexist");
@@ -874,11 +876,18 @@ async function sMedia() {
   r = await admin.del(`/media/${d2}`);
   eq(r.status, 404, "重复删除 → 404");
 
-  // 相册删除:media=move → 文件移到父相册/未归类;media=delete → 删光
+  // 相册移动与删除:受管相册移动同步搬迁磁盘源文件夹与文件 storageKey;media=move → 文件移到父相册/未归类;media=delete → 删光
   const T1 = (await admin.post("/albums", { name: "tmp-move-" + tag, visibility: "public" })).data;
   const T1c = (await admin.post("/albums", { name: "tmp-move-child-" + tag, parent: T1.code })).data;
   r = await admin.upload({ album: T1c.code, wait: 1 }, [{ data: await sharp({ create: { width: 30, height: 30, channels: 3, background: "#0000ff" } }).jpeg().toBuffer(), filename: `inner-${tag}.jpg` }]);
   const innerId = r.data.results[0].id;
+  r = await admin.patch(`/albums/${T1c.code}`, { parent: null });
+  ok(r.status === 200 && r.data.parent === null, "受管子相册(含文件)移动到顶层");
+  if (DATA) ok(fs.existsSync(path.join(DATA, "albums", T1c.code, `inner-${tag}.jpg`)), "受管子相册移到顶层后磁盘文件随文件夹移动");
+  eq((await admin.get(`/f/${innerId}`)).status, 200, "受管子相册移动后原文件仍可访问");
+  r = await admin.patch(`/albums/${T1c.code}`, { parent: T1.code });
+  ok(r.status === 200 && r.data.parent === T1.code, "受管子相册移回父相册下");
+  if (DATA) ok(fs.existsSync(path.join(DATA, "albums", T1.code, T1c.code, `inner-${tag}.jpg`)), "受管子相册移回父相册后磁盘文件随文件夹移入父目录");
   r = await admin.del(`/albums/${T1c.code}?media=move`);
   ok(r.status === 200, "删除相册 media=move", r.buf.toString().slice(0, 150));
   r = await admin.get(`/media/${innerId}`);
@@ -970,6 +979,10 @@ async function sMount() {
   st.trip = trip;
   eq(k2024.parent, M.code, "子相册 parent = 挂载相册");
   ok(k2024.kind === "mounted" && k2024.readonly === true, "子相册同为只读挂载");
+  r = await admin.patch(`/albums/${k2024.code}`, { parent: null });
+  ok(r.status === 200 && r.data.parent === null && r.data.rootPath === path.join(V, "2024") && fs.existsSync(path.join(H, "2024/y1.webp")), "挂载相册移动到顶层仅改层级链接,不移动磁盘文件夹");
+  r = await admin.patch(`/albums/${k2024.code}`, { parent: M.code });
+  eq(r.data?.parent, M.code, "挂载相册移回原父相册下");
   const list = async (code) => (await admin.get(`/media?album=${code}&limit=200`)).data.items;
   await waitFor(async () => (await admin.get(`/albums/${trip.code}/status`)).data.counts?.pending === 0 || (await admin.get(`/albums/${trip.code}/status`)).data.pending === 0, { timeout: 90_000, what: "trip 处理完" }).catch(() => null);
   let root = await list(M.code);

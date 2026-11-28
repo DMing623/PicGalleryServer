@@ -126,7 +126,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
 │    bench/baseline-synthetic-quick.json  bench/baseline-hd-synthetic-quick.json  bench/baseline-queue-synthetic-quick.json
 │    cleanup-image-versions.py  TESTING.md
 ├─ data/                              运行时数据目录(DATA_DIR,默认 ./data,git 忽略)
-│   ├─ albums/<albumCode>/            受管相册(local 存储)的原文件;albums/_inbox/ 为未归类收件箱
+│   ├─ albums/<albumCode>/            受管相册(local 存储)的原文件(嵌套受管子相册对应嵌套子目录);albums/_inbox/ 为未归类收件箱
 │   ├─ derived/<id前2位>/<id>.thumb.webp|.preview.webp   永久派生图
 │   ├─ cache/hd/<id前2位>/<id>.<ver12>.<宽>.webp          HD 无水印基图缓存(LRU+TTL,可随时删除)
 │   ├─ cache/hd/<id前2位>/<id>.<ver12>.<宽>.<wmFp8>.webp     游客水印成品缓存(与基图同目录,以 `.<wmFp8>` 后缀区分)(与基图共享容量上限与失效代数)
@@ -220,7 +220,7 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
        ├─ MetaPanel.tsx               元数据渲染(固定字段缺失显示 N/A、AI 区块、原始段折叠)
        ├─ UploadDialog.tsx            上传对话框:相册下拉、存储选择、并发、进度、结果去向提示、只读挂载禁用
        ├─ AlbumsView.tsx              相册列表/详情页的客户端主体(含会话级相册缓存)、相册卡片
-       ├─ AlbumActions.tsx            相册操作按钮组(新建/重命名/公开私有/只读切换/重扫/删除),导出 AlbumDto
+       ├─ AlbumActions.tsx            相册操作按钮组(新建/重命名/移动[文件树选择弹窗]/公开私有/只读切换/重扫/删除),导出 AlbumDto
        ├─ NoticeBell.tsx              顶栏通知铃铛 + 覆盖式面板(必须 Portal 到 body)
        ├─ Markdown.tsx                dangerouslySetInnerHTML 承载 lib/markdown.ts 的输出
        ├─ Disclaimer.tsx              免责声明弹窗(需滚动到底并等待 6 秒;localStorage 记 30 天;layout 内联脚本先行判断)
@@ -361,13 +361,14 @@ node scripts/check-docs.mjs      # 路由清单 ↔ §8、环境变量 ↔ §10�
   - **缓存代数(v1.3.5)**:`invalidateAlbums()` 会自增 `treeGen`;`loadTree()` 在查询开始时记录代数,写回缓存前比对,不一致则丢弃结果(避免"插入前启动的旧查询"把过期树盖回缓存,导致新相册在 TTL 内查不到)。同时 in-flight 查询带代数,代数已过期的查询不再被新请求复用。
 - 可见性:`visibleIds(user)` → `{t, allowed: Set|null}`(`null`=不受限);`resolveAlbum(code,user)`(不可见抛 404);`scopeIds(t, album, recursive, allowed)`。
 - 展示:`listAlbums(user, parent?)`、`albumDetail(code,user)`、`albumStatus(code,user)`、`albumDtos`(含 5 秒统计缓存:每相册计数/体积/处理中/失败、封面)、`unsortedCount()`。`rootPath` 仅对具备 `album.mount` 的用户返回。
-- 变更:`createManaged`、`mountDir`、`updateAlbum`(`cascade:true` 时可见性级联到子孙;`readonly` 可改)、`deleteAlbum({media:'move'|'delete', purge, user})`、`deleteMediaByIds(ids, purge, {user, block})`、`relocateExtFile(row, targetAlbumId)`、`realPath`。
+- 变更:`createManaged`、`mountDir`、`updateAlbum`(`cascade:true` 时可见性级联到子孙;`readonly` 可改;`parent` 调整相册层级)、`deleteAlbum({media:'move'|'delete', purge, user})`、`deleteMediaByIds(ids, purge, {user, block})`、`relocateExtFile(row, targetAlbumId)`、`managedRelDir`、`realPath`。
+  - **移动相册文件夹(`updateAlbum` 的 `parent`)**:受管相册(`local`)通过 `managedRelDir` 按父链维护 `DATA_DIR/albums/...` 层级目录,移动时 `relocateManagedAlbum` 会同时把 VPS 上的源文件夹搬移到目的文件夹并同步更新子树内全部 `local` 媒体与黑名单记录的 `storage_key`;挂载服务器目录(`mounted`)移动时不会实际移动服务器上的源文件夹,仅改变数据库 `parent_id` 层级链接与项目界面展示。
   - `deleteMediaByIds`:`purge=true` 才物理删除源文件;`block` 默认 `= !purge`,即未勾选删除源文件时把记录写入 `pgs_blocklist`(源文件保留)。「写黑名单 + 删记录」在同一事务里,物理删除在提交后执行,失败以 `{removed, failed[]}` 返回。扫描发现的"磁盘上已消失"的文件以 `block:false` 清理,不进黑名单。
   - `relocateExtFile`:把挂载相册(ext)里的文件真正移动到目标相册目录并返回新的 `{storageKey, filename}`,**由调用方在移动成功后再更新数据库**;用 `fs.link`+`unlink`(跨盘回落 `COPYFILE_EXCL`)保证不覆盖已有文件,失败直接抛错;目标或源相册为只读时抛 403。
   - **搬移串行化(v1.3.5)**:`relocateLocalFile` / `relocateExtFile` 外层包 `withMoveLock(row.id, ...)`,同一媒体 id 的搬移互斥;`moveNoOverwrite` 容忍 `unlink` 的 `ENOENT`(并发下另一请求已删源时,目标文件仍有效)。修复并发搬同一文件残留 nlink=2 孤儿硬链接。
   - **建目录回滚(v1.3.5)**:`createManaged` 先 `mkdir` 后 `insert`,insert 失败时 `rm -rf` 已建目录;`cleanName` 过滤 `\u0000-\u001f` 与 `\u007f`(NUL 曾触发 PostgreSQL 22021 → 500 并留孤儿目录)。
   - 删除挂载相册:只删登记与记录,不动磁盘文件(`purge=true` 才物理删除)。
-  - 删除受管相册:`media=move` 把文件真正搬到父相册目录(根级则 `_inbox`)并更新 `storage_key`;`media=delete` 连文件删除;子相册上移。
+  - 删除受管相册:`media=move` 把文件真正搬到父相册目录(根级则 `_inbox`)并更新 `storage_key`;`media=delete` 连文件删除;子相册(及其 `local` 物理目录)上移。
 - 扫描:`scanAlbum(code, recursive)`:读取目录(文件 `stat` 8 路受限并发)→ 子目录自动建嵌套相册(跳过 `.`/`@eaDir`/`#recycle`/`node_modules` 等)→ **跳过删除黑名单中的路径** → 新文件批量插入 `pending` 并入队 → `(size, mtime)` 变化的文件重新入队 → 消失/新增按 `(size, mtime)` 配对识别重命名(只改 `storage_key`,保留 id 与备注)→ 其余消失文件先打 `missing_at` 软删除标记(超过 7 天宽限期才真正清理);**消失的子目录同理按整棵子树处理**:先对子树内全部记录打 `missing_at`(同样受熔断保护),子树内所有记录都已缺失超过 7 天(或子树本无记录)才移除相册子树;目录在宽限期内回来则记录自动恢复。扫描互斥覆盖祖先/子孙:父相册(或子相册)正在扫描时,对子相册(或父相册)发起扫描返回 409→ **熔断**:消失比例超过 `SCAN_PRUNE_MAX_RATIO` 且记录数 ≥ `SCAN_PRUNE_MIN_COUNT` 时中止清理并报错(若根目录不可访问同样中止并保留记录)。状态在 `scanStates`(含 `added/removed/updated/renamed/missing/albumsCreated/error`)。
 - `browseDirs(path)`、`assertMountAllowed(abs)`(async,先 `realpath`;受 `ALLOWED_MOUNT_ROOTS` 约束,留空时只允许数据目录与 `/photos /mnt /media /srv /home /volume1`)、`scanAllMounted()`(`SCAN_INTERVAL_MIN` 定时器调用)。
 
@@ -581,7 +582,7 @@ DELETE /blocklist/:id       → 彻底删除源文件并移除黑名单行(需 m
 | GET `/fs/browse` | album.mount | `path` | `{path,parent,dirs[]}`,挂载对话框使用 |
 | GET `/albums/:code` | public | — | 详情:`breadcrumbs[]`、`children[]`、`counts`、`rootPath`(仅特权) |
 | GET `/albums/:code/status` | public | — | 相册状态:计数(`media/images/videos/size/mediaTotal/sizeTotal/pending/failed/children`)、`scan` 状态、`descendants` 数 |
-| PATCH `/albums/:code` | album.manage | `{name?, description?, visibility?, sortOrder?, cover?(mediaId), parent?(code\|null), cascade?(bool, 与 visibility 同用→子孙同步), readonly?(bool)}` | 修改;移动到自己子孙下会 400 |
+| PATCH `/albums/:code` | album.manage | `{name?, description?, visibility?, sortOrder?, cover?(mediaId), parent?(code\|null), cascade?(bool, 与 visibility 同用→子孙同步), readonly?(bool)}` | 修改(含移动相册:`local` 受管相册同步移动 VPS 源文件夹并更新文件路径,挂载目录仅改层级链接不移动源目录;移动到自身或子孙下会 400) |
 | DELETE `/albums/:code` | album.manage | `media=move\|delete`(默认 move)、`purge=0\|1` | 挂载相册仅管理员可删,只解除登记(`purge=1` 才删磁盘文件) |
 | POST `/albums/:code/scan` | album.mount | `recursive=1`、`wait=0\|1` | 重新扫描挂载相册;`wait=1` 同步返回 `{added,removed,updated,albumsCreated}` |
 

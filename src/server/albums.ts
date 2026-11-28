@@ -318,6 +318,131 @@ function cleanVisibility(v: unknown, def: "public" | "private" = "private"): "pu
   return v;
 }
 
+/**
+ * 计算受管相册(local)在 DATA_DIR 下的相对目录路径(如 albums/alb_parent/alb_child)。
+ * 沿父链向上拼接所有 local 受管祖先的 code,使磁盘目录层级与相册树保持一致。
+ */
+export function managedRelDir(byId: Map<string, AlbumRow>, a: Pick<AlbumRow, "code" | "parentId">): string {
+  const segs = [a.code];
+  let curId = a.parentId;
+  let guard = 0;
+  while (curId && guard++ < 64) {
+    const p = byId.get(curId);
+    if (!p) break;
+    if (p.kind === "managed" && p.storage === "local") segs.unshift(p.code);
+    curId = p.parentId;
+  }
+  return `albums/${segs.join("/")}`;
+}
+
+/** 解析受管相册当前在磁盘上的实际相对路径(兼容旧版平铺在 albums/<code> 下的目录) */
+async function resolveActualManagedRelDir(t: Tree, a: AlbumRow): Promise<string> {
+  const expected = managedRelDir(t.byId, a);
+  const expectedSt = await fs.stat(path.join(config.dataDir, expected)).catch(() => null);
+  if (expectedSt?.isDirectory()) return expected;
+  const flat = `albums/${a.code}`;
+  if (flat !== expected) {
+    const flatSt = await fs.stat(path.join(config.dataDir, flat)).catch(() => null);
+    if (flatSt?.isDirectory()) return flat;
+  }
+  return expected;
+}
+
+/** 移动或合并目录(同盘优先 rename,目标已存在或跨盘时递归搬移内容后清理源目录) */
+async function moveDirectory(srcAbs: string, dstAbs: string): Promise<void> {
+  if (srcAbs === dstAbs) return;
+  const srcSt = await fs.stat(srcAbs).catch(() => null);
+  if (!srcSt?.isDirectory()) {
+    await fs.mkdir(dstAbs, { recursive: true });
+    return;
+  }
+  await fs.mkdir(path.dirname(dstAbs), { recursive: true });
+  const dstSt = await fs.stat(dstAbs).catch(() => null);
+  if (!dstSt) {
+    try {
+      await fs.rename(srcAbs, dstAbs);
+      return;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e;
+    }
+  }
+  await fs.mkdir(dstAbs, { recursive: true });
+  const entries = await fs.readdir(srcAbs, { withFileTypes: true });
+  for (const entry of entries) {
+    const s = path.join(srcAbs, entry.name);
+    const d = path.join(dstAbs, entry.name);
+    if (entry.isDirectory()) {
+      await moveDirectory(s, d);
+    } else if (entry.isFile()) {
+      await moveNoOverwrite(s, d).catch(async (e) => {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+        const ext = path.extname(entry.name);
+        const stem = entry.name.slice(0, entry.name.length - ext.length);
+        await moveNoOverwrite(s, path.join(dstAbs, `${stem}-${randomId(4)}${ext}`));
+      });
+    }
+  }
+  await fs.rm(srcAbs, { recursive: true, force: true }).catch(() => undefined);
+}
+
+/**
+ * 移动受管相册(local)时,同步把 VPS 数据目录中的源文件夹搬到目标父相册目录下,
+ * 并更新该相册及其受管子孙相册下所有 local 媒体与黑名单记录的 storageKey。
+ */
+async function relocateManagedAlbum(t: Tree, a: AlbumRow, nextParentId: string | null): Promise<void> {
+  if (a.kind !== "managed" || a.storage !== "local") return;
+  const nextById = new Map(t.byId);
+  nextById.set(a.id, { ...a, parentId: nextParentId });
+
+  const oldRel = await resolveActualManagedRelDir(t, a);
+  const newRel = managedRelDir(nextById, { code: a.code, parentId: nextParentId });
+  if (oldRel !== newRel) {
+    await moveDirectory(path.join(config.dataDir, oldRel), path.join(config.dataDir, newRel));
+  }
+
+  const subIds = descendants(t, a.id);
+  for (const did of subIds) {
+    const d = nextById.get(did);
+    if (!d || d.kind !== "managed" || d.storage !== "local") continue;
+    const dNewRel = managedRelDir(nextById, d);
+    const dFlat = `albums/${d.code}`;
+    if (did !== a.id && dFlat !== dNewRel) {
+      const flatAbs = path.join(config.dataDir, dFlat);
+      const flatSt = await fs.stat(flatAbs).catch(() => null);
+      if (flatSt?.isDirectory()) {
+        await moveDirectory(flatAbs, path.join(config.dataDir, dNewRel));
+      }
+    }
+    const mRows = await db
+      .select({ id: media.id, storageKey: media.storageKey, filename: media.filename })
+      .from(media)
+      .where(and(eq(media.albumId, d.id), eq(media.storage, "local")));
+    for (const r of mRows) {
+      const base = path.posix.basename(r.storageKey);
+      const nextKey = `${dNewRel}/${base}`;
+      if (nextKey === r.storageKey) continue;
+      const curAbs = localAbs(r.storageKey);
+      const dstAbs = localAbs(nextKey);
+      const curExists = await fs.stat(curAbs).then((s) => s.isFile()).catch(() => false);
+      if (curExists && curAbs !== dstAbs) {
+        await fs.mkdir(path.dirname(dstAbs), { recursive: true });
+        await moveNoOverwrite(curAbs, dstAbs).catch(() => undefined);
+      }
+      await db.update(media).set({ storageKey: nextKey }).where(eq(media.id, r.id));
+    }
+    const bRows = await db
+      .select({ id: blocklist.id, storageKey: blocklist.storageKey })
+      .from(blocklist)
+      .where(and(eq(blocklist.albumId, d.id), eq(blocklist.storage, "local")));
+    for (const b of bRows) {
+      const nextKey = `${dNewRel}/${path.posix.basename(b.storageKey)}`;
+      if (nextKey !== b.storageKey) {
+        await db.update(blocklist).set({ storageKey: nextKey }).where(eq(blocklist.id, b.id));
+      }
+    }
+  }
+}
+
 export async function createManaged(input: {
   name: unknown; parent?: string | null; visibility?: unknown; description?: unknown; storage?: unknown; sortOrder?: unknown;
 }) {
@@ -332,7 +457,8 @@ export async function createManaged(input: {
     visibility: cleanVisibility(input.visibility), description: typeof input.description === "string" ? input.description.slice(0, 500) : "",
     sortOrder: Number.isFinite(Number(input.sortOrder)) ? Number(input.sortOrder) : 0,
   };
-  const dir = storage === "local" ? path.join(dirs.albums, code) : null;
+  const relDir = storage === "local" ? managedRelDir(t.byId, { code, parentId: parent?.id ?? null }) : null;
+  const dir = relDir ? path.join(config.dataDir, relDir) : null;
   if (dir) await fs.mkdir(dir, { recursive: true });
   try {
     await db.insert(albums).values(row);
@@ -427,7 +553,11 @@ export async function updateAlbum(code: string, patch: Record<string, unknown>) 
   if (patch.parent !== undefined) {
     const p = parentOf(t, patch.parent as string | null);
     if (p && descendants(t, a.id).includes(p.id)) throw E.badRequest("不能把相册移动到自己的子相册下");
-    set.parentId = p?.id ?? null;
+    const nextParentId = p?.id ?? null;
+    if (nextParentId !== (a.parentId ?? null) && a.kind === "managed" && a.storage === "local") {
+      await relocateManagedAlbum(t, a, nextParentId);
+    }
+    set.parentId = nextParentId;
   }
   await db.update(albums).set(set).where(eq(albums.id, a.id));
   // 可见性变更时,同步子孙(便于“整树公开/私有”);用 cascade=true 触发
@@ -527,7 +657,7 @@ async function relocateLocalFileInner(
   const target = targetAlbumId ? t.byId.get(targetAlbumId) : undefined;
   // 目标是挂载相册:文件仍留在数据目录内,不跨存储搬动
   if (target && target.kind === "mounted") return null;
-  const dstDir = target ? path.join(dirs.albums, target.code) : path.join(dirs.albums, "_inbox");
+  const dstDir = target ? path.join(config.dataDir, managedRelDir(t.byId, target)) : path.join(dirs.albums, "_inbox");
   const src = localAbs(row.storageKey);
   if (path.dirname(src) === dstDir) return null;
   await fs.mkdir(dstDir, { recursive: true });
@@ -670,18 +800,29 @@ export async function deleteAlbum(code: string, opts: { media: "move" | "delete"
     await db.delete(albums).where(inArray(albums.id, ids));
   } else {
     const parent = a.parentId ?? null;
+    const aRelDir = a.storage === "local" ? await resolveActualManagedRelDir(t, a) : null;
+    // 先把直接子相册(local 受管)的物理目录上移到父级(或顶层),避免随父目录被清理或悬空
+    for (const child of t.children.get(a.id) ?? []) {
+      if (child.kind === "managed" && child.storage === "local") {
+        await relocateManagedAlbum(t, child, parent);
+      }
+    }
     if (opts.media === "delete") {
       const rows = await db.select({ id: media.id }).from(media).where(eq(media.albumId, a.id));
       // 受管相册的文件属于本系统自己的数据,删除相册时一并物理删除(不进入黑名单)
       await deleteMediaByIds(rows.map((r) => r.id), true, { user: opts.user, block: false });
     } else {
       // 媒体移交父相册:受管相册(local)必须真正搬文件,否则目录与归属脱节且永远无法清理(issue §2.6)
+      const parentAlbum = parent ? t.byId.get(parent) : undefined;
+      const dstDir =
+        parentAlbum && parentAlbum.kind === "managed" && parentAlbum.storage === "local"
+          ? path.join(config.dataDir, managedRelDir(t.byId, parentAlbum))
+          : path.join(dirs.albums, "_inbox");
       const rows = await db.select().from(media).where(eq(media.albumId, a.id));
       for (const r of rows) {
         let storageKey = r.storageKey;
         let filename = r.filename;
         if (r.storage === "local") {
-          const dstDir = parent ? path.join(dirs.albums, t.byId.get(parent)?.code ?? "") : path.join(dirs.albums, "_inbox");
           await fs.mkdir(dstDir, { recursive: true });
           // storageKey 是相对 DATA_DIR 的路径,必须先解析成绝对路径
           const srcAbs = localAbs(r.storageKey);
@@ -712,7 +853,7 @@ export async function deleteAlbum(code: string, opts: { media: "move" | "delete"
     }
     await db.update(albums).set({ parentId: parent }).where(eq(albums.parentId, a.id));
     await db.delete(albums).where(eq(albums.id, a.id));
-    if (a.storage === "local") await fs.rmdir(path.join(dirs.albums, a.code)).catch(() => undefined);
+    if (aRelDir) await fs.rmdir(path.join(config.dataDir, aRelDir)).catch(() => undefined);
   }
   invalidateAlbums();
 }

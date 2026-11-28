@@ -57,7 +57,7 @@ const Card = memo(function Card({ a, showManage }: { a: AlbumDto; showManage: bo
         )}
       </div>
       <div className="p-3">
-        <div className="truncate font-medium">{a.name}</div>
+        <div className="truncate font-medium" title={a.name}>{a.name}</div>
         <div className="muted mt-0.5 text-xs">
           {a.counts.mediaTotal} 项 · {bytes(a.counts.sizeTotal)}
           {a.counts.children > 0 && ` · ${a.counts.children} 个子相册`}
@@ -113,7 +113,11 @@ export default function AlbumsView({ code, active = true }: { code?: string; act
   useEffect(() => {
     if (loading) return;
     void load();
-    const h = () => void load();
+    const h = () => {
+      rootCache = null;
+      detailCache.clear();
+      void load();
+    };
     window.addEventListener("pgs:albums", h);
     return () => window.removeEventListener("pgs:albums", h);
   }, [load, loading, userId]);
@@ -188,17 +192,17 @@ export default function AlbumsView({ code, active = true }: { code?: string; act
 
   return (
     <div>
-      <div className="glass mx-2 mb-3 rounded-2xl p-3">
+      <div className="glass mx-2 mb-3 overflow-hidden rounded-2xl p-3">
         <nav className="muted mb-1 flex flex-wrap items-center gap-1 text-sm">
-          <Link href="/albums" onClick={(e) => onAlbumLinkClick(e, "/albums")} className="hover:underline">相册</Link>
+          <Link href="/albums" onClick={(e) => onAlbumLinkClick(e, "/albums")} className="shrink-0 hover:underline">相册</Link>
           {detail.breadcrumbs.map((b) => (
-            <span key={b.code}>
-              / <Link href={`/albums/${b.code}`} onClick={(e) => onAlbumLinkClick(e, `/albums/${b.code}`)} className="hover:underline">{b.name}</Link>
+            <span key={b.code} className="min-w-0 break-all">
+              / <Link href={`/albums/${b.code}`} onClick={(e) => onAlbumLinkClick(e, `/albums/${b.code}`)} className="break-all hover:underline">{b.name}</Link>
             </span>
           ))}
         </nav>
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-xl font-semibold">{detail.name}</h1>
+          <h1 className="min-w-0 break-all text-xl font-semibold">{detail.name}</h1>
           {showManage && (
             <>
               <span className="chip">{detail.visibility === "public" ? "公开" : "私有"}</span>
@@ -211,7 +215,7 @@ export default function AlbumsView({ code, active = true }: { code?: string; act
           </div>
         </div>
         {detail.rootPath && <p className="muted mt-1 break-all text-xs">📂 {detail.rootPath}</p>}
-        {detail.description && <p className="mt-2 text-sm">{detail.description}</p>}
+        {detail.description && <p className="mt-2 break-all text-sm">{detail.description}</p>}
       </div>
 
       {detail.children.length > 0 && (

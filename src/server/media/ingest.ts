@@ -6,7 +6,7 @@ import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { db, isUniqueViolation, nullSafeEq } from "@/db";
 import { albums, media } from "@/db/schema";
-import { invalidateAlbums, invalidateMediaCaches, loadTree, assertMountAllowed, type AlbumRow } from "../albums";
+import { invalidateAlbums, invalidateMediaCaches, loadTree, assertMountAllowed, managedRelDir, type AlbumRow } from "../albums";
 import type { AuthUser } from "../auth";
 import { dirs } from "../config";
 import { E } from "../http";
@@ -81,7 +81,7 @@ export async function resolveTarget(p: { album?: string | null; dir?: string | n
     }
     const st = a.storage as StorageCode;
     if (wantStorage && wantStorage !== st) throw E.badRequest(`该相册的存储代码是 ${st},与 storage=${wantStorage} 不一致`);
-    return { album: a, storage: st, dirKey: `albums/${a.code}` };
+    return { album: a, storage: st, dirKey: st === "local" ? managedRelDir(t.byId, a) : `albums/${a.code}` };
   }
 
   const st = (wantStorage ?? "local") as StorageCode;

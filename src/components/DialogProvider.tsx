@@ -132,11 +132,11 @@ function Modal({ item, onDone }: { item: Item; onDone: () => void }) {
     return (
       <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onMouseDown={(e) => e.target === e.currentTarget && finish(null)}>
         <div role="dialog" aria-modal="true" className="glass-strong fade-in w-full max-w-sm rounded-2xl p-5 shadow-2xl">
-          {title && <h3 className="mb-1.5 text-base font-semibold">{title}</h3>}
-          {o.message && <div className="mb-3 whitespace-pre-wrap text-sm leading-relaxed">{o.message}</div>}
+          {title && <h3 className="mb-1.5 break-all text-base font-semibold">{title}</h3>}
+          {o.message && <div className="mb-3 whitespace-pre-wrap break-all text-sm leading-relaxed">{o.message}</div>}
           <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-line/60 p-3 text-sm">
             <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0" checked={checked} onChange={(e) => setChecked(e.target.checked)} />
-            <span className="min-w-0 flex-1">{o.checkLabel}</span>
+            <span className="min-w-0 flex-1 break-all">{o.checkLabel}</span>
           </label>
           {o.checkHint && <p className="muted mt-2 text-xs leading-relaxed">{o.checkHint}</p>}
           <div className="mt-4 flex justify-end gap-2">
@@ -153,10 +153,10 @@ function Modal({ item, onDone }: { item: Item; onDone: () => void }) {
   return (
     <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onMouseDown={(e) => e.target === e.currentTarget && finish(null)}>
       <div role="dialog" aria-modal="true" className="glass-strong fade-in w-full max-w-sm rounded-2xl p-5 shadow-2xl">
-        {title && <h3 className="mb-1.5 text-base font-semibold">{title}</h3>}
+        {title && <h3 className="mb-1.5 break-all text-base font-semibold">{title}</h3>}
         {item.kind === "choose" ? (
           <>
-            {item.o.message && <div className="mb-4 whitespace-pre-wrap text-sm leading-relaxed">{item.o.message}</div>}
+            {item.o.message && <div className="mb-4 whitespace-pre-wrap break-all text-sm leading-relaxed">{item.o.message}</div>}
             <div className="flex flex-col gap-2">
               {item.o.options.map((op, i) => (
                 <button key={op.value} ref={i === 0 ? primaryRef : undefined} className={`${cls(op.kind)} !justify-center`} onClick={() => finish(op.value)}>
@@ -178,7 +178,7 @@ function Modal({ item, onDone }: { item: Item; onDone: () => void }) {
               submit();
             }}
           >
-            {item.o.message && <div className="mb-2 whitespace-pre-wrap text-sm">{item.o.message}</div>}
+            {item.o.message && <div className="mb-2 whitespace-pre-wrap break-all text-sm">{item.o.message}</div>}
             {item.o.label && <label className="muted mb-1 block text-xs">{item.o.label}</label>}
             <input
               ref={inputRef}
